@@ -22,6 +22,9 @@
 #   selfsigned    a temporary certificate, for testing
 #   --cluster-host ADDRESS   address slave nodes use to reach this master directly,
 #                            when the domain points at something in front of it
+#   --http-port PORT, --https-port PORT
+#                            ports to publish instead of 80 and 443, when another
+#                            web server or proxy on this machine already uses them
 #
 # Slave options:
 #   --name NAME          name shown on the master (default: this server's hostname)
@@ -42,9 +45,9 @@ cd "$(dirname "$0")"
 
 ROLE="" DOMAIN="" EMAIL="" TLS="" CERT="" KEY="" CLUSTER_HOST=""
 MASTER="" TOKEN="" NAME="" ADVERTISE="" ENGINE_PORT="" INSECURE=false
-FROM_SOURCE=false IMAGE_TAG_ARG=""
+FROM_SOURCE=false IMAGE_TAG_ARG="" HTTP_PORT_ARG="" HTTPS_PORT_ARG=""
 
-usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; }
 fail() { echo "Error: $*" >&2; exit 1; }
 need_value() { [ $# -ge 2 ] || fail "$1 needs a value."; }
 
@@ -58,6 +61,8 @@ while [ $# -gt 0 ]; do
     --cert) need_value "$@"; CERT="$2"; shift 2 ;;
     --key) need_value "$@"; KEY="$2"; shift 2 ;;
     --cluster-host) need_value "$@"; CLUSTER_HOST="$2"; shift 2 ;;
+    --http-port) need_value "$@"; HTTP_PORT_ARG="$2"; shift 2 ;;
+    --https-port) need_value "$@"; HTTPS_PORT_ARG="$2"; shift 2 ;;
     --master) need_value "$@"; MASTER="$2"; shift 2 ;;
     --token) need_value "$@"; TOKEN="$2"; shift 2 ;;
     --name) need_value "$@"; NAME="$2"; shift 2 ;;
@@ -365,6 +370,11 @@ install_master() {
     ensure_env CLUSTER_BIND 127.0.0.1
   fi
   [ -z "$CLUSTER_HOST" ] || set_env CLUSTER_HOST "$CLUSTER_HOST"
+  for pair in "HTTP_PORT:$HTTP_PORT_ARG" "HTTPS_PORT:$HTTPS_PORT_ARG"; do
+    [ -n "${pair#*:}" ] || continue
+    case "${pair#*:}" in *[!0-9]*) fail "Ports must be numbers." ;; esac
+    set_env "${pair%%:*}" "${pair#*:}"
+  done
 
   # Where the domain's certificate comes from.
   [ -z "$CERT" ] || [ -n "$TLS" ] || TLS=provided

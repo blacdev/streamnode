@@ -14,6 +14,10 @@ All notable changes to this project are recorded here. The format follows
 - **Installing without a domain.** `./install.sh --role both` with no `--domain` sets
   the gateway up for the server's IP address; a domain can be added later.
 
+- `scripts/uninstall.sh`: removes an installation of any version or role, for a clean
+  reinstall.
+- `--http-port` and `--https-port` installer options.
+
 ### Fixed
 
 - The installer now asks how HTTPS is provided on a fresh interactive install with a
