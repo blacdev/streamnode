@@ -26,8 +26,10 @@ These apply to every role. See [Images](INSTALLATION.md#images).
 | `DOMAIN` | the server's IP address | Public hostname, or the server's IP address when installed without a domain. Used for the certificate, the HTTPS redirect and `scripts/letsencrypt.sh` |
 | `PUBLIC_BASE_URL` | `https://<domain>`; empty without a domain | Origin placed in `stream_url`, `playlist_urls` and slave install commands. When empty it is taken from each request. Requests made to the server's IP address always get URLs on that address |
 | `TLS_MODE` | set by the installer | Where the domain's certificate comes from: `letsencrypt`, `provided`, `external` (HTTPS handled in front of this server) or `selfsigned`. See [Certificates](INSTALLATION.md#certificates) |
+| `HTTP_BIND` | `0.0.0.0` | Address the HTTP port is published on. `0.0.0.0` is every IPv4 interface; use `::` to publish on IPv6 as well |
 | `HTTP_PORT` | `80` | Host port for plain HTTP |
 | `HTTPS_PORT` | `443` | Host port for HTTPS |
+| `HTTPS_BIND` | `0.0.0.0` | Address the HTTPS port is published on. `127.0.0.1` with `TLS_MODE=external`, where nothing listens on it |
 
 ## Credentials
 
@@ -65,6 +67,7 @@ See [Installation](INSTALLATION.md) and [Adding servers](SCALING.md).
 | `ENGINE_SECRET` | generated | Secret HAProxy sends to every engine. Engines refuse requests without it. Slave nodes receive it when they join |
 | `CLUSTER_BIND` | `0.0.0.0` for `master`, `127.0.0.1` for `both` | Address on which Redis-over-TLS is published for slave nodes. Set to `0.0.0.0` on a `both` install before adding slaves |
 | `CLUSTER_PORT` | `6380` | Port for the above |
+| `CLUSTER_CERT` | `/etc/haproxy/certs/stream.pem` | Certificate presented on the Redis port for slave nodes (path inside the HAProxy container). With `TLS_MODE=external` it is an internal one, `certs/cluster.pem`; empty means the server takes no slave nodes |
 | `CLUSTER_HOST` | empty | Address slave nodes use to reach the master directly. Needed when the domain points at a proxy in front of the master; otherwise slaves use the domain |
 | `RELAY_BIND` | `127.0.0.1` | Private address for the relay port used by optional edge servers |
 | `RELAY_PORT` | `8444` | Port for the above |

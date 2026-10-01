@@ -435,16 +435,38 @@ EOF
   ensure_env ENGINE_SECRET "$(random 24)"
   ensure_env CLUSTER_PORT 6380
   chmod 600 .env
-  # HAProxy needs some certificate to start, whatever the mode: a self-signed
-  # one stands in until Let's Encrypt has issued (or for good, when HTTPS is
-  # handled in front of this server).
-  if [ ! -s certs/stream.pem ]; then
-    echo "Generating a self-signed certificate for $DOMAIN."
+  self_signed() { # self_signed FILE: a certificate for $DOMAIN, chain followed by key
     local tmp; tmp="$(mktemp -d)"
-    openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=$DOMAIN" \
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=$DOMAIN" \
       -addext "subjectAltName=$(is_ip "$DOMAIN" && echo IP || echo DNS):$DOMAIN" -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
-    ( umask 077; cat "$tmp/cert.pem" "$tmp/key.pem" > certs/stream.pem )
+    ( umask 077; cat "$tmp/cert.pem" "$tmp/key.pem" > "$1" )
     rm -rf "$tmp"
+  }
+  # The gateway always answers on every network interface.
+  set_env HTTP_BIND 0.0.0.0
+  if [ "$TLS" = external ]; then
+    # HTTPS is handled in front of this server: no HTTPS listener here and no
+    # certificate for the domain. The unused HTTPS port is kept off the network.
+    set_env HTTPS_BIND 127.0.0.1
+    [ "$(get_env HTTPS_PORT)" != 443 ] || set_env HTTPS_PORT 8443
+    # Only the encrypted Redis link to slave nodes needs a certificate, and only
+    # on a server that takes slave nodes: an internal one, never shown to listeners.
+    if [ "$ROLE" = master ] || [ -n "$(get_env CLUSTER_HOST)" ]; then
+      set_env CLUSTER_BIND 0.0.0.0
+      [ -s certs/cluster.pem ] || { self_signed certs/cluster.pem; echo "Created an internal certificate for the link to slave nodes (certs/cluster.pem)."; }
+      set_env CLUSTER_CERT /etc/haproxy/certs/cluster.pem
+    else
+      set_env CLUSTER_CERT ""
+    fi
+  else
+    set_env HTTPS_BIND 0.0.0.0
+    set_env CLUSTER_CERT /etc/haproxy/certs/stream.pem
+    # HAProxy's HTTPS listener needs a certificate to start: a self-signed one
+    # stands in until Let's Encrypt has issued, or when none was asked for.
+    if [ ! -s certs/stream.pem ]; then
+      echo "Generating a self-signed certificate for $DOMAIN."
+      self_signed certs/stream.pem
+    fi
   fi
 
   configure_images
@@ -487,12 +509,13 @@ EOF
   case "$TLS" in
     external)
       echo
-      echo "HTTPS is handled in front of this server. Point your load balancer or proxy at"
-      echo "this server's port $(get_env HTTP_PORT) over plain HTTP. It must add X-Forwarded-For, must not"
-      echo "buffer responses, and must allow long-lived connections. Allow port $(get_env HTTP_PORT) from it only."
+      echo "HTTPS is handled in front of this server: no certificate was set up here and there"
+      echo "is no HTTPS listener. Point your load balancer or proxy at this server's port"
+      echo "$(get_env HTTP_PORT) over plain HTTP. It must add X-Forwarded-For, must not buffer responses, and"
+      echo "must allow long-lived connections."
+      echo "  From the local network: http://$(server_ip)$port_suffix/admin/"
       if [ -z "$(get_env CLUSTER_HOST)" ]; then
-        echo "Before adding slave nodes, set CLUSTER_HOST in .env to an address that reaches"
-        echo "this server directly (they connect to it on port $(get_env CLUSTER_PORT)), then: $COMPOSE up -d"
+        echo "To take slave nodes later, run: ./install.sh --cluster-host <address that reaches this server directly>"
       fi ;;
     selfsigned)
       echo

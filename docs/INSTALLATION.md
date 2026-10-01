@@ -152,8 +152,10 @@ Stations, accounts and statistics are kept. Slave nodes can join a master that h
 domain: `scripts/add-server.sh` prints the command with the master's address in it,
 and each slave needs `--insecure`.
 
-If the server has a firewall of its own (ufw, firewalld), allow port 80 (and 443)
-from the networks that should reach it.
+The gateway's ports are published on every network interface (`0.0.0.0`), and Docker
+opens them in the host's firewall by itself, so no `ufw` or `firewalld` rule is needed
+on the server. A firewall outside the server (your hosting provider's, or your
+router's) still has to allow them.
 
 ## Install on one server (both)
 
@@ -298,9 +300,12 @@ HTTPS for the domain and passes plain HTTP to this server.
 ./install.sh --role both --domain stream.example.com --tls external
 ```
 
-The gateway then accepts the dashboard and API over plain HTTP without redirecting,
-treats those requests as HTTPS (so stream URLs and links are `https://`), and takes
-each client's address from the `X-Forwarded-For` header your proxy adds.
+In this mode **no certificate is created on the server and there is no HTTPS
+listener**: the gateway serves plain HTTP only. It accepts the dashboard and API
+without redirecting, treats those requests as HTTPS (so stream URLs and links are
+`https://`), and takes each client's address from the `X-Forwarded-For` header your
+proxy adds. If the proxy is on the same machine and already uses ports 80 and 443,
+add `--http-port 8080`.
 
 What the thing in front must do:
 
@@ -320,8 +325,10 @@ tell slaves how to reach the master directly:
 ```
 
 Slaves still join through `https://stream.example.com` and then connect to
-`203.0.113.10:6380` for Redis. That connection is encrypted, but its certificate
-cannot be checked against a name, since the real certificate lives elsewhere; see
+`203.0.113.10:6380` for Redis. For that link alone the installer creates an internal
+certificate (`certs/cluster.pem`), which listeners never see. The connection is
+encrypted, but the certificate cannot be checked against a name, since the real
+certificate lives elsewhere; see
 [Security](SECURITY.md#between-master-and-slave-nodes).
 
 ### Self-signed

@@ -97,11 +97,16 @@ services:
       TLS_MODE: ${TLS_MODE:-selfsigned}
       # The dashboard and API are redirected to HTTPS when asked for by this name.
       DOMAIN: ${DOMAIN:-}
+      # Certificate for the Redis link to slave nodes; empty leaves that listener out.
+      CLUSTER_CERT: ${CLUSTER_CERT-/etc/haproxy/certs/stream.pem}
       # false serves the dashboard and API over plain HTTP too (local testing only).
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
     ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      # Published on every network interface, so the gateway answers on the
+      # server's local and public addresses alike. Docker opens these ports in
+      # the host firewall itself; no ufw or firewalld rule is needed.
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
       # Redis over TLS for slave nodes. Bound to loopback unless this server is a master for other servers.
       - "${CLUSTER_BIND:-127.0.0.1}:${CLUSTER_PORT:-6380}:6380"
       # Dashboard/API relay for optional edge servers. Keep on a private address.
