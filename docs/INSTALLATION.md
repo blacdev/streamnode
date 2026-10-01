@@ -34,7 +34,7 @@ removing slave nodes never changes the address listeners use.
 |---|---|---|
 | Operating system | 64-bit Linux that runs Docker | Same |
 | Software | Docker Engine 23+ with the Compose plugin, `openssl` | Docker Engine 23+ with the Compose plugin |
-| CPU and memory | 2 cores, 2 GB (building the engine image needs about 2 GB free) | 2 cores, 2 GB |
+| CPU and memory | 2 cores, 1 GB or more | 1 core, 512 MB or more |
 | Disk | 10 GB plus statistics growth | 5 GB |
 | Inbound ports | 80 and 443 from everyone; 6380 from slave nodes | 3000 from the master only |
 | Outbound | To slave nodes (3000) and, for `both`, to station sources | To the master (443, 6380) and to station sources |
@@ -75,7 +75,8 @@ rest of this guide. It:
 2. installs `git`, `curl` and `openssl` if missing, and offers to install Docker with
    Docker's official script if it is not there (it asks first);
 3. makes sure Docker and the Compose plugin are running;
-4. downloads the code to `/opt/radio-gateway`;
+4. downloads the code to `/opt/radio-gateway` (configuration and scripts; the services
+   themselves arrive as prebuilt Docker images);
 5. starts `install.sh`, which asks for the role and everything else.
 
 It needs root or `sudo`. Options go after `bash -s --`; anything it does not recognise
@@ -128,8 +129,7 @@ Run it as root or as a user in the `docker` group. The script:
    dashboard password and administrator API key. An existing `.env` is kept.
 2. Asks how HTTPS for the domain is provided ([Certificates](#certificates)) and sets
    the certificate up accordingly.
-3. Builds the images and starts the services. The first build compiles the engine and
-   takes several minutes.
+3. Downloads the prebuilt images and starts the services ([Images](#images)).
 4. Waits for the API to report healthy and prints the dashboard address and, on a
    first install, the generated credentials.
 
@@ -321,8 +321,37 @@ location / {
 | From | To | Steps |
 |---|---|---|
 | both | master | Add at least one slave first. Then in `.env` set `ROLE=master`, `COMPOSE_PROFILES=master`, `LOCAL_ENGINE=` (empty) and `CLUSTER_BIND=0.0.0.0`, and run `docker compose up -d --remove-orphans`. The local engine stops; its listeners reconnect to the slaves |
-| master | both | In `.env` set `ROLE=both`, `COMPOSE_PROFILES=master,local-engine` and `LOCAL_ENGINE=audio_engine:3000`, then `docker compose up --build -d` |
+| master | both | In `.env` set `ROLE=both`, `COMPOSE_PROFILES=master,local-engine` and `LOCAL_ENGINE=audio_engine:3000`, then `./install.sh` |
 | slave | anything else | Remove it on the master (Servers > Remove), run `docker compose down -v` on it, delete its `.env`, and install again in the new role |
+
+## Images
+
+The gateway runs in Docker. Its two own images, the audio engine and the management
+API, are built by CI for x86-64 and ARM and published to the GitHub container
+registry; the installer downloads them. Nothing is compiled on your servers, which is
+why a small server is enough.
+
+| | Prebuilt images (default) | Built from source |
+|---|---|---|
+| How | `docker compose pull`, done by the installer | `./install.sh --build-from-source` |
+| Time | About a minute | Several minutes |
+| Memory needed | No more than running needs | About 2 GB while compiling |
+| Use it when | Always, unless you have a reason not to | You changed the code, or the registry is unreachable |
+
+If the images cannot be downloaded (the registry is unreachable, or nothing has been
+published for your processor type), the installer says so and builds from source
+instead.
+
+**Choosing a version.** By default servers run the `latest` images, which follow the
+main branch. To stay on a release, install with `--image-tag v2.4.0`, or set
+`IMAGE_TAG` in `.env`. Keep the master and its slave nodes on the same tag.
+
+**Private repositories.** Images of a private repository are private too. Sign in on
+each server first, with a token that may read packages:
+
+```bash
+docker login ghcr.io -u <github-user>
+```
 
 ## Upgrading
 
@@ -330,9 +359,12 @@ Upgrade the master first, then each slave:
 
 ```bash
 ./scripts/backup.sh          # on the master: always back up first
-git pull
-docker compose up --build -d
+git pull                     # configuration, scripts and documentation
+./install.sh                 # downloads the newest images for your tag and restarts what changed
 ```
+
+Re-running the one-line install command does the same. The installer keeps the
+server's role, settings and data.
 
 Database migrations are applied automatically when the admin service starts.
 Restarting an engine disconnects its listeners; players reconnect within a few

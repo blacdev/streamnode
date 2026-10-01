@@ -149,7 +149,11 @@ On a slave, the engine's log is `docker compose logs slave_engine`.
 | `port is already allocated` | Another web server uses 80 or 443 | Stop it, or set `HTTP_PORT` / `HTTPS_PORT` |
 | `admin_dashboard` exits with `password authentication failed` | `POSTGRES_PASSWORD` in `.env` differs from the one the database was created with | Restore the original value, or follow [Rotating credentials](OPERATIONS.md#rotating-credentials) |
 | `ADMIN_API_KEY ignored` in the admin log | The key does not start with `rgw_` or is shorter than 36 characters | Generate one: `echo rgw_$(openssl rand -hex 24)` |
-| Engine image fails to build | Not enough memory during compilation | Free memory or add swap; the build needs about 2 GB |
+| `The prebuilt images could not be downloaded` | Nothing published yet, a private registry, or no route to it | See the reason printed beneath. For a private repository run `docker login ghcr.io` first. If CI has published the images but they are not public, make the packages public on GitHub (Packages > package settings > Change visibility) |
+| `manifest unknown` | That tag does not exist | Check `IMAGE_TAG` in `.env` against the tags published under the repository's Packages |
+| `no matching manifest for linux/...` | No image for this server's processor type | Use `./install.sh --build-from-source` |
+| Engine image fails to build from source | Not enough memory during compilation | Use the prebuilt images, or add swap; compiling needs about 2 GB |
+| New code but old behaviour after `git pull` | The images were not refreshed | Run `./install.sh`, which downloads the newest images for your tag |
 | Let's Encrypt fails | DNS not pointing at the server yet, or port 80 blocked | Fix and re-run `./scripts/letsencrypt.sh issue` |
 
 ## Collecting information for support

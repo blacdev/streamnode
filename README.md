@@ -45,8 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | ba
 ```
 
 It checks the server, offers to install Docker if it is missing, downloads the code to
-`/opt/radio-gateway` and starts the installer, which asks which role the server has,
-the domain, and how HTTPS is provided. At the end it prints the dashboard address,
+`/opt/radio-gateway` and starts the installer. The services run in Docker from
+prebuilt images, so nothing is compiled on the server and a small one is enough. The
+installer asks which role the server has, the domain, and how HTTPS is provided. At the end it prints the dashboard address,
 password and administrator API key.
 
 If you already have the code, run the installer directly:

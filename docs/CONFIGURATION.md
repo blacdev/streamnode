@@ -9,6 +9,16 @@ docker compose up -d
 
 Only the services whose settings changed are restarted.
 
+## Images
+
+| Variable | Default | Description |
+|---|---|---|
+| `INSTALL_FROM` | `images` | `images` downloads the prebuilt images; `source` compiles them on the server (`--build-from-source`) |
+| `IMAGE_PREFIX` | your repository's registry | Where the images are, e.g. `ghcr.io/acme/radio-gateway`. The images are `<prefix>/engine` and `<prefix>/admin` |
+| `IMAGE_TAG` | `latest` | Version to run: `latest`, or a release such as `v2.4.0` (`--image-tag`) |
+
+These apply to every role. See [Images](INSTALLATION.md#images).
+
 ## General
 
 | Variable | Default | Description |

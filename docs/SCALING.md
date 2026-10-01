@@ -255,7 +255,7 @@ Setting one up:
    ```bash
    cp .env.example .env     # NODE_ID, REDIS_URL, ENGINE_SECRET, GATEWAY_PRIVATE_HOST, CERT_SOURCE
    ./sync-cert.sh           # copies the certificate from the master over SSH
-   docker compose up --build -d
+   docker compose pull && docker compose up -d
    ```
    `REDIS_URL` is `rediss://:<REDIS_PASSWORD>@<master domain>:6380`; `ENGINE_SECRET`
    is the master's. Add the cron line shown in `sync-cert.sh` so renewals reach it.

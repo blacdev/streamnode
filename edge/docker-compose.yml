@@ -5,6 +5,7 @@ name: radio-gateway-edge
 
 services:
   audio_engine:
+    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
     build: ../rust_src
     restart: always
     environment:

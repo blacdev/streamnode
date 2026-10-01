@@ -29,6 +29,29 @@ push and pull request (`.github/workflows/ci.yml`).
 ./scripts/try-local.sh reset
 ```
 
+## Images and releases
+
+Servers do not compile anything: they download images that CI publishes
+(`.github/workflows/images.yml`) to `ghcr.io/<owner>/<repo>/engine` and `.../admin`,
+for x86-64 and ARM.
+
+| Event | Images tagged |
+|---|---|
+| Push to the default branch | `latest`, `sha-<commit>` |
+| Push of a tag `vX.Y.Z` | `vX.Y.Z`, `vX.Y`, `sha-<commit>` |
+
+To release: update `CHANGELOG.md`, then `git tag v2.4.0 && git push origin v2.4.0`.
+Servers installed with `--image-tag v2.4.0` stay on that release; others follow
+`latest`.
+
+After the first publish, make the two packages **public** on GitHub (your profile or
+organisation > Packages > the package > Package settings > Change visibility), or
+servers will need `docker login ghcr.io` to download them.
+
+To test a change before it is published, build locally: `./install.sh
+--build-from-source`, or `./scripts/try-local.sh`, which always builds from the
+working copy.
+
 ## Conventions
 
 - **Database changes** go in a new numbered file in `admin_src/migrations/`. Never edit

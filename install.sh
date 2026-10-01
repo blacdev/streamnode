@@ -29,14 +29,21 @@
 #   --engine-port PORT   port the engine listens on (default: 3000)
 #   --insecure           accept a master whose certificate cannot be verified (self-signed)
 #
-# Safe to re-run: existing secrets and certificates are kept.
+# Images (every role):
+#   --build-from-source  compile the images on this server instead of downloading
+#                        the prebuilt ones (needs about 2 GB of memory)
+#   --image-tag TAG      prebuilt version to run: "latest" or a release such as v2.4.0
+#
+# Safe to re-run: existing secrets and certificates are kept, and the newest
+# images for the chosen tag are downloaded.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 ROLE="" DOMAIN="" EMAIL="" TLS="" CERT="" KEY="" CLUSTER_HOST=""
 MASTER="" TOKEN="" NAME="" ADVERTISE="" ENGINE_PORT="" INSECURE=false
+FROM_SOURCE=false IMAGE_TAG_ARG=""
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 fail() { echo "Error: $*" >&2; exit 1; }
 need_value() { [ $# -ge 2 ] || fail "$1 needs a value."; }
 
@@ -56,6 +63,8 @@ while [ $# -gt 0 ]; do
     --advertise) need_value "$@"; ADVERTISE="$2"; shift 2 ;;
     --engine-port) need_value "$@"; ENGINE_PORT="$2"; shift 2 ;;
     --insecure) INSECURE=true; shift ;;
+    --build-from-source) FROM_SOURCE=true; shift ;;
+    --image-tag) need_value "$@"; IMAGE_TAG_ARG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown option: $1 (see ./install.sh --help)" ;;
   esac
@@ -75,6 +84,56 @@ set_env() { # set_env KEY VALUE: add or replace one line in .env
   cat "$tmp" > .env && rm -f "$tmp"
 }
 ensure_env() { [ -n "$(get_env "$1")" ] || set_env "$1" "$2"; }
+
+# The registry holding the prebuilt images: the one written into .env.example
+# when the project was published, else derived from where this copy was cloned.
+default_image_prefix() {
+  local prefix remote
+  prefix="$(grep '^IMAGE_PREFIX=' .env.example 2>/dev/null | head -n1 | cut -d= -f2-)"
+  case "$prefix" in ""|*OWNER/REPO*) prefix="" ;; esac
+  if [ -z "$prefix" ] && command -v git >/dev/null 2>&1; then
+    remote="$(git remote get-url origin 2>/dev/null || true)"
+    case "$remote" in
+      *github.com[:/]*)
+        remote="${remote#*github.com[:/]}"; remote="${remote%.git}"
+        prefix="ghcr.io/$(printf '%s' "$remote" | tr '[:upper:]' '[:lower:]')" ;;
+    esac
+  fi
+  printf '%s' "$prefix"
+}
+
+# Records where images come from; called once .env exists.
+configure_images() {
+  ensure_env IMAGE_TAG latest
+  [ -z "$IMAGE_TAG_ARG" ] || set_env IMAGE_TAG "$IMAGE_TAG_ARG"
+  case "$(get_env IMAGE_PREFIX)" in ""|*OWNER/REPO*) set_env IMAGE_PREFIX "$(default_image_prefix)" ;; esac
+  if $FROM_SOURCE; then set_env INSTALL_FROM source
+  elif [ -z "$(get_env IMAGE_PREFIX)" ]; then set_env INSTALL_FROM source
+  else ensure_env INSTALL_FROM images; fi
+  # Built images need a name too.
+  [ -n "$(get_env IMAGE_PREFIX)" ] || set_env IMAGE_PREFIX radio-gateway
+}
+
+# Downloads the prebuilt images and starts the services; compiles from source
+# when asked to, or when the images cannot be downloaded.
+start_services() {
+  if [ "$(get_env INSTALL_FROM)" = source ]; then
+    echo "Building the images from source (several minutes; needs about 2 GB of memory)..."
+    $COMPOSE up --build -d
+    return
+  fi
+  echo "Downloading the images ($(get_env IMAGE_PREFIX), tag $(get_env IMAGE_TAG))..."
+  local problem
+  if problem="$($COMPOSE pull --quiet 2>&1)"; then
+    $COMPOSE up -d --no-build
+  else
+    echo "The prebuilt images could not be downloaded:"
+    printf '%s\n' "$problem" | tail -n 2 | sed 's/^/  /'
+    echo "Building from source instead (several minutes; needs about 2 GB of memory)."
+    echo "For a private registry, sign in first (docker login ghcr.io) and run this again."
+    $COMPOSE up --build -d
+  fi
+}
 
 # ── Requirements ───────────────────────────────────────────────────────────
 
@@ -175,8 +234,8 @@ install_slave() {
     fi
   fi
 
-  echo "Building and starting the audio engine (the first build takes several minutes)..."
-  $COMPOSE up --build -d
+  configure_images
+  start_services
 
   if [ -n "$TOKEN" ]; then
     echo -n "Joining the master"
@@ -345,8 +404,8 @@ EOF
     rm -rf "$tmp"
   fi
 
-  echo "Building and starting the services (the first build takes several minutes)..."
-  $COMPOSE up --build -d
+  configure_images
+  start_services
 
   echo "Waiting for the gateway to become healthy..."
   local ready=false

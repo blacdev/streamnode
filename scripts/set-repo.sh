@@ -15,12 +15,17 @@ case "$url" in
 esac
 slug="${url#https://github.com/}"
 
-files="get.sh README.md docs/INSTALLATION.md"
-grep -q "OWNER/REPO" README.md || { echo "The repository address is already set (no OWNER/REPO placeholder left)." >&2; exit 1; }
+files="get.sh README.md docs/INSTALLATION.md CONTRIBUTING.md .env.example edge/.env.example"
+# Image names in a registry are lower-case.
+registry="ghcr.io/$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')"
+grep -q "OWNER/REPO" README.md .env.example || { echo "The repository address is already set (no OWNER/REPO placeholder left)." >&2; exit 1; }
 for file in $files; do
   sed -i -e "s|raw.githubusercontent.com/OWNER/REPO/main|raw.githubusercontent.com/$slug/$branch|g" \
+         -e "s|ghcr.io/OWNER/REPO|$registry|g" \
          -e "s|github.com/OWNER/REPO|github.com/$slug|g" "$file"
 done
 echo "Set to $url (branch $branch). The install command is now:"
 echo
 echo "  curl -fsSL https://raw.githubusercontent.com/$slug/$branch/get.sh | bash"
+echo
+echo "Prebuilt images will be published by CI to $registry/engine and $registry/admin."

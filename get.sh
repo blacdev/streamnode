@@ -82,8 +82,8 @@ if [ -n "$SUDO" ]; then
 fi
 
 memory_mb="$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null || echo 0)"
-if [ "$memory_mb" -ge 1800 ]; then ok "${memory_mb} MB memory"
-else warn "${memory_mb} MB memory: building the audio engine needs about 2 GB. Add swap if the build fails."; fi
+if [ "$memory_mb" -ge 900 ]; then ok "${memory_mb} MB memory"
+else warn "${memory_mb} MB memory is tight; 1 GB or more is recommended."; fi
 
 # ── Tools ──────────────────────────────────────────────────────────────────
 

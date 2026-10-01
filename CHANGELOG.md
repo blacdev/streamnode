@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] - 2026-10-01
+
+### Added
+
+- **Prebuilt images.** CI builds the engine and admin images for x86-64 and ARM and
+  publishes them to the GitHub container registry; the installer downloads them
+  instead of compiling on the server. A 1 GB server is now enough.
+- `--build-from-source` and `--image-tag` installer options; `INSTALL_FROM`,
+  `IMAGE_PREFIX` and `IMAGE_TAG` in `.env`.
+- Automatic fallback to building from source when the images cannot be downloaded.
+
+### Changed
+
+- Upgrading is `git pull && ./install.sh`, which downloads the newest images.
+
 ## [2.3.0] - 2026-10-01
 
 ### Added

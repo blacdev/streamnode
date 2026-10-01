@@ -4,6 +4,10 @@
 #   master                 HAProxy, dashboard/API, PostgreSQL, Redis
 #   slave                  the audio engine only, enrolled with a master
 #   master,local-engine    everything on one server ("both")
+#
+# The engine and admin images are published by CI (IMAGE_PREFIX, IMAGE_TAG in
+# .env) and normally just downloaded. Each service keeps its "build" section,
+# so "docker compose up --build" compiles from source instead.
 name: radio-gateway
 
 x-engine-tuning: &engine-tuning
@@ -53,6 +57,7 @@ services:
 
   admin_dashboard:
     profiles: ["master"]
+    image: ${IMAGE_PREFIX:-radio-gateway}/admin:${IMAGE_TAG:-latest}
     build: ./admin_src
     restart: always
     environment:
@@ -116,6 +121,7 @@ services:
   # the internal network.
   audio_engine:
     profiles: ["local-engine"]
+    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
     build: ./rust_src
     restart: always
     environment:
@@ -137,6 +143,7 @@ services:
   # result in its volume; the master's HAProxy then sends it listeners.
   slave_engine:
     profiles: ["slave"]
+    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
     build: ./rust_src
     restart: always
     environment:
