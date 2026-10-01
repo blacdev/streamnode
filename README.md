@@ -34,9 +34,10 @@ bandwidth figures.
 
 ## Quick start
 
-Requirements: a Linux server with Docker and Docker Compose, ports 80 and 443 open,
-and a DNS record (for example `stream.example.com`) pointing **directly** at the
-server.
+Requirements: a Linux server with Docker and Docker Compose and ports 80 and 443 open.
+A DNS record (for example `stream.example.com`) pointing **directly** at the server is
+recommended and needed for HTTPS; without one the gateway is reached by the server's
+IP address.
 
 On the server, run:
 

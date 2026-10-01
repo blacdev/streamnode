@@ -38,7 +38,7 @@ removing slave nodes never changes the address listeners use.
 | Disk | 10 GB plus statistics growth | 5 GB |
 | Inbound ports | 80 and 443 from everyone; 6380 from slave nodes | 3000 from the master only |
 | Outbound | To slave nodes (3000) and, for `both`, to station sources | To the master (443, 6380) and to station sources |
-| DNS | A hostname pointing **directly** at this server | None |
+| DNS | Optional: a hostname pointing **directly** at this server. Without one the server's IP address is used | None |
 
 Bandwidth: every listener's audio leaves through the master, so size the master's
 network link for the whole audience (listeners multiplied by bitrate). Slave nodes
@@ -114,6 +114,46 @@ less get.sh && bash get.sh
 The sections below describe what the installer does in each role. If you used the
 one-line install, the code is in `/opt/radio-gateway` and `./install.sh` there is the
 same installer.
+
+## Access by IP address
+
+The gateway answers on the server's IP address as well as on its domain, on every
+network interface, with no extra setup:
+
+| Reached as | Streams | Dashboard and API |
+|---|---|---|
+| `http://<server-ip>/...` | Yes | Yes, over plain HTTP |
+| `http://<domain>/...` | Yes | Redirected to HTTPS |
+| `https://<domain>/...` | Yes | Yes |
+
+When the dashboard is opened by IP address, the stream URLs it shows use that same
+address, so they work from wherever you are looking.
+
+### Installing without a domain
+
+A domain is optional. Leave it out (press Enter when asked, or omit `--domain`) and
+the gateway is set up for the server's IP address:
+
+```bash
+./install.sh --role both
+```
+
+It is then served over plain HTTP at `http://<server-ip>/`, which suits a local
+network, a lab, or a first look before DNS is arranged. Nothing is encrypted in this
+mode, the dashboard password included, so do not use it across the open internet.
+
+To add a domain and HTTPS later, run the installer again:
+
+```bash
+./install.sh --domain stream.example.com --tls letsencrypt --email you@example.com
+```
+
+Stations, accounts and statistics are kept. Slave nodes can join a master that has no
+domain: `scripts/add-server.sh` prints the command with the master's address in it,
+and each slave needs `--insecure`.
+
+If the server has a firewall of its own (ufw, firewalld), allow port 80 (and 443)
+from the networks that should reach it.
 
 ## Install on one server (both)
 

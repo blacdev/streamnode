@@ -145,3 +145,23 @@ test('per-station silence is reported per server', () => {
   assert.deepStrictEqual(silentServers('rock', nodes, byNode), []);
   assert.deepStrictEqual(silentServers('jazz', nodes, [null, undefined]), []);
 });
+
+test('URLs follow the request when the server is reached by IP address', () => {
+  const config = require('../src/config');
+  const { baseUrl } = require('../src/stations');
+  const req = (host, protocol = 'http') => ({ protocol, get: () => host });
+  const saved = config.publicBaseUrl;
+  try {
+    config.publicBaseUrl = 'https://stream.example.com';
+    assert.strictEqual(baseUrl(req('stream.example.com', 'https')), 'https://stream.example.com');
+    assert.strictEqual(baseUrl(req('other-name.example.com')), 'https://stream.example.com');
+    assert.strictEqual(baseUrl(req('192.168.1.20')), 'http://192.168.1.20');
+    assert.strictEqual(baseUrl(req('192.168.1.20:8080')), 'http://192.168.1.20:8080');
+    assert.strictEqual(baseUrl(req('localhost:8080')), 'http://localhost:8080');
+    config.publicBaseUrl = '';
+    assert.strictEqual(baseUrl(req('192.168.1.20')), 'http://192.168.1.20');
+    assert.strictEqual(baseUrl(req('stream.example.com', 'https')), 'https://stream.example.com');
+  } finally {
+    config.publicBaseUrl = saved;
+  }
+});

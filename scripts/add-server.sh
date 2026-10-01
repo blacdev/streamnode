@@ -28,8 +28,17 @@ answer="$($COMPOSE exec -T admin_dashboard wget -q -O - \
   --header "X-API-Key: $(get_env ADMIN_API_KEY)" --header "Content-Type: application/json" \
   --post-data "{\"note\": \"scripts/add-server.sh\", \"expires_minutes\": $MINUTES, \"max_uses\": $USES}" \
   http://127.0.0.1:8000/api/v1/cluster/join-tokens)" || { echo "Could not create a join token. Is the gateway running? ($COMPOSE ps)" >&2; exit 1; }
-command="$(printf '%s' "$answer" | sed -n 's/.*"install_command":"\([^"]*\)".*/\1/p')"
-[ -n "$command" ] || { echo "Unexpected answer from the API: $answer" >&2; exit 1; }
+token="$(printf '%s' "$answer" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+[ -n "$token" ] || { echo "Unexpected answer from the API: $answer" >&2; exit 1; }
+
+# The address slave nodes reach this master on: its public address if it has
+# one, otherwise its IP address and HTTP port.
+master="$(get_env PUBLIC_BASE_URL)"
+if [ -z "$master" ]; then
+  master="http://$(get_env DOMAIN)"
+  [ "$(get_env HTTP_PORT)" = 80 ] || master="$master:$(get_env HTTP_PORT)"
+fi
+command="./install.sh --role slave --master $master --token $token"
 
 echo "On the new server, in a copy of this project, run:"
 echo

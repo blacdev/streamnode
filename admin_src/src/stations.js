@@ -109,8 +109,15 @@ async function liveFor(slugs) {
   }));
 }
 
+// The origin to put in stream URLs and install commands. Normally the
+// configured public address. A request made to the server's IP address (the
+// local network, or a server without a domain) gets URLs on that same address,
+// so what the dashboard shows is reachable from where it is being viewed.
 function baseUrl(req) {
-  return config.publicBaseUrl || `${req.protocol}://${req.get('host')}`;
+  const host = req.get('host') || '';
+  const byAddress = /^(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\]|localhost)(:\d+)?$/i.test(host);
+  if (config.publicBaseUrl && !byAddress) return config.publicBaseUrl;
+  return `${req.protocol}://${host}`;
 }
 
 function present(row, live, req) {
