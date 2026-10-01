@@ -18,6 +18,12 @@ All notable changes to this project are recorded here. The format follows
   reinstall.
 - `--http-port` and `--https-port` installer options.
 
+### Changed
+
+- `--tls external` no longer creates a certificate or opens an HTTPS listener. An
+  internal certificate is created only for the Redis link, and only on a server that
+  takes slave nodes.
+
 ### Fixed
 
 - The installer now asks how HTTPS is provided on a fresh interactive install with a

@@ -51,6 +51,9 @@ every account is trusted.
 
 ### Network exposure
 
+- Docker opens published ports in the host firewall directly, bypassing `ufw` and
+  `firewalld` rules. Restrict access with your provider's firewall, or by setting the
+  `*_BIND` variables to a specific address.
 - Only HAProxy publishes ports. PostgreSQL, Redis, the engine and the admin service
   are reachable only on the private Docker network.
 - TLS 1.2 or newer. The dashboard and API redirect HTTP to HTTPS when requested by

@@ -56,9 +56,10 @@ case "$(get_env TLS_MODE)" in
     echo "This master still uses a self-signed certificate, so add --insecure to the"
     echo "command above (or install a real certificate first; see docs/INSTALLATION.md)." ;;
   external)
-    if [ -z "$(get_env CLUSTER_HOST)" ]; then
+    if [ -z "$(get_env CLUSTER_HOST)" ] || [ -z "$(get_env CLUSTER_CERT)" ]; then
       echo
-      echo "HTTPS for this domain is handled in front of this server, so slave nodes need"
-      echo "an address that reaches it directly: set CLUSTER_HOST in .env and run '$COMPOSE up -d' first."
+      echo "HTTPS for this domain is handled in front of this server, so slave nodes need an"
+      echo "address that reaches it directly. First run:"
+      echo "  ./install.sh --cluster-host <address of this server>"
     fi ;;
 esac
