@@ -1,0 +1,56 @@
+# An edge server: its own HAProxy and audio engine behind the SAME domain as
+# the main gateway. Add this server's public address as another DNS A record
+# and listeners are shared between the servers. See docs/SCALING.md.
+name: radio-gateway-edge
+
+services:
+  audio_engine:
+    build: ../rust_src
+    restart: always
+    environment:
+      # Redis on the master, over TLS (CLUSTER_PORT there). Append "#insecure"
+      # only while the master still uses a self-signed certificate.
+      REDIS_URL: ${REDIS_URL}
+      ENGINE_SECRET: ${ENGINE_SECRET}
+      NODE_ID: ${NODE_ID}
+      ALLOW_PRIVATE_SOURCES: ${ALLOW_PRIVATE_SOURCES:-false}
+      IDLE_GRACE_SECS: ${IDLE_GRACE_SECS:-10}
+      STALL_TIMEOUT_SECS: ${STALL_TIMEOUT_SECS:-10}
+      PRIMARY_RETRY_SECS: ${PRIMARY_RETRY_SECS:-30}
+      METADATA_POLL_SECS: ${METADATA_POLL_SECS:-10}
+      BURST_BYTES: ${BURST_BYTES:-65536}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks:
+      - edge_fabric
+
+  haproxy_edge:
+    image: haproxy:2.8-alpine
+    restart: always
+    user: root
+    environment:
+      GATEWAY_PRIVATE_HOST: ${GATEWAY_PRIVATE_HOST}
+      GATEWAY_RELAY_PORT: ${GATEWAY_RELAY_PORT:-8444}
+      ENGINE_SECRET: ${ENGINE_SECRET}
+      ENGINE_HOST: audio_engine
+      FORCE_HTTPS: ${FORCE_HTTPS:-true}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./certs:/etc/haproxy/certs:ro
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+    depends_on:
+      - audio_engine
+    networks:
+      - edge_fabric
+
+networks:
+  edge_fabric:
+    driver: bridge

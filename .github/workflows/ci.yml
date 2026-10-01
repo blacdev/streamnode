@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  engine:
+    name: Audio engine (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust_src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_src
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+
+  admin:
+    name: Management API (Node.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin_src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin_src/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  config:
+    name: Scripts and configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          for f in get.sh install.sh scripts/*.sh edge/sync-cert.sh; do bash -n "$f"; done
+      - name: ShellCheck
+        run: shellcheck --severity=error get.sh install.sh scripts/*.sh edge/sync-cert.sh
+      - name: Compose files, every role
+        run: |
+          for profiles in master slave master,local-engine; do
+            COMPOSE_PROFILES=$profiles docker compose --env-file .env.example config -q
+          done
+          docker compose --env-file .env.example --profile master --profile local-engine \
+            -f docker-compose.yml -f docker-compose.demo.yml config -q
+          (cd edge && docker compose --env-file .env.example config -q)
+      - name: HAProxy configuration
+        run: |
+          mkdir -p ci-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=ci" -keyout ci-certs/key.pem -out ci-certs/cert.pem
+          cat ci-certs/cert.pem ci-certs/key.pem > ci-certs/stream.pem
+          docker run --rm -e ENGINE_SECRET=ci -e TLS_MODE=selfsigned -e FORCE_HTTPS=true \
+            -v "$PWD/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$PWD/ci-certs:/etc/haproxy/certs:ro" \
+            haproxy:2.8-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+          docker run --rm -e ENGINE_SECRET=ci -e ENGINE_HOST=127.0.0.1 -e GATEWAY_PRIVATE_HOST=127.0.0.1 -e GATEWAY_RELAY_PORT=8444 -e FORCE_HTTPS=true \
+            -v "$PWD/edge/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$PWD/ci-certs:/etc/haproxy/certs:ro" \
+            haproxy:2.8-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+  images:
+    name: Docker images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t radio-gateway-engine rust_src
+      - run: docker build -t radio-gateway-admin admin_src
+      - run: docker build -t radio-gateway-demo demo

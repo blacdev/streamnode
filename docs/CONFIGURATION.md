@@ -1,0 +1,155 @@
+# Configuration
+
+All settings live in `.env` next to `docker-compose.yml`. The tables below describe a master or single-server install unless they say otherwise. After changing it, apply
+with:
+
+```bash
+docker compose up -d
+```
+
+Only the services whose settings changed are restarted.
+
+## General
+
+| Variable | Default | Description |
+|---|---|---|
+| `DOMAIN` | none | Public hostname. Used by the installer for the certificate and by `scripts/letsencrypt.sh` |
+| `PUBLIC_BASE_URL` | derived from each request | Origin placed in `stream_url` and `playlist_urls` in API responses, e.g. `https://stream.example.com`. Set it when another proxy sits in front |
+| `TLS_MODE` | set by the installer | Where the domain's certificate comes from: `letsencrypt`, `provided`, `external` (HTTPS handled in front of this server) or `selfsigned`. See [Certificates](INSTALLATION.md#certificates) |
+| `HTTP_PORT` | `80` | Host port for plain HTTP |
+| `HTTPS_PORT` | `443` | Host port for HTTPS |
+
+## Credentials
+
+| Variable | Default | Description |
+|---|---|---|
+| `POSTGRES_USER` | `gateway` | Database user (internal network only) |
+| `POSTGRES_PASSWORD` | generated | Database password. **Changing it after the first start does not change the password inside an existing database**; see [Operations](OPERATIONS.md#rotating-credentials) |
+| `POSTGRES_DB` | `gateway_management` | Database name |
+| `REDIS_PASSWORD` | generated | Redis password, used by the master's own services and given to slave nodes when they join |
+| `ADMIN_USERNAME` | `admin` | Operator account for the dashboard |
+| `ADMIN_PASSWORD` | generated | Operator password. Re-applied from `.env` on every start, so edit it here to change it |
+| `ADMIN_API_KEY` | generated | Administrator API key for integrations. Must start with `rgw_` and be at least 36 characters. Re-applied on every start; changing it revokes the previous value |
+
+## API access from browsers
+
+| Variable | Default | Description |
+|---|---|---|
+| `CORS_ORIGINS` | empty | Browser origins allowed to call the authenticated API: a comma-separated list such as `https://panel.example.com`, or `*`. Leave empty when only servers call the API. The public now-playing endpoint and the streams always allow any origin |
+
+## Accounts
+
+| Variable | Default | Description |
+|---|---|---|
+| `DEFAULT_MAX_STATIONS` | `5` | How many stations a new tenant account may create and manage. Change it per account from the dashboard (Accounts > Station limit) or with `PATCH /users/{id}`. `0` means only administrators create stations |
+
+## Roles and slave nodes
+
+See [Installation](INSTALLATION.md) and [Adding servers](SCALING.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ROLE` | set by the installer | `both`, `master` or `slave`. Recorded so re-running the installer keeps the role |
+| `COMPOSE_PROFILES` | set by the installer | Which services start: `master`, `master,local-engine` (both) or `slave` |
+| `LOCAL_ENGINE` | `audio_engine:3000` for `both`, empty for `master` | The engine on the master itself |
+| `ENGINE_SECRET` | generated | Secret HAProxy sends to every engine. Engines refuse requests without it. Slave nodes receive it when they join |
+| `CLUSTER_BIND` | `0.0.0.0` for `master`, `127.0.0.1` for `both` | Address on which Redis-over-TLS is published for slave nodes. Set to `0.0.0.0` on a `both` install before adding slaves |
+| `CLUSTER_PORT` | `6380` | Port for the above |
+| `CLUSTER_HOST` | empty | Address slave nodes use to reach the master directly. Needed when the domain points at a proxy in front of the master; otherwise slaves use the domain |
+| `RELAY_BIND` | `127.0.0.1` | Private address for the relay port used by optional edge servers |
+| `RELAY_PORT` | `8444` | Port for the above |
+| `FORCE_HTTPS` | `true` | `false` also serves the dashboard and API over plain HTTP. For local testing only |
+
+### A slave node's `.env`
+
+Written by `./install.sh --role slave`.
+
+| Variable | Description |
+|---|---|
+| `ROLE`, `COMPOSE_PROFILES` | `slave` |
+| `NODE_ID` | The server's name on the master (`--name`). Must be unique |
+| `MASTER_URL` | The master's address (`--master`) |
+| `JOIN_TOKEN` | One-time token (`--token`). The installer clears it after joining |
+| `NODE_SETUP_KEY` | Lets an administrator finish the setup from the master's dashboard |
+| `ADVERTISE_ADDRESS` | Address the master should use to reach this server (`--advertise`). Empty: the address the join request comes from |
+| `ENGINE_PORT` | Port the engine listens on. Default 3000 |
+| `ENGINE_BIND` | Address the port is published on. Default `0.0.0.0`; set to a private address to restrict it |
+| `ALLOW_INSECURE_TLS` | `true` accepts a master with a self-signed certificate (`--insecure`) |
+
+A slave follows the master's `ALLOW_PRIVATE_SOURCES` setting. The engine tuning
+variables below may be added to a slave's `.env` to override the defaults there.
+
+## Sources
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALLOW_PRIVATE_SOURCES` | `false` | Allow station URLs on private, loopback and link-local addresses. Needed only for development or encoders on the same private network. Leave `false` on a multi-tenant gateway |
+
+## Engine behaviour
+
+| Variable | Default | Description |
+|---|---|---|
+| `IDLE_GRACE_SECS` | `10` | How long the gateway stays connected to a source after its last listener leaves |
+| `STALL_TIMEOUT_SECS` | `10` | A source that sends nothing for this long is treated as failed |
+| `PRIMARY_RETRY_SECS` | `30` | While on the backup, how often the primary is probed |
+| `METADATA_POLL_SECS` | `10` | How often a station's title and artwork URL is fetched while it has listeners |
+| `STATION_FAIL_ROUNDS` | `3` | Failed attempts on a station's sources (primary and backup together count as one) after which a server gives up on that station, releasing its listeners and resources |
+| `STATION_RETRY_SECS` | `30` | How long the server then refuses that station before trying its sources again |
+| `BURST_BYTES` | `65536` | Recent audio sent to a new listener at once so playback starts immediately. Larger values start faster on high-bitrate streams and add delay on low-bitrate ones (64 KB is about 4 s at 128 kbps, 16 s at 32 kbps) |
+
+The following are read by the engine but not listed in `.env.example`; add them to the
+`audio_engine` service in `docker-compose.yml` if you need them.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONNECT_TIMEOUT_SECS` | `5` | TCP/TLS connect timeout to a source |
+| `READY_TIMEOUT_SECS` | `15` | How long a new listener waits for a source before receiving an error |
+| `CONFIG_REFRESH_SECS` | `5` | How quickly a running relay notices edits, suspension or deletion |
+| `STATS_FLUSH_SECS` | `2` | How often counters and live state are written to Redis |
+| `UPSTREAM_USER_AGENT` | `RadioGateway/1.0` | User-Agent presented to sources |
+| `RUST_LOG` | `info` | Log level: `error`, `warn`, `info`, `debug` |
+| `NODE_ID` | `local` on the master | Name this engine reports under and joins with |
+| `DISK_PATH` | `/` | Filesystem whose free space is reported as the server's disk |
+
+## Statistics
+
+| Variable | Default | Description |
+|---|---|---|
+| `STATS_MINUTE_RETENTION_DAYS` | `90` | How long minute- and hour-resolution history is kept. Daily totals are permanent |
+
+Also read by the admin service (add under `admin_dashboard` in `docker-compose.yml`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `STATS_FLUSH_SECS` | `60` | How often counters are moved from Redis to PostgreSQL |
+| `STATION_SYNC_SECS` | `300` | How often every station profile is republished to Redis |
+| `SESSION_TTL_SECS` | `43200` | Dashboard session lifetime |
+| `AUDIT_RETENTION_DAYS` | `365` | How long audit log entries are kept |
+| `HAPROXY_ADMIN` | `haproxy_edge:9999` | HAProxy runtime API used to manage streaming servers. Empty switches server management off |
+| `HAPROXY_SYNC_SECS` | `5` | How often the server list is re-applied to HAProxy |
+| `JOIN_TOKEN_MINUTES` | `60` | Default lifetime of a join token |
+| `CAPACITY_WARNING_PERCENT` | `75` | CPU, memory or disk use at which a server is flagged as high |
+| `CAPACITY_CRITICAL_PERCENT` | `90` | Level at which it is flagged as critical and another server is recommended |
+
+## Let's Encrypt
+
+| Variable | Default | Description |
+|---|---|---|
+| `LETSENCRYPT_EMAIL` | empty | Contact address for expiry notices. Required by `scripts/letsencrypt.sh issue` |
+
+## HAProxy
+
+Edge behaviour is set in `haproxy.cfg`. The values most likely to need changing:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `maxconn` | `50000` | Maximum simultaneous connections |
+| `timeout client` / `timeout server` | `60s` | A listener that stops reading, or a stream with no audio, is closed after this long |
+| `sc_http_req_rate(0) gt 300` | 300 requests per 10 s | API rate limit per client address |
+| `ssl-min-ver` | `TLSv1.2` | Lowest TLS version accepted |
+
+Reload after editing, without disconnecting listeners:
+
+```bash
+docker compose kill -s HUP haproxy_edge
+```

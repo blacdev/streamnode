@@ -1,0 +1,20 @@
+{
+  "name": "gateway_admin",
+  "version": "1.0.0",
+  "description": "Management API, dashboard and metrics persistence for the radio gateway.",
+  "main": "server.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "redis": "^4.7.0",
+    "swagger-ui-dist": "^5.18.2"
+  }
+}

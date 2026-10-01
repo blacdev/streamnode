@@ -1,0 +1,349 @@
+# Installation
+
+The gateway is one codebase installed in one of three **roles**. The installer asks
+which, or takes `--role`.
+
+| Role | Runs | Choose it when |
+|---|---|---|
+| **both** | Everything on one server | One server is all you need. You can add slave nodes later |
+| **master** | HAProxy, dashboard, API, PostgreSQL, Redis | You want a dedicated entry point and will relay audio on other servers |
+| **slave** | The audio engine only | You are adding capacity to an existing master |
+
+Listeners always connect to the master's domain. The master's HAProxy hands each
+listener to an engine, on the same server (`both`) or on a slave node. Adding or
+removing slave nodes never changes the address listeners use.
+
+```
+                 listeners  ->  stream.example.com
+                                      |
+                          +-----------------------+
+                          |        MASTER         |
+                          |  HAProxy              |
+                          |  dashboard and API    |
+                          |  PostgreSQL, Redis    |
+                          +-----------------------+
+                           /          |          \
+                   +---------+   +---------+   +---------+
+                   | SLAVE 1 |   | SLAVE 2 |   | SLAVE 3 |   audio engines
+                   +---------+   +---------+   +---------+
+```
+
+## Requirements
+
+| Item | Master / both | Slave |
+|---|---|---|
+| Operating system | 64-bit Linux that runs Docker | Same |
+| Software | Docker Engine 23+ with the Compose plugin, `openssl` | Docker Engine 23+ with the Compose plugin |
+| CPU and memory | 2 cores, 2 GB (building the engine image needs about 2 GB free) | 2 cores, 2 GB |
+| Disk | 10 GB plus statistics growth | 5 GB |
+| Inbound ports | 80 and 443 from everyone; 6380 from slave nodes | 3000 from the master only |
+| Outbound | To slave nodes (3000) and, for `both`, to station sources | To the master (443, 6380) and to station sources |
+| DNS | A hostname pointing **directly** at this server | None |
+
+Bandwidth: every listener's audio leaves through the master, so size the master's
+network link for the whole audience (listeners multiplied by bitrate). Slave nodes
+need the same throughput for their share.
+
+### DNS: do not proxy the hostname
+
+Point the hostname straight at the master's IP address. If the domain is on
+Cloudflare, set the record to **DNS only** (grey cloud). Caching proxies buffer
+responses and cut long-lived connections, which breaks continuous audio.
+
+## Try it locally first
+
+```bash
+./scripts/try-local.sh
+```
+
+Starts a master with its own engine, a demo station and a slave node that joins it,
+on `http://localhost:8080`, and prints what to try. See `./scripts/try-local.sh help`.
+
+## One-line install
+
+On a fresh server, this is all that is needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
+```
+
+`get.sh` prepares the server and then hands over to the installer described in the
+rest of this guide. It:
+
+1. checks the operating system, processor, memory and whether ports 80, 443 and 3000
+   are free;
+2. installs `git`, `curl` and `openssl` if missing, and offers to install Docker with
+   Docker's official script if it is not there (it asks first);
+3. makes sure Docker and the Compose plugin are running;
+4. downloads the code to `/opt/radio-gateway`;
+5. starts `install.sh`, which asks for the role and everything else.
+
+It needs root or `sudo`. Options go after `bash -s --`; anything it does not recognise
+is passed to the installer, so the whole setup can be given on one line:
+
+```bash
+# a slave node, joining a master
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- \
+  --role slave --master https://stream.example.com --token rgj_...
+
+# a single server with a Let's Encrypt certificate, no questions asked
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --yes \
+  --role both --domain stream.example.com --tls letsencrypt --email you@example.com
+```
+
+| Option | Meaning |
+|---|---|
+| `--dir PATH` | Where to put the code. Default `/opt/radio-gateway` |
+| `--branch NAME` | Branch or tag to install. Default: the repository's default branch |
+| `--repo URL` | Install from another repository (a fork or a mirror) |
+| `--yes` | Do not ask before installing Docker or other missing tools |
+
+Running the same command again later updates the code and re-runs the installer,
+keeping settings and data. For a private repository, the server needs access to it
+(a deploy key or credentials) and the script must be fetched with a token, or copied
+to the server by other means.
+
+Prefer to read a script before running it? Download it first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh -o get.sh
+less get.sh && bash get.sh
+```
+
+The sections below describe what the installer does in each role. If you used the
+one-line install, the code is in `/opt/radio-gateway` and `./install.sh` there is the
+same installer.
+
+## Install on one server (both)
+
+```bash
+git clone https://github.com/blacdev/streamnode.git radio-gateway
+cd radio-gateway
+./install.sh --role both --domain stream.example.com
+```
+
+Run it as root or as a user in the `docker` group. The script:
+
+1. Creates `.env` with a random database password, Redis password, engine secret,
+   dashboard password and administrator API key. An existing `.env` is kept.
+2. Asks how HTTPS for the domain is provided ([Certificates](#certificates)) and sets
+   the certificate up accordingly.
+3. Builds the images and starts the services. The first build compiles the engine and
+   takes several minutes.
+4. Waits for the API to report healthy and prints the dashboard address and, on a
+   first install, the generated credentials.
+
+## Install a master and slave nodes
+
+### 1. The master
+
+```bash
+./install.sh --role master --domain stream.example.com --tls letsencrypt --email you@example.com
+```
+
+A master relays no audio by itself, so the installer finishes by printing the command
+for your first slave node. Give the master a real certificate, or put it behind
+something that has one ([Certificates](#certificates)), before adding slaves;
+otherwise every slave must be installed with `--insecure`.
+
+Open TCP **6380** on the master to your slave nodes. It carries Redis, encrypted with
+the master's certificate and protected by the Redis password.
+
+### 2. A slave node
+
+Get the project onto the new server (the one-line install above does this, or
+`git clone`). There are two ways to connect it; both end with
+the server listed under **Servers** and receiving listeners within seconds.
+
+**Option 1: one command (the slave joins by itself).** On the master, create the
+command from the dashboard (**Servers > Add server > Create install command**) or
+with:
+
+```bash
+./scripts/add-server.sh
+```
+
+It prints something like:
+
+```bash
+./install.sh --role slave --master https://stream.example.com --token rgj_4be1a09c...
+```
+
+Run that on the new server. The token works once and expires after an hour.
+
+**Option 2: finish from the master.** Install the slave without a master:
+
+```bash
+./install.sh --role slave
+```
+
+It prints the server's address, engine port and a **setup key**. On the master's
+dashboard open **Servers > Add server**, enter those three values and press
+**Connect server**. The master contacts the slave, completes its setup and adds it.
+
+Slave options:
+
+| Option | Purpose |
+|---|---|
+| `--name NAME` | Name shown on the master. Defaults to the server's hostname. Must be unique |
+| `--advertise ADDRESS` | Address the master uses to reach this slave. Defaults to the address the join request comes from. Set it to the slave's **private** address when both servers share a private network |
+| `--engine-port PORT` | Port the engine listens on. Default 3000 |
+| `--insecure` | Accept a master whose certificate cannot be verified (self-signed). For testing |
+
+Open TCP **3000** on the slave to the master only. Listeners never connect to a slave
+directly, and the engine refuses requests that do not carry the master's secret.
+
+### Growing from one server
+
+A `both` install can take slave nodes too. On it, set `CLUSTER_BIND=0.0.0.0` in
+`.env`, run `docker compose up -d`, open port 6380 to the new servers, then add slaves
+as above. See [Adding servers](SCALING.md).
+
+## Certificates
+
+The domain's certificate can come from four places. Choose with `--tls`; without it
+the installer asks. Only the master (or single server) is involved: slave nodes need
+no certificate.
+
+| `--tls` | Meaning |
+|---|---|
+| `letsencrypt` | The gateway obtains a free certificate and renews it |
+| `provided` | You supply certificate files from any authority |
+| `external` | HTTPS is handled somewhere else, in front of this server |
+| `selfsigned` | A temporary certificate, for testing |
+
+The choice is stored as `TLS_MODE` in `.env`. To change it later, re-run the installer
+with a different `--tls`.
+
+### Let's Encrypt
+
+```bash
+./install.sh --role both --domain stream.example.com --tls letsencrypt --email you@example.com
+```
+
+The hostname must already resolve to the server and port 80 must be reachable.
+HAProxy forwards the validation request to a short-lived certbot container; nothing
+is stopped and listeners are not interrupted.
+
+Renewal is a daily cron entry, which the script prints for you:
+
+```
+17 3 * * * /path/to/radio-gateway/scripts/letsencrypt.sh renew >> /path/to/radio-gateway/letsencrypt.log 2>&1
+```
+
+### Your own certificate
+
+```bash
+./install.sh --role both --domain stream.example.com --tls provided \
+  --cert /path/fullchain.pem --key /path/privkey.pem
+```
+
+`--cert` is the full chain; `--key` may be left out if the key is in the same file.
+The installer checks the files and writes `certs/stream.pem` (chain followed by key),
+which is the one file HAProxy reads. To replace it later, re-run the same command
+with the new files, or:
+
+```bash
+cat fullchain.pem privkey.pem > certs/stream.pem
+chmod 600 certs/stream.pem
+docker compose kill -s HUP haproxy_edge     # reload without dropping listeners
+```
+
+### HTTPS handled elsewhere
+
+Use this when a load balancer, reverse proxy or your hosting provider terminates
+HTTPS for the domain and passes plain HTTP to this server.
+
+```bash
+./install.sh --role both --domain stream.example.com --tls external
+```
+
+The gateway then accepts the dashboard and API over plain HTTP without redirecting,
+treats those requests as HTTPS (so stream URLs and links are `https://`), and takes
+each client's address from the `X-Forwarded-For` header your proxy adds.
+
+What the thing in front must do:
+
+- Forward to this server's port 80 over HTTP, and add `X-Forwarded-For`.
+- **Not buffer** responses, and allow connections that last for hours. A proxy that
+  buffers or cuts long connections breaks continuous audio.
+- Ideally also pass plain HTTP on port 80 for listeners that cannot use HTTPS.
+
+Because the gateway trusts `X-Forwarded-For` in this mode, allow port 80 only from
+the proxy; otherwise anyone connecting directly could claim any address.
+
+With slave nodes, the domain now points at the proxy rather than at the master, so
+tell slaves how to reach the master directly:
+
+```bash
+./install.sh --role master --domain stream.example.com --tls external --cluster-host 203.0.113.10
+```
+
+Slaves still join through `https://stream.example.com` and then connect to
+`203.0.113.10:6380` for Redis. That connection is encrypted, but its certificate
+cannot be checked against a name, since the real certificate lives elsewhere; see
+[Security](SECURITY.md#between-master-and-slave-nodes).
+
+### Self-signed
+
+The default when the installer cannot ask. Browsers and most players reject it, and
+slave nodes join only with `--insecure`. Plain-HTTP stream URLs work regardless.
+
+## Verify the installation
+
+```bash
+docker compose ps                                  # every service "running" / "healthy"
+curl -s https://stream.example.com/api/v1/health   # {"status":"ok",...}
+```
+
+Sign in at `https://stream.example.com/admin/`, check that **Servers** lists at least
+one healthy server, add a station and open its stream URL in a player.
+
+## Sharing ports 80 and 443 with another web server
+
+If another web server already uses ports 80 and 443 on this machine, publish the
+gateway on other ports (`HTTP_PORT=8080`, `HTTPS_PORT=8443` in `.env`), let that web
+server keep the certificate, and install with `--tls external`. With nginx in front,
+for example:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+## Changing a server's role
+
+| From | To | Steps |
+|---|---|---|
+| both | master | Add at least one slave first. Then in `.env` set `ROLE=master`, `COMPOSE_PROFILES=master`, `LOCAL_ENGINE=` (empty) and `CLUSTER_BIND=0.0.0.0`, and run `docker compose up -d --remove-orphans`. The local engine stops; its listeners reconnect to the slaves |
+| master | both | In `.env` set `ROLE=both`, `COMPOSE_PROFILES=master,local-engine` and `LOCAL_ENGINE=audio_engine:3000`, then `docker compose up --build -d` |
+| slave | anything else | Remove it on the master (Servers > Remove), run `docker compose down -v` on it, delete its `.env`, and install again in the new role |
+
+## Upgrading
+
+Upgrade the master first, then each slave:
+
+```bash
+./scripts/backup.sh          # on the master: always back up first
+git pull
+docker compose up --build -d
+```
+
+Database migrations are applied automatically when the admin service starts.
+Restarting an engine disconnects its listeners; players reconnect within a few
+seconds and are placed on another server. To upgrade a slave without cutting anyone
+off, drain it first (Servers > Drain) and wait for its listeners to reach zero.
+
+## Uninstalling
+
+```bash
+docker compose down          # stop and remove containers; data volumes are kept
+docker compose down -v       # also delete all data on this server
+```
+
+On a slave, remove it from the master's Servers list as well.

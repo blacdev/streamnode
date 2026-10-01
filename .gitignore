@@ -1,0 +1,19 @@
+# Settings and secrets written by the installers
+.env
+.env.local
+edge/.env
+
+# Certificates and keys
+certs/*
+!certs/.gitkeep
+edge/certs/*
+!edge/certs/.gitkeep
+*.pem
+
+# Build output and dependencies
+node_modules/
+rust_src/target/
+
+# Runtime output
+backups/
+*.log

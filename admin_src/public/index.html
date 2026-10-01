@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Radio Gateway</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <section id="login" class="login" hidden>
+    <form id="loginForm" class="card">
+      <h1>Radio Gateway</h1>
+      <p class="muted">Sign in to manage stations.</p>
+      <label>Username <input name="username" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" class="error" role="alert"></p>
+      <button class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header class="top">
+      <strong>Radio Gateway</strong>
+      <nav id="tabs" role="tablist">
+        <button role="tab" data-tab="stations" aria-selected="true">Stations</button>
+        <button role="tab" data-tab="keys">API keys</button>
+        <button role="tab" data-tab="users" data-admin>Accounts</button>
+        <button role="tab" data-tab="servers" data-admin>Servers</button>
+        <a href="/api/v1/docs" target="_blank" rel="noopener">API docs ↗</a>
+      </nav>
+      <span class="who"><span id="whoami"></span> <button id="logout" class="link">Sign out</button></span>
+    </header>
+
+    <main>
+      <section id="tab-stations">
+        <div id="tiles" class="tiles"></div>
+        <div class="bar">
+          <h2>Stations</h2>
+          <span id="quota" class="muted"></span>
+          <input id="search" type="search" placeholder="Search name or slug" aria-label="Search stations">
+          <button id="newStation" class="primary">Add station</button>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Station</th><th>Status</th><th class="num">Listeners</th><th>Now playing</th><th>Stream URL</th><th></th></tr></thead>
+            <tbody id="stationRows"></tbody>
+          </table>
+        </div>
+        <p id="stationsEmpty" class="muted empty" hidden>No stations yet. Add one to start relaying.</p>
+      </section>
+
+      <section id="tab-keys" hidden>
+        <div class="bar"><h2>API keys</h2>
+          <form id="keyForm" class="inline"><input name="name" placeholder="Key name, e.g. billing module" maxlength="50" required aria-label="Key name"><button class="primary">Create key</button></form>
+        </div>
+        <p id="newKey" class="notice" hidden></p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Name</th><th>Key</th><th>Account</th><th>Last used</th><th>Created</th><th></th></tr></thead>
+          <tbody id="keyRows"></tbody>
+        </table></div>
+      </section>
+
+      <section id="tab-users" hidden>
+        <div class="bar"><h2>Accounts</h2>
+          <form id="userForm" class="inline">
+            <input name="username" placeholder="Username" required aria-label="Username" autocomplete="off">
+            <input name="password" type="password" placeholder="Password (optional)" aria-label="Password" autocomplete="new-password">
+            <input name="external_id" placeholder="External ID (optional)" aria-label="External ID">
+            <input name="max_stations" type="number" min="0" placeholder="Station limit" aria-label="Station limit" class="short">
+            <button class="primary">Add account</button>
+          </form>
+        </div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Username</th><th>Role</th><th>External ID</th><th class="num">Stations</th><th>Status</th><th></th></tr></thead>
+          <tbody id="userRows"></tbody>
+        </table></div>
+      </section>
+
+      <section id="tab-servers" hidden>
+        <div class="bar"><h2>Servers</h2>
+          <button id="addServer" class="primary">Add server</button>
+        </div>
+        <p class="muted">Each server here runs the audio engine. New listeners go to the one with the fewest listeners, in proportion to its weight. The domain listeners use never changes.</p>
+        <p id="capacityNotice" class="notice" hidden></p>
+        <p id="serversUnmanaged" class="notice" hidden>Server management is switched off (HAPROXY_ADMIN is not set), so changes here are saved but not applied.</p>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Server</th><th>Address</th><th>State</th><th class="num">Listeners</th><th>CPU</th><th>Memory</th><th>Disk</th><th class="num">Sending</th><th class="num">Weight</th><th></th></tr></thead>
+          <tbody id="serverRows"></tbody>
+        </table></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="stationDialog">
+    <form id="stationForm" method="dialog">
+      <h2 id="stationDialogTitle">Add station</h2>
+      <label>Station name <input name="name" maxlength="100" required></label>
+      <label>Slug <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" required>
+        <small>The public path of the stream: /slug</small></label>
+      <label>Primary stream URL <input name="primary_url" type="url" required placeholder="https://encoder.example.com/live"></label>
+      <label>Backup stream URL <input name="backup_url" type="url" placeholder="Optional">
+        <small>Used when the primary is unreachable, drops or stalls.</small></label>
+      <label>Title &amp; artwork URL <input name="metadata_url" type="url" placeholder="Optional">
+        <small>A JSON or text endpoint with the current title, artist and artwork. Leave empty to use titles from the stream.</small></label>
+      <label>Station artwork URL <input name="artwork_url" type="url" placeholder="Optional"></label>
+      <label data-admin>Listener limit <input name="max_listeners" type="number" min="0" value="0">
+        <small>0 for unlimited.</small></label>
+      <p id="stationError" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" value="cancel" id="stationCancel">Cancel</button>
+        <button class="primary" value="save">Save station</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="serverDialog">
+    <h2>Add a server</h2>
+    <p class="muted">Install the gateway on the new server as a <strong>slave node</strong>, then connect it either way.</p>
+
+    <h3>Option 1: run one command on the new server</h3>
+    <p>The command installs the engine and joins this master by itself.</p>
+    <button id="makeJoinCommand">Create install command</button>
+    <div id="joinCommand" class="notice" hidden>
+      <code id="joinCommandText"></code>
+      <small id="joinCommandNote"></small>
+    </div>
+
+    <h3>Option 2: the slave is already installed</h3>
+    <p>Enter the address and setup key its installer printed.</p>
+    <form id="serverForm">
+      <label>Server address <input name="host" required placeholder="203.0.113.20 or slave1.example.com"></label>
+      <label>Engine port <input name="port" type="number" min="1" max="65535" value="3000"></label>
+      <label>Setup key <input name="setup_key" required autocomplete="off" placeholder="rgn_…"></label>
+      <p id="serverError" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="serverCancel">Close</button>
+        <button class="primary">Connect server</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="detailDialog" class="wide">
+    <div class="bar">
+      <h2 id="detailTitle"></h2>
+      <div id="rangeButtons" class="seg" role="group" aria-label="Time range">
+        <button data-hours="24" aria-pressed="true">24 hours</button>
+        <button data-hours="168">7 days</button>
+        <button data-hours="720">30 days</button>
+      </div>
+      <button id="detailClose" aria-label="Close">Close</button>
+    </div>
+    <div id="detailTiles" class="tiles"></div>
+    <h3>Peak listeners</h3>
+    <div id="chartListeners" class="chart"></div>
+    <h3>Data sent to listeners</h3>
+    <div id="chartBytes" class="chart"></div>
+    <details><summary>View as table</summary><div class="tablewrap"><table id="detailTable"></table></div></details>
+    <h3>Listen</h3>
+    <div id="detailLinks" class="links"></div>
+  </dialog>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

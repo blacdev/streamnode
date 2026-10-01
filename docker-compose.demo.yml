@@ -1,0 +1,74 @@
+# Extras for local testing only (scripts/try-local.sh):
+#   demo_source     a fake radio station to relay
+#   demo_slave      a slave node ("edge-2") that joins the master with a token,
+#                   exactly as a second server would
+#   edge_engine_3 / edge_haproxy_3
+#                   an optional edge server ("edge-3") with its own HAProxy
+services:
+  demo_source:
+    build: ./demo
+    restart: unless-stopped
+    networks:
+      - dynamic_gateway_fabric
+
+  demo_slave:
+    build: ./rust_src
+    restart: unless-stopped
+    environment:
+      NODE_ID: edge-2
+      MASTER_URL: http://haproxy_edge
+      JOIN_TOKEN: ${DEMO_JOIN_TOKEN:-}
+      # The master finds this container by name on the test network.
+      ADVERTISE_ADDRESS: demo_slave
+      # The local master uses a self-signed certificate.
+      ALLOW_INSECURE_TLS: "true"
+      IDLE_GRACE_SECS: ${IDLE_GRACE_SECS:-10}
+      STALL_TIMEOUT_SECS: ${STALL_TIMEOUT_SECS:-10}
+      PRIMARY_RETRY_SECS: ${PRIMARY_RETRY_SECS:-30}
+    volumes:
+      - demo_slave_data:/data
+    networks:
+      - dynamic_gateway_fabric
+
+  edge_engine_3:
+    build: ./rust_src
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis_cache:6379
+      ENGINE_SECRET: ${ENGINE_SECRET}
+      NODE_ID: edge-3
+      ALLOW_PRIVATE_SOURCES: ${ALLOW_PRIVATE_SOURCES:-false}
+      IDLE_GRACE_SECS: ${IDLE_GRACE_SECS:-10}
+      STALL_TIMEOUT_SECS: ${STALL_TIMEOUT_SECS:-10}
+      PRIMARY_RETRY_SECS: ${PRIMARY_RETRY_SECS:-30}
+    depends_on:
+      redis_cache:
+        condition: service_healthy
+    networks:
+      - dynamic_gateway_fabric
+
+  # In production this runs on another machine that has its own DNS record
+  # for the same domain. Here it is simply reachable on a different port.
+  edge_haproxy_3:
+    image: haproxy:2.8-alpine
+    restart: unless-stopped
+    user: root
+    environment:
+      GATEWAY_PRIVATE_HOST: haproxy_edge
+      GATEWAY_RELAY_PORT: 8444
+      ENGINE_HOST: edge_engine_3
+      ENGINE_SECRET: ${ENGINE_SECRET}
+      FORCE_HTTPS: ${FORCE_HTTPS:-true}
+    ports:
+      - "${EDGE_HTTP_PORT:-8090}:80"
+    volumes:
+      - ./edge/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./certs:/etc/haproxy/certs:ro
+    depends_on:
+      - edge_engine_3
+      - haproxy_edge
+    networks:
+      - dynamic_gateway_fabric
+
+volumes:
+  demo_slave_data:
