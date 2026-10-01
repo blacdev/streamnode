@@ -95,6 +95,8 @@ services:
     environment:
       ENGINE_SECRET: ${ENGINE_SECRET:-}
       TLS_MODE: ${TLS_MODE:-selfsigned}
+      # The dashboard and API are redirected to HTTPS when asked for by this name.
+      DOMAIN: ${DOMAIN:-}
       # false serves the dashboard and API over plain HTTP too (local testing only).
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
     ports:

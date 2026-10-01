@@ -10,6 +10,7 @@
 #   ./install.sh                                          asks which role, then for what it needs
 #   ./install.sh --role both   --domain stream.example.com --tls letsencrypt --email you@example.com
 #   ./install.sh --role master --domain stream.example.com --tls provided --cert fullchain.pem --key privkey.pem
+#   ./install.sh --role both                              no domain: reached by this server's IP address
 #   ./install.sh --role slave  --master https://stream.example.com --token rgj_...
 #   ./install.sh --role slave                             installs and waits; finish from the master's dashboard
 #
@@ -43,7 +44,7 @@ ROLE="" DOMAIN="" EMAIL="" TLS="" CERT="" KEY="" CLUSTER_HOST=""
 MASTER="" TOKEN="" NAME="" ADVERTISE="" ENGINE_PORT="" INSECURE=false
 FROM_SOURCE=false IMAGE_TAG_ARG=""
 
-usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; }
 fail() { echo "Error: $*" >&2; exit 1; }
 need_value() { [ $# -ge 2 ] || fail "$1 needs a value."; }
 
@@ -84,6 +85,16 @@ set_env() { # set_env KEY VALUE: add or replace one line in .env
   cat "$tmp" > .env && rm -f "$tmp"
 }
 ensure_env() { [ -n "$(get_env "$1")" ] || set_env "$1" "$2"; }
+is_ip() { printf '%s' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; }
+# The address other machines use to reach this server: the one its default route leaves from.
+server_ip() {
+  local ip=""
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+  fi
+  [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s' "$ip"
+}
 
 # The registry holding the prebuilt images: the one written into .env.example
 # when the project was published, else derived from where this copy was cloned.
@@ -299,13 +310,18 @@ install_master() {
   if [ ! -f .env ]; then
     created=true
     if [ -z "$DOMAIN" ] && [ -t 0 ]; then
-      read -r -p "Public hostname of the gateway (e.g. stream.example.com): " DOMAIN
+      echo "A domain name is optional. Without one the gateway is reached by this server's"
+      echo "IP address over plain HTTP; a domain can be added later by running this again."
+      read -r -p "Domain name (e.g. stream.example.com), or leave empty to use the IP address: " DOMAIN
     fi
-    [ -n "$DOMAIN" ] || fail "A hostname is required. Pass --domain stream.example.com"
+    if [ -z "$DOMAIN" ]; then
+      DOMAIN="$(server_ip)"
+      [ -n "$DOMAIN" ] || fail "Could not work out this server's IP address. Pass it: --domain 192.168.1.20"
+      echo "No domain given: using this server's address, $DOMAIN."
+    fi
     ( umask 077; cp .env.example .env )
     set_env ROLE "$ROLE"
     set_env DOMAIN "$DOMAIN"
-    set_env PUBLIC_BASE_URL "https://$DOMAIN"
     set_env POSTGRES_PASSWORD "$(random 24)"
     set_env REDIS_PASSWORD "$(random 24)"
     set_env ENGINE_SECRET "$(random 24)"
@@ -314,9 +330,28 @@ install_master() {
     [ -z "$EMAIL" ] || set_env LETSENCRYPT_EMAIL "$EMAIL"
     echo "Created .env with generated secrets."
   else
-    [ -z "$DOMAIN" ] || { set_env DOMAIN "$DOMAIN"; set_env PUBLIC_BASE_URL "https://$DOMAIN"; }
+    [ -z "$DOMAIN" ] || set_env DOMAIN "$DOMAIN"
     [ -z "$EMAIL" ] || set_env LETSENCRYPT_EMAIL "$EMAIL"
     echo "Using existing .env."
+  fi
+  DOMAIN="$(get_env DOMAIN)"
+  # Reached by IP address: URLs follow whichever address a request arrives on
+  # (local or public), nothing is redirected to HTTPS, and there is no name to
+  # get a certificate for. With a domain, that name is the public address.
+  local by_ip=false
+  if is_ip "$DOMAIN"; then
+    by_ip=true
+    set_env PUBLIC_BASE_URL ""
+    set_env FORCE_HTTPS false
+    case "$TLS" in
+      letsencrypt) fail "Let's Encrypt needs a domain name. Pass --domain stream.example.com, or leave out --tls." ;;
+      "") [ -n "$CERT" ] || [ -n "$(get_env TLS_MODE)" ] || TLS=selfsigned ;;
+    esac
+  else
+    set_env PUBLIC_BASE_URL "https://$DOMAIN"
+    set_env FORCE_HTTPS true
+    # Coming from an address-only install, the certificate question is open again.
+    if [ -z "$TLS" ] && [ -z "$CERT" ] && [ "$(get_env TLS_MODE)" = selfsigned ] && [ -t 0 ]; then set_env TLS_MODE ""; fi
   fi
   if [ "$ROLE" = master ]; then
     set_env COMPOSE_PROFILES master
@@ -390,8 +425,6 @@ EOF
   ensure_env ENGINE_SECRET "$(random 24)"
   ensure_env CLUSTER_PORT 6380
   chmod 600 .env
-  DOMAIN="$(get_env DOMAIN)"
-
   # HAProxy needs some certificate to start, whatever the mode: a self-signed
   # one stands in until Let's Encrypt has issued (or for good, when HTTPS is
   # handled in front of this server).
@@ -399,7 +432,7 @@ EOF
     echo "Generating a self-signed certificate for $DOMAIN."
     local tmp; tmp="$(mktemp -d)"
     openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=$DOMAIN" \
-      -addext "subjectAltName=DNS:$DOMAIN" -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
+      -addext "subjectAltName=$(is_ip "$DOMAIN" && echo IP || echo DNS):$DOMAIN" -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1
     ( umask 077; cat "$tmp/cert.pem" "$tmp/key.pem" > certs/stream.pem )
     rm -rf "$tmp"
   fi
@@ -421,9 +454,18 @@ EOF
 
   echo
   echo "The gateway is running ($ROLE)."
-  echo "  Dashboard:  https://$DOMAIN/admin/"
-  echo "  API docs:   https://$DOMAIN/api/v1/docs"
-  echo "  Streams:    http(s)://$DOMAIN/<station-slug>"
+  local port_suffix=""
+  [ "$(get_env HTTP_PORT)" = 80 ] || port_suffix=":$(get_env HTTP_PORT)"
+  if $by_ip; then
+    echo "  Dashboard:  http://$DOMAIN$port_suffix/admin/"
+    echo "  API docs:   http://$DOMAIN$port_suffix/api/v1/docs"
+    echo "  Streams:    http://$DOMAIN$port_suffix/<station-slug>"
+  else
+    echo "  Dashboard:  https://$DOMAIN/admin/"
+    echo "  API docs:   https://$DOMAIN/api/v1/docs"
+    echo "  Streams:    http(s)://$DOMAIN/<station-slug>"
+    echo "  By address: http://$(server_ip)$port_suffix/admin/  (same service, from the local network)"
+  fi
   echo "  Sign in as: $(get_env ADMIN_USERNAME)"
   if $created; then
     echo "  Password:   $(get_env ADMIN_PASSWORD)"
@@ -444,8 +486,15 @@ EOF
       fi ;;
     selfsigned)
       echo
-      echo "This server uses a temporary self-signed certificate. For a real one, re-run with"
-      echo "--tls letsencrypt --email you@example.com, or --tls provided --cert FILE --key FILE." ;;
+      if $by_ip; then
+        echo "No domain is set, so the gateway is served over plain HTTP on this address. Anything"
+        echo "sent to it, including the dashboard password, is not encrypted: fine on a trusted"
+        echo "network, not on the open internet. To add a domain and HTTPS later, run:"
+        echo "  ./install.sh --domain stream.example.com --tls letsencrypt --email you@example.com"
+      else
+        echo "This server uses a temporary self-signed certificate. For a real one, re-run with"
+        echo "--tls letsencrypt --email you@example.com, or --tls provided --cert FILE --key FILE."
+      fi ;;
   esac
   echo
   if [ "$ROLE" = master ]; then

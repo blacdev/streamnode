@@ -53,7 +53,12 @@ every account is trusted.
 
 - Only HAProxy publishes ports. PostgreSQL, Redis, the engine and the admin service
   are reachable only on the private Docker network.
-- TLS 1.2 or newer. The dashboard and API redirect HTTP to HTTPS.
+- TLS 1.2 or newer. The dashboard and API redirect HTTP to HTTPS when requested by
+  the domain name. They are also reachable over plain HTTP by the server's IP
+  address, which is what makes local-network access work; over that path the
+  password, session and API keys travel unencrypted. On an internet-facing server,
+  use the domain, or block direct-IP access to ports 80 and 443 at the firewall for
+  everything except your own networks.
 - Streams are also served over plain HTTP on purpose, for devices that cannot use
   TLS. Audio streams are public content, so this exposes nothing private.
 - The management API is rate-limited per client address at the edge.
@@ -125,7 +130,9 @@ What follows from this:
 - [ ] With `TLS_MODE=external`: the master's HTTP port is reachable only from the
       proxy in front.
 - [ ] `ALLOW_PRIVATE_SOURCES=false`.
-- [ ] `FORCE_HTTPS` is unset or `true`.
+- [ ] The server has a domain and `FORCE_HTTPS` is `true` (an install without a domain
+      serves everything over plain HTTP).
+- [ ] Administrators sign in through `https://<domain>`, not through the IP address.
 - [ ] The master has a real certificate, so no slave needs `--insecure`.
 - [ ] Firewall: on the master, 6380 open only to slave nodes; on each slave, 3000 open
       only to the master.

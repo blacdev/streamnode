@@ -23,8 +23,8 @@ These apply to every role. See [Images](INSTALLATION.md#images).
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOMAIN` | none | Public hostname. Used by the installer for the certificate and by `scripts/letsencrypt.sh` |
-| `PUBLIC_BASE_URL` | derived from each request | Origin placed in `stream_url` and `playlist_urls` in API responses, e.g. `https://stream.example.com`. Set it when another proxy sits in front |
+| `DOMAIN` | the server's IP address | Public hostname, or the server's IP address when installed without a domain. Used for the certificate, the HTTPS redirect and `scripts/letsencrypt.sh` |
+| `PUBLIC_BASE_URL` | `https://<domain>`; empty without a domain | Origin placed in `stream_url`, `playlist_urls` and slave install commands. When empty it is taken from each request. Requests made to the server's IP address always get URLs on that address |
 | `TLS_MODE` | set by the installer | Where the domain's certificate comes from: `letsencrypt`, `provided`, `external` (HTTPS handled in front of this server) or `selfsigned`. See [Certificates](INSTALLATION.md#certificates) |
 | `HTTP_PORT` | `80` | Host port for plain HTTP |
 | `HTTPS_PORT` | `443` | Host port for HTTPS |
@@ -68,7 +68,7 @@ See [Installation](INSTALLATION.md) and [Adding servers](SCALING.md).
 | `CLUSTER_HOST` | empty | Address slave nodes use to reach the master directly. Needed when the domain points at a proxy in front of the master; otherwise slaves use the domain |
 | `RELAY_BIND` | `127.0.0.1` | Private address for the relay port used by optional edge servers |
 | `RELAY_PORT` | `8444` | Port for the above |
-| `FORCE_HTTPS` | `true` | `false` also serves the dashboard and API over plain HTTP. For local testing only |
+| `FORCE_HTTPS` | `true` with a domain, `false` without | `true` redirects the dashboard and API to HTTPS when they are requested by the domain name. Requests made to the server's IP address are never redirected |
 
 ### A slave node's `.env`
 

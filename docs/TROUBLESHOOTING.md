@@ -135,6 +135,9 @@ On a slave, the engine's log is `docker compose logs slave_engine`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Cannot reach the gateway by its IP address from another device | A firewall on the server or network, or the device is on another network | Allow port 80 on the server's firewall (`sudo ufw allow 80/tcp`); check both devices are on the same network |
+| `https://<ip>` shows a certificate warning | The certificate is issued for the domain, not the address | Use `http://<ip>`, or the domain |
+| Dashboard opened by IP shows stream URLs with the IP | Intended: URLs follow the address you are using | Open the dashboard by the domain to see the public URLs |
 | Dashboard redirects in a loop behind a proxy | The proxy talks plain HTTP to the gateway, which redirects to HTTPS | Install with `--tls external` (sets `TLS_MODE=external`) |
 | Stream URLs in the API start with `http://` behind a proxy | Same | Same, and set `PUBLIC_BASE_URL=https://<domain>` |
 | Every client appears with the proxy's address; API rate limit hits everyone | The proxy does not send `X-Forwarded-For`, or `TLS_MODE` is not `external` | Fix either |

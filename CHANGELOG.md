@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-10-01
+
+### Added
+
+- **Access by IP address out of the box.** The dashboard and API are served over HTTP
+  when requested by the server's IP address; the HTTPS redirect applies to the domain
+  name only. URLs shown follow the address the request came in on.
+- **Installing without a domain.** `./install.sh --role both` with no `--domain` sets
+  the gateway up for the server's IP address; a domain can be added later.
+
+### Fixed
+
+- The installer now asks how HTTPS is provided on a fresh interactive install with a
+  domain (it previously kept the self-signed default without asking).
+- `scripts/add-server.sh` prints the master's real address when no public URL is set.
+
 ## [2.4.0] - 2026-10-01
 
 ### Added
