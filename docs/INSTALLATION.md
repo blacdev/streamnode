@@ -411,11 +411,37 @@ Restarting an engine disconnects its listeners; players reconnect within a few
 seconds and are placed on another server. To upgrade a slave without cutting anyone
 off, drain it first (Servers > Drain) and wait for its listeners to reach zero.
 
-## Uninstalling
+## Uninstalling and starting again
 
 ```bash
-docker compose down          # stop and remove containers; data volumes are kept
-docker compose down -v       # also delete all data on this server
+./scripts/uninstall.sh
 ```
 
-On a slave, remove it from the master's Servers list as well.
+Run it in the installation directory (`/opt/radio-gateway` after a one-line install).
+It works on any version and any role, asks for confirmation, and then removes the
+gateway's containers, network and data volumes, and the old settings and certificate.
+
+| Option | Effect |
+|---|---|
+| `--keep-data` | Remove the services but keep stations, accounts and statistics |
+| `--remove-code` | Also delete the installation directory |
+| `--remove-images` | Also delete the gateway's Docker images |
+| `--yes` | Do not ask for confirmation |
+
+For a completely clean reinstall:
+
+```bash
+cd /opt/radio-gateway && ./scripts/backup.sh          # only if anything is worth keeping
+./scripts/uninstall.sh --remove-code --remove-images
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
+```
+
+If the installed copy is too old to contain the script, run it straight from the
+repository:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/scripts/uninstall.sh | bash -s -- --remove-code --remove-images
+```
+
+Docker itself, and anything else running in it, is left alone. On a slave, also remove
+it from the master's Servers list.
