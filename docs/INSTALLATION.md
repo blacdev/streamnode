@@ -208,9 +208,8 @@ the master's certificate and protected by the Redis password.
 
 ### 2. A slave node
 
-Get the project onto the new server (the one-line install above does this, or
-`git clone`). There are two ways to connect it; both end with
-the server listed under **Servers** and receiving listeners within seconds.
+A new server needs nothing on it beforehand. There are two ways to connect it; both
+end with the server listed under **Servers** and receiving listeners within seconds.
 
 **Option 1: one command (the slave joins by itself).** On the master, create the
 command from the dashboard (**Servers > Add server > Create install command**) or
@@ -223,15 +222,18 @@ with:
 It prints something like:
 
 ```bash
-./install.sh --role slave --master https://stream.example.com --token rgj_4be1a09c...
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- \
+  --role slave --master https://stream.example.com --token rgj_4be1a09c...
 ```
 
-Run that on the new server. The token works once and expires after an hour.
+Run that on the new server. It installs Docker if missing, downloads the engine and
+joins the master. The token works once and expires after an hour. If the master has
+no trusted certificate yet, the command includes `--insecure`.
 
 **Option 2: finish from the master.** Install the slave without a master:
 
 ```bash
-./install.sh --role slave
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --role slave
 ```
 
 It prints the server's address, engine port and a **setup key**. On the master's

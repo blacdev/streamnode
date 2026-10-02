@@ -19,6 +19,9 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- The command generated for adding a server is now the one-line bootstrap
+  (`curl ... get.sh | bash -s -- --role slave ...`), so the new server can be empty.
+  It includes `--insecure` by itself when the master has no trusted certificate.
 - `scripts/update.sh auto on|off` now sets the same switch the dashboard does; the
   scheduler entry is managed with `scripts/update.sh schedule install|remove`.
 

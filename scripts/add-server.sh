@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-get_env() { grep "^$1=" .env | head -n1 | cut -d= -f2-; }
+get_env() { grep "^$1=" .env | head -n1 | cut -d= -f2- || true; }
 [ -f .env ] || { echo "No .env here: run this on the master, in the gateway's directory." >&2; exit 1; }
 case "$(get_env ROLE)" in master|both) ;; *) echo "This server is not a master." >&2; exit 1 ;; esac
 if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
@@ -38,9 +38,23 @@ if [ -z "$master" ]; then
   master="http://$(get_env DOMAIN)"
   [ "$(get_env HTTP_PORT)" = 80 ] || master="$master:$(get_env HTTP_PORT)"
 fi
-command="./install.sh --role slave --master $master --token $token"
+# A master the slave cannot verify (plain HTTP, or still on its self-signed
+# certificate) needs --insecure on the slave.
+options="--role slave --master $master --token $token"
+case "$(get_env TLS_MODE)" in selfsigned|"") options="$options --insecure" ;; esac
+case "$master" in http://*) case "$options" in *--insecure*) ;; *) options="$options --insecure" ;; esac ;; esac
 
-echo "On the new server, in a copy of this project, run:"
+# The command for a new, empty server: it fetches the bootstrap script from the
+# repository this master was installed from.
+repo="$(sed -n 's/^REPO=//p' .version 2>/dev/null | head -n1)"; [ -n "$repo" ] || repo="$(get_env UPDATE_REPO)"
+branch="$(sed -n 's/^BRANCH=//p' .version 2>/dev/null | head -n1)"; [ -n "$branch" ] || branch="$(get_env UPDATE_BRANCH)"
+if [ -n "$repo" ]; then
+  command="curl -fsSL https://raw.githubusercontent.com/$repo/${branch:-main}/get.sh | bash -s -- $options"
+  echo "On the new server (nothing needs to be installed on it first), run:"
+else
+  command="./install.sh $options"
+  echo "On the new server, in a copy of this project, run:"
+fi
 echo
 echo "  $command"
 echo
@@ -53,8 +67,9 @@ fi
 case "$(get_env TLS_MODE)" in
   selfsigned|"")
     echo
-    echo "This master still uses a self-signed certificate, so add --insecure to the"
-    echo "command above (or install a real certificate first; see docs/INSTALLATION.md)." ;;
+    echo "This master has no trusted certificate, so the command includes --insecure: the"
+    echo "new server will not verify it. Fine for testing; for production give the master a"
+    echo "real certificate first (see docs/INSTALLATION.md) and create the command again." ;;
   external)
     if [ -z "$(get_env CLUSTER_HOST)" ] || [ -z "$(get_env CLUSTER_CERT)" ]; then
       echo

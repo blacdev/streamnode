@@ -406,7 +406,7 @@ module.exports = {
         },
       },
       JoinToken: { type: 'object', properties: { id: { type: 'integer' }, token_prefix: { type: 'string', example: 'rgj_4be1a09c' }, note: { type: 'string', nullable: true }, bound_address: { type: 'string', nullable: true }, max_uses: { type: 'integer' }, uses: { type: 'integer' }, expires_at: { type: 'string', format: 'date-time' }, created_at: { type: 'string', format: 'date-time' } } },
-      JoinTokenCreated: { allOf: [ref('JoinToken'), { type: 'object', properties: { token: { type: 'string', description: 'Shown only once.' }, master_url: { type: 'string' }, install_command: { type: 'string', example: './install.sh --role slave --master https://stream.example.com --token rgj_…' } } }] },
+      JoinTokenCreated: { allOf: [ref('JoinToken'), { type: 'object', properties: { token: { type: 'string', description: 'Shown only once.' }, master_url: { type: 'string' }, install_command: { type: 'string', description: 'Run on the new, empty server: it downloads the bootstrap script, installs what is needed and joins this master.', example: 'curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_…' } } }] },
       UpdateStatus: {
         type: 'object',
         properties: {

@@ -266,11 +266,12 @@ curl -X POST $API/cluster/join-tokens -H "X-API-Key: $KEY" -H "Content-Type: app
   "id": 4, "token_prefix": "rgj_4be1a09c", "expires_at": "2026-03-01T15:00:00.000Z", "max_uses": 1, "uses": 0,
   "token": "rgj_4be1a09c...",
   "master_url": "https://stream.example.com",
-  "install_command": "./install.sh --role slave --master https://stream.example.com --token rgj_4be1a09c..."
+  "install_command": "curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_4be1a09c..."
 }
 ```
 
-The token is shown only here. `GET /cluster/join-tokens` lists tokens that are still
+The token is shown only here. `install_command` is for a new, empty server: it installs
+what is needed and joins this master. `GET /cluster/join-tokens` lists tokens that are still
 usable; `DELETE /cluster/join-tokens/{id}` revokes one.
 
 **Or connect a slave that is installed and waiting,** using the values its installer

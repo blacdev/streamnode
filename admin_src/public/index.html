@@ -141,10 +141,10 @@
 
   <dialog id="serverDialog">
     <h2>Add a server</h2>
-    <p class="muted">Install the gateway on the new server as a <strong>slave node</strong>, then connect it either way.</p>
+    <p class="muted">A new server joins as a <strong>slave node</strong>. Connect it either way.</p>
 
     <h3>Option 1: run one command on the new server</h3>
-    <p>The command installs the engine and joins this master by itself.</p>
+    <p>For a new, empty server. The command installs everything it needs, including Docker if it is missing, and joins this master by itself.</p>
     <button id="makeJoinCommand">Create install command</button>
     <div id="joinCommand" class="notice" hidden>
       <code id="joinCommandText"></code>

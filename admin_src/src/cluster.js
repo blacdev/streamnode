@@ -118,10 +118,16 @@ async function join(body, fromIp) {
   };
 }
 
-// Run in a copy of the project on the new server. (With the one-line
-// bootstrap, the same options go after "bash -s --".)
+// The command to run on a new, empty server. It fetches the bootstrap script
+// from the repository, which installs what is needed and joins this master.
+// --insecure is included when the slave could not verify this master: it is
+// reached over plain HTTP, or still has its self-signed certificate.
 function installCommand(masterUrl, token) {
-  return `./install.sh --role slave --master ${masterUrl} --token ${token}`;
+  const insecure = masterUrl.startsWith('http://') || config.tlsMode === 'selfsigned';
+  const options = `--role slave --master ${masterUrl} --token ${token}${insecure ? ' --insecure' : ''}`;
+  // Without a known repository, fall back to the installer in a copy of the project.
+  if (!config.updateRepo) return `./install.sh ${options}`;
+  return `curl -fsSL https://raw.githubusercontent.com/${config.updateRepo}/${config.updateBranch}/get.sh | bash -s -- ${options}`;
 }
 
 // Master-initiated enrolment: deliver a token to a slave that is waiting for setup.
