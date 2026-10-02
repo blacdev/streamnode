@@ -49,6 +49,7 @@ module.exports = {
     { name: 'Statistics', description: 'Live status, history and billing usage.' },
     { name: 'Accounts', description: 'Tenant accounts and API keys.' },
     { name: 'Servers', description: 'Streaming servers that listeners are spread across.' },
+    { name: 'Updates', description: 'Version monitoring and installing updates.' },
     { name: 'Session', description: 'Dashboard sign-in.' },
     { name: 'Public', description: 'No authentication required.' },
   ],
@@ -184,6 +185,29 @@ module.exports = {
         description: 'Not called by people or integrations: a slave\'s engine calls this with its join token. The master registers the server with HAProxy and returns the Redis endpoint, Redis password and engine secret. Authenticated by the token alone.',
         requestBody: { required: true, content: json({ type: 'object', required: ['token', 'name'], properties: { token: { type: 'string' }, name: { type: 'string', description: 'The server\'s NODE_ID.' }, port: { type: 'integer', default: 3000 }, address: { type: 'string', description: 'Address the master should use to reach the engine. Defaults to where the request came from.' } } }) },
         responses: { 200: { description: 'Enrolled. The body carries credentials and is intended for the engine only.' }, 403: error('Token invalid, expired, used, or issued for another address.'), 409: error('Name or address already taken.'), 422: error('Validation failed.') },
+      },
+    },
+    '/system/version': {
+      get: {
+        tags: ['Updates'], summary: 'Running version, update settings and what the updater last did',
+        description: 'Administrators only. The gateway checks its repository every few hours; add `?refresh` to check now. `update_available` is null when it cannot be told (images built from source, or GitHub not reachable).',
+        parameters: [{ name: 'refresh', in: 'query', schema: { type: 'string' }, allowEmptyValue: true }],
+        responses: { 200: ok('Version and updater state.', ref('UpdateStatus')), ...AUTH_ERRORS },
+      },
+    },
+    '/system/update-settings': {
+      put: {
+        tags: ['Updates'], summary: 'Turn automatic updates on or off and set the time',
+        description: 'Administrators only. With `auto` on, the server checks once a day at `time` (the server\'s own clock) and installs a newer version if there is one. Slave nodes then follow the master\'s version by themselves.',
+        requestBody: { required: true, content: json({ type: 'object', properties: { auto: { type: 'boolean' }, time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$', example: '04:15' } } }) },
+        responses: { 200: ok('The new state.', ref('UpdateStatus')), 422: error('Validation failed.'), 503: error('The updater is not set up on this server.'), ...AUTH_ERRORS },
+      },
+    },
+    '/system/update': {
+      post: {
+        tags: ['Updates'], summary: 'Install the latest version now',
+        description: 'Administrators only. The update starts on the server within five minutes. It backs up the database, downloads the new version and restarts the services that changed; listeners are disconnected for a few seconds and reconnect. Follow progress in `updater.state` and `updater.message` of `GET /system/version`.',
+        responses: { 202: ok('Accepted; the update will start shortly.', ref('UpdateStatus')), 409: error('Already on the latest version.'), 503: error('The update scheduler is not running on this server.'), ...AUTH_ERRORS },
       },
     },
     '/capacity': {
@@ -383,6 +407,29 @@ module.exports = {
       },
       JoinToken: { type: 'object', properties: { id: { type: 'integer' }, token_prefix: { type: 'string', example: 'rgj_4be1a09c' }, note: { type: 'string', nullable: true }, bound_address: { type: 'string', nullable: true }, max_uses: { type: 'integer' }, uses: { type: 'integer' }, expires_at: { type: 'string', format: 'date-time' }, created_at: { type: 'string', format: 'date-time' } } },
       JoinTokenCreated: { allOf: [ref('JoinToken'), { type: 'object', properties: { token: { type: 'string', description: 'Shown only once.' }, master_url: { type: 'string' }, install_command: { type: 'string', example: './install.sh --role slave --master https://stream.example.com --token rgj_…' } } }] },
+      UpdateStatus: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' }, repository: { type: 'string', nullable: true }, branch: { type: 'string' },
+          installed: { type: 'string', nullable: true, description: 'Commit the running images were built from.' },
+          latest: { type: 'string', nullable: true },
+          update_available: { type: 'boolean', nullable: true },
+          checked_at: { type: 'string', format: 'date-time', nullable: true }, error: { type: 'string', nullable: true },
+          settings: { type: 'object', properties: { auto: { type: 'boolean' }, time: { type: 'string', example: '04:15', description: 'Time of day on the server\'s clock.' } } },
+          updater: {
+            type: 'object',
+            properties: {
+              scheduler_running: { type: 'boolean', description: 'false means nothing happens by itself: the scheduler is not installed on the server.' },
+              last_seen: { type: 'string', format: 'date-time', nullable: true },
+              server_time: { type: 'string', nullable: true, example: '14:05' }, server_zone: { type: 'string', nullable: true, example: 'UTC' },
+              state: { type: 'string', enum: ['idle', 'running', 'waiting', 'ok', 'failed'] },
+              message: { type: 'string', nullable: true, example: 'Updated to 9a1e44f (scheduled).' },
+              updated_at: { type: 'string', format: 'date-time', nullable: true },
+              install_pending: { type: 'boolean', description: 'An "install now" request is waiting for the next scheduler pass.' },
+            },
+          },
+        },
+      },
       Health: { type: 'object', properties: { status: { type: 'string', enum: ['ok', 'degraded'] }, database: { type: 'string' }, cache: { type: 'string' } } },
     },
   },

@@ -156,7 +156,14 @@ On a slave, the engine's log is `docker compose logs slave_engine`.
 | `manifest unknown` | That tag does not exist | Check `IMAGE_TAG` in `.env` against the tags published under the repository's Packages |
 | `no matching manifest for linux/...` | No image for this server's processor type | Use `./install.sh --build-from-source` |
 | Engine image fails to build from source | Not enough memory during compilation | Use the prebuilt images, or add swap; compiling needs about 2 GB |
-| New code but old behaviour after `git pull` | The images were not refreshed | Run `./install.sh`, which downloads the newest images for your tag |
+| `update.sh`: images are not published yet | CI is still building the images for the newest commit, or that build failed | Wait a few minutes and run it again; if it persists, look at the Images workflow under the repository's Actions tab |
+| Updates tab: "The update scheduler is not running" | cron is missing or not running on the server, or the entry was removed | Install cron, then `./scripts/update.sh schedule install` in the installation directory |
+| Updates tab: settings cannot be saved | The `control/` directory is missing or not writable by the services | Run `./install.sh` on the server; it recreates it |
+| "Install now" pressed but nothing happens | It starts on the scheduler's next pass, up to 5 minutes later | Watch the status line on the Updates tab; details are in `update.log` on the server |
+| A slave stays on an older version than its master | The slave's scheduler is not running, or `UPDATE_FOLLOW_MASTER=false` | `./scripts/update.sh auto status` on the slave |
+| Dashboard never shows an update notice | `UPDATE_REPO` is empty, the server cannot reach `api.github.com`, or the images were built from source | `GET /api/v1/system/version?refresh` shows the reason in `error` |
+| Automatic updates do not run | The scheduler is not installed, or the chosen time is later than you think (it is on the server's clock) | The Updates tab shows both; `./scripts/update.sh auto status` on the server |
+| `--build-from-source` fails with "source code is not on this server" | Installed without the source and its origin is unknown | Run the one-line install command with `--with-source` |
 | Let's Encrypt fails | DNS not pointing at the server yet, or port 80 blocked | Fix and re-run `./scripts/letsencrypt.sh issue` |
 
 ## Collecting information for support

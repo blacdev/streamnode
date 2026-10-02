@@ -4,6 +4,10 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY . .
+# The commit this image was built from; shown in the dashboard and compared
+# with the repository to tell when an update is available.
+ARG GIT_SHA=""
+ENV GATEWAY_VERSION=$GIT_SHA
 USER node
 EXPOSE 8000
 CMD ["node", "server.js"]

@@ -47,7 +47,7 @@ fi
 
 compose() {
   "${DOCKER[@]}" compose -p "$PROJECT" --env-file "$ENV_FILE" --profile master --profile local-engine \
-    -f docker-compose.yml -f docker-compose.demo.yml "$@"
+    -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.demo.yml "$@"
 }
 get_env() { grep "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
 

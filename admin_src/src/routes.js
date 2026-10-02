@@ -8,9 +8,10 @@ const stats = require('./stats');
 const haproxy = require('./haproxy');
 const capacity = require('./capacity');
 const cluster = require('./cluster');
+const updates = require('./updates');
 const config = require('./config');
 const v = require('./validate');
-const { wrap, badRequest, invalid, forbidden, notFound, conflict } = require('./errors');
+const { wrap, badRequest, invalid, forbidden, notFound, conflict, HttpError } = require('./errors');
 
 const router = express.Router();
 const isAdmin = (req) => req.user.role === 'admin';
@@ -621,6 +622,32 @@ router.delete('/cluster/join-tokens/:id', auth.requireAdmin, wrap(async (req, re
   if (!rowCount) throw notFound('Join token');
   audit(req, 'join_token.revoke', `token:${req.params.id}`);
   res.status(204).end();
+}));
+
+// Which version is running and whether the repository has a newer one.
+router.get('/system/version', auth.requireAdmin, wrap(async (req, res) => {
+  if (req.query.refresh !== undefined) await updates.check();
+  res.json(updates.status());
+}));
+
+// When updates are installed: automatically at a time of day, or only on request.
+router.put('/system/update-settings', auth.requireAdmin, wrap(async (req, res) => {
+  const saved = updates.saveSettings(req.body || {});
+  audit(req, 'updates.settings', null, saved);
+  res.json(updates.status());
+}));
+
+// Installs the latest version on the host's next scheduler pass (within 5 minutes).
+router.post('/system/update', auth.requireAdmin, wrap(async (req, res) => {
+  await updates.check();
+  const now = updates.status();
+  if (now.update_available === false) throw conflict('up_to_date', 'This server is already on the latest version.');
+  if (!now.updater.scheduler_running) {
+    throw new HttpError(503, 'updater_unavailable', 'The update scheduler is not running on this server, so the update would never start. On the server run: ./scripts/update.sh schedule install');
+  }
+  updates.requestInstall();
+  audit(req, 'updates.install', now.latest ? now.latest.slice(0, 7) : null);
+  res.status(202).json(updates.status());
 }));
 
 // CPU, memory, disk and traffic per server, with a verdict on whether to add another.

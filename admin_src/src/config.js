@@ -45,6 +45,14 @@ module.exports = {
   tlsMode: text('TLS_MODE', 'selfsigned'),
   joinTokenMinutes: int('JOIN_TOKEN_MINUTES', 60),
 
+  // The commit this image was built from, and the repository watched for newer ones.
+  version: text('GATEWAY_VERSION'),
+  updateRepo: text('UPDATE_REPO'),
+  updateBranch: text('UPDATE_BRANCH', 'main'),
+  updateCheckMs: int('UPDATE_CHECK_HOURS', 6) * 3600 * 1000,
+  // Directory shared with the host, through which the dashboard steers the updater.
+  controlDir: text('CONTROL_DIR', '/control'),
+
   // HAProxy runtime API (host:port), used to add and remove streaming servers.
   // Empty disables server management.
   haproxyAdmin: text('HAPROXY_ADMIN'),

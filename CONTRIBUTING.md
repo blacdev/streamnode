@@ -52,6 +52,14 @@ To test a change before it is published, build locally: `./install.sh
 --build-from-source`, or `./scripts/try-local.sh`, which always builds from the
 working copy.
 
+## What servers receive
+
+Servers installed with `get.sh` hold only the files listed in `RUNTIME_FILES` there
+(Compose files, `haproxy.cfg`, `.env.example`, `install.sh` and the operational
+scripts). A new file that a running server needs must be added to that list; CI
+checks that every listed file exists. Source directories reach a server only for
+`--build-from-source`.
+
 ## Conventions
 
 - **Database changes** go in a new numbered file in `admin_src/migrations/`. Never edit

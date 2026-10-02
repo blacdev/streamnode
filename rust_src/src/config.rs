@@ -49,6 +49,9 @@ pub struct Config {
     pub station_fail_rounds: u32,
     /// How long this engine then refuses the station before trying its sources again.
     pub station_retry: Duration,
+    /// Directory shared with the host. A slave engine writes its master's
+    /// version there, which this server's updater then follows.
+    pub control_dir: Option<String>,
     /// Filesystem whose free space is reported as this server's disk.
     pub disk_path: String,
 }
@@ -109,6 +112,7 @@ impl Config {
             user_agent: var("UPSTREAM_USER_AGENT", "RadioGateway/1.0".to_string()),
             station_fail_rounds: var("STATION_FAIL_ROUNDS", 3u32).max(1),
             station_retry: secs("STATION_RETRY_SECS", 30),
+            control_dir: opt("CONTROL_DIR"),
             disk_path: var("DISK_PATH", "/".to_string()),
         }
     }

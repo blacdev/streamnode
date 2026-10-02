@@ -26,12 +26,14 @@
         <button role="tab" data-tab="keys">API keys</button>
         <button role="tab" data-tab="users" data-admin>Accounts</button>
         <button role="tab" data-tab="servers" data-admin>Servers</button>
+        <button role="tab" data-tab="updates" data-admin>Updates</button>
         <a href="/api/v1/docs" target="_blank" rel="noopener">API docs ↗</a>
       </nav>
       <span class="who"><span id="whoami"></span> <button id="logout" class="link">Sign out</button></span>
     </header>
 
     <main>
+      <p id="updateNotice" class="notice" data-admin hidden></p>
       <section id="tab-stations">
         <div id="tiles" class="tiles"></div>
         <div class="bar">
@@ -87,6 +89,30 @@
           <thead><tr><th>Server</th><th>Address</th><th>State</th><th class="num">Listeners</th><th>CPU</th><th>Memory</th><th>Disk</th><th class="num">Sending</th><th class="num">Weight</th><th></th></tr></thead>
           <tbody id="serverRows"></tbody>
         </table></div>
+      </section>
+
+      <section id="tab-updates" hidden>
+        <div class="bar"><h2>Updates</h2></div>
+        <div id="updateTiles" class="tiles"></div>
+        <p id="updateState" class="notice" hidden></p>
+
+        <div class="card wide-card">
+          <h3>Automatic updates</h3>
+          <form id="updateForm">
+            <label class="check"><input type="checkbox" name="auto"> Install new versions automatically</label>
+            <label>Time of day <input type="time" name="time" required>
+              <small id="updateClock">On the server's own clock.</small></label>
+            <p class="muted">Once a day at this time the server checks for a newer version and installs it. The database is backed up first. Listeners are disconnected for a few seconds while services restart, so pick your quietest hour. Slave nodes follow the master's version by themselves.</p>
+            <p id="updateError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button></div>
+          </form>
+        </div>
+
+        <div class="card wide-card">
+          <h3>Install now</h3>
+          <p id="installText" class="muted"></p>
+          <div class="actions left"><button id="installNow" class="primary">Install the update now</button> <button id="checkNow">Check for updates</button></div>
+        </div>
       </section>
     </main>
   </div>

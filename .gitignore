@@ -17,3 +17,7 @@ rust_src/target/
 # Runtime output
 backups/
 *.log
+
+# The updater's shared directory and its log
+control/
+.version

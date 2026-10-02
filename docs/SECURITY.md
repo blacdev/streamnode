@@ -113,6 +113,21 @@ What follows from this:
   passwords are still required for everything behind it.
 - Edge servers hold a copy of the domain's certificate and private key.
 
+### Updates
+
+- The services cannot touch Docker or the host. Updates are installed by a script
+  the host's scheduler runs; the dashboard only leaves a request in the installation's
+  `control/` directory. The most that request can do is turn automatic updates on or
+  off, set their time, and ask for the latest version of the watched repository to be
+  installed.
+- `control/` is writable by any local user on the server, because the services run as
+  unprivileged users. A local user could therefore trigger an update to the latest
+  version, nothing else. On a server with untrusted local users, restrict the
+  directory to root and the service users.
+- Updates install whatever is on the watched branch. Automatic updates are off by
+  default; switch them on only if that branch is always fit for production, or pin
+  servers to releases with `IMAGE_TAG`.
+
 ### Application
 
 - All SQL uses bound parameters.

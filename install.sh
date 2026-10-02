@@ -35,7 +35,9 @@
 #
 # Images (every role):
 #   --build-from-source  compile the images on this server instead of downloading
-#                        the prebuilt ones (needs about 2 GB of memory)
+#                        the prebuilt ones (needs about 2 GB of memory; the source
+#                        code is downloaded if it is not here)
+#   --prebuilt           go back to the prebuilt images after building from source
 #   --image-tag TAG      prebuilt version to run: "latest" or a release such as v2.4.0
 #
 # Safe to re-run: existing secrets and certificates are kept, and the newest
@@ -45,9 +47,9 @@ cd "$(dirname "$0")"
 
 ROLE="" DOMAIN="" EMAIL="" TLS="" CERT="" KEY="" CLUSTER_HOST=""
 MASTER="" TOKEN="" NAME="" ADVERTISE="" ENGINE_PORT="" INSECURE=false
-FROM_SOURCE=false IMAGE_TAG_ARG="" HTTP_PORT_ARG="" HTTPS_PORT_ARG=""
+FROM_SOURCE=false PREBUILT=false IMAGE_TAG_ARG="" HTTP_PORT_ARG="" HTTPS_PORT_ARG=""
 
-usage() { sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
 fail() { echo "Error: $*" >&2; exit 1; }
 need_value() { [ $# -ge 2 ] || fail "$1 needs a value."; }
 
@@ -70,6 +72,7 @@ while [ $# -gt 0 ]; do
     --engine-port) need_value "$@"; ENGINE_PORT="$2"; shift 2 ;;
     --insecure) INSECURE=true; shift ;;
     --build-from-source) FROM_SOURCE=true; shift ;;
+    --prebuilt) PREBUILT=true; shift ;;
     --image-tag) need_value "$@"; IMAGE_TAG_ARG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown option: $1 (see ./install.sh --help)" ;;
@@ -90,6 +93,13 @@ set_env() { # set_env KEY VALUE: add or replace one line in .env
   cat "$tmp" > .env && rm -f "$tmp"
 }
 ensure_env() { [ -n "$(get_env "$1")" ] || set_env "$1" "$2"; }
+unset_env() { # unset_env KEY: remove the line from .env
+  local tmp; tmp="$(mktemp)"
+  grep -v "^$1=" .env > "$tmp" || true
+  cat "$tmp" > .env && rm -f "$tmp"
+}
+# What get.sh recorded about where this installation came from.
+version_info() { [ -f .version ] && sed -n "s/^$1=//p" .version | head -n1 || true; }
 is_ip() { printf '%s' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; }
 # The address other machines use to reach this server: the one its default route leaves from.
 server_ip() {
@@ -118,16 +128,64 @@ default_image_prefix() {
   printf '%s' "$prefix"
 }
 
-# Records where images come from; called once .env exists.
+# Records where images come from and which repository to watch for updates;
+# called once .env exists.
 configure_images() {
   ensure_env IMAGE_TAG latest
   [ -z "$IMAGE_TAG_ARG" ] || set_env IMAGE_TAG "$IMAGE_TAG_ARG"
   case "$(get_env IMAGE_PREFIX)" in ""|*OWNER/REPO*) set_env IMAGE_PREFIX "$(default_image_prefix)" ;; esac
   if $FROM_SOURCE; then set_env INSTALL_FROM source
+  elif $PREBUILT; then set_env INSTALL_FROM images
   elif [ -z "$(get_env IMAGE_PREFIX)" ]; then set_env INSTALL_FROM source
   else ensure_env INSTALL_FROM images; fi
   # Built images need a name too.
   [ -n "$(get_env IMAGE_PREFIX)" ] || set_env IMAGE_PREFIX radio-gateway
+
+  local repo; repo="$(version_info REPO)"
+  if [ -z "$repo" ]; then
+    case "$(get_env IMAGE_PREFIX)" in ghcr.io/*/*) repo="$(get_env IMAGE_PREFIX)"; repo="${repo#ghcr.io/}" ;; esac
+  fi
+  [ -z "$repo" ] || ensure_env UPDATE_REPO "$repo"
+  ensure_env UPDATE_BRANCH "$(b="$(version_info BRANCH)"; echo "${b:-main}")"
+}
+
+# Makes sure the source code is here, downloading it if this server was
+# installed without it.
+ensure_source() {
+  [ -d rust_src ] && [ -d admin_src ] && return 0
+  local tarball; tarball="$(version_info TARBALL)"
+  [ -n "$tarball" ] || fail "The source code is not on this server and its origin is unknown. Install with: get.sh --with-source"
+  command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 || fail "curl and tar are needed to download the source code."
+  echo "Downloading the source code..."
+  local work; work="$(mktemp -d)"
+  curl -fsSL -m 120 "$tarball" -o "$work/src.tar.gz" || { rm -rf "$work"; fail "Could not download the source code from $tarball"; }
+  mkdir "$work/src" && tar -xzf "$work/src.tar.gz" -C "$work/src" --strip-components=1 || { rm -rf "$work"; fail "The source download is not a valid archive."; }
+  rm -rf rust_src admin_src
+  cp -R "$work/src/rust_src" "$work/src/admin_src" . && rm -rf "$work"
+}
+
+build_from_source() {
+  ensure_source
+  # Recorded so that plain "docker compose" commands include the build file from now on.
+  set_env INSTALL_FROM source
+  set_env COMPOSE_FILE docker-compose.yml:docker-compose.build.yml
+  $COMPOSE -f docker-compose.yml -f docker-compose.build.yml up --build -d
+}
+
+# The updater: a directory the dashboard and the host share, and a scheduler
+# entry that looks every few minutes for something to do (an update requested
+# in the dashboard, the daily automatic update, or a master to keep up with).
+setup_updater() {
+  mkdir -p control
+  # Written by the services too, which run as unprivileged users.
+  chmod 777 control
+  [ -x scripts/update.sh ] && [ -f .version ] || return 0
+  if ./scripts/update.sh schedule install >/dev/null 2>&1; then
+    UPDATER_NOTE="Updates: the dashboard shows when a new version is out and can install it, or do so automatically (Updates tab)."
+    [ "$ROLE" != slave ] || UPDATER_NOTE="Updates: this server follows the version its master runs."
+  else
+    UPDATER_NOTE="Updates: cron is not installed here, so updates cannot run by themselves. Install cron and run: ./scripts/update.sh schedule install"
+  fi
 }
 
 # Downloads the prebuilt images and starts the services; compiles from source
@@ -135,19 +193,22 @@ configure_images() {
 start_services() {
   if [ "$(get_env INSTALL_FROM)" = source ]; then
     echo "Building the images from source (several minutes; needs about 2 GB of memory)..."
-    $COMPOSE up --build -d
+    build_from_source
     return
   fi
+  [ "$(get_env COMPOSE_FILE)" != docker-compose.yml:docker-compose.build.yml ] || unset_env COMPOSE_FILE
   echo "Downloading the images ($(get_env IMAGE_PREFIX), tag $(get_env IMAGE_TAG))..."
   local problem
   if problem="$($COMPOSE pull --quiet 2>&1)"; then
-    $COMPOSE up -d --no-build
+    $COMPOSE up -d --remove-orphans
+    # The source code is not needed to run prebuilt images.
+    if [ -x scripts/migrate.sh ]; then ./scripts/migrate.sh slim; fi
   else
     echo "The prebuilt images could not be downloaded:"
     printf '%s\n' "$problem" | tail -n 2 | sed 's/^/  /'
     echo "Building from source instead (several minutes; needs about 2 GB of memory)."
-    echo "For a private registry, sign in first (docker login ghcr.io) and run this again."
-    $COMPOSE up --build -d
+    echo "For a private registry, sign in first (docker login ghcr.io) and run this again with --prebuilt."
+    build_from_source
   fi
 }
 
@@ -160,6 +221,9 @@ else fail "Docker Compose is not installed."; fi
 docker info >/dev/null 2>&1 || fail "Cannot talk to the Docker daemon. Run this script as root or as a member of the docker group."
 
 # ── Role ───────────────────────────────────────────────────────────────────
+
+# Bring an installation made by an older version up to date first.
+if [ -x scripts/migrate.sh ]; then ./scripts/migrate.sh prepare; fi
 
 EXISTING_ROLE="$(get_env ROLE)"
 if [ -z "$ROLE" ] && [ -n "$EXISTING_ROLE" ]; then
@@ -251,6 +315,7 @@ install_slave() {
   fi
 
   configure_images
+  setup_updater
   start_services
 
   if [ -n "$TOKEN" ]; then
@@ -279,6 +344,8 @@ soon as the master's health check passes (a few seconds).
 Firewall: allow TCP port $port from the master only. Listeners never connect
 to this server directly; the engine refuses requests that do not come from
 the master.
+
+${UPDATER_NOTE:-}
 EOF
   else
     local address; address="$(get_env ADVERTISE_ADDRESS)"
@@ -470,6 +537,7 @@ EOF
   fi
 
   configure_images
+  setup_updater
   start_services
 
   echo "Waiting for the gateway to become healthy..."
@@ -529,6 +597,7 @@ EOF
         echo "--tls letsencrypt --email you@example.com, or --tls provided --cert FILE --key FILE."
       fi ;;
   esac
+  [ -z "${UPDATER_NOTE:-}" ] || { echo; echo "$UPDATER_NOTE"; }
   echo
   if [ "$ROLE" = master ]; then
     echo "This master relays no audio by itself. Add at least one slave node:"

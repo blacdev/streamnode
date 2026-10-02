@@ -85,6 +85,13 @@ td code, .links code, #joinCommand { margin-top: 10px; }
 .usage.warning::before { background: var(--warn); }
 .usage.critical::before { background: var(--bad); }
 .usage small { display: inline; margin: 0; }
+.wide-card { max-width: 720px; margin: 0 0 16px; }
+.wide-card h3 { margin-top: 0; color: var(--text); font-size: 14px; }
+.wide-card button { width: auto; padding: 6px 12px; }
+.wide-card input[type="time"] { width: 150px; display: block; }
+label.check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+label.check input { width: auto; margin: 0; }
+.actions.left { justify-content: flex-start; margin-top: 12px; }
 .notice.alert { border-color: var(--warn); }
 .notice { background: var(--surface); border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; word-break: break-all; }
 

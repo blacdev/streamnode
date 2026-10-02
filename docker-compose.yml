@@ -6,8 +6,9 @@
 #   master,local-engine    everything on one server ("both")
 #
 # The engine and admin images are published by CI (IMAGE_PREFIX, IMAGE_TAG in
-# .env) and normally just downloaded. Each service keeps its "build" section,
-# so "docker compose up --build" compiles from source instead.
+# .env) and downloaded, so this file, haproxy.cfg and .env are all a server
+# needs. To compile the images from source instead, the source directories and
+# docker-compose.build.yml are added (install.sh --build-from-source).
 name: radio-gateway
 
 x-engine-tuning: &engine-tuning
@@ -58,7 +59,6 @@ services:
   admin_dashboard:
     profiles: ["master"]
     image: ${IMAGE_PREFIX:-radio-gateway}/admin:${IMAGE_TAG:-latest}
-    build: ./admin_src
     restart: always
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:-}@postgres_db:5432/${POSTGRES_DB:-gateway_management}
@@ -71,6 +71,9 @@ services:
       CLUSTER_PORT: ${CLUSTER_PORT:-6380}
       CLUSTER_HOST: ${CLUSTER_HOST:-}
       TLS_MODE: ${TLS_MODE:-selfsigned}
+      # Repository watched for new versions ("owner/name"); empty turns the check off.
+      UPDATE_REPO: ${UPDATE_REPO:-}
+      UPDATE_BRANCH: ${UPDATE_BRANCH:-main}
       DEFAULT_MAX_STATIONS: ${DEFAULT_MAX_STATIONS:-5}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -79,6 +82,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       ALLOW_PRIVATE_SOURCES: ${ALLOW_PRIVATE_SOURCES:-false}
       STATS_MINUTE_RETENTION_DAYS: ${STATS_MINUTE_RETENTION_DAYS:-90}
+    volumes:
+      # Update settings chosen in the dashboard, and what the host's updater reports back.
+      - ./control:/control
     depends_on:
       postgres_db:
         condition: service_healthy
@@ -129,7 +135,6 @@ services:
   audio_engine:
     profiles: ["local-engine"]
     image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
-    build: ./rust_src
     restart: always
     environment:
       <<: *engine-tuning
@@ -151,7 +156,6 @@ services:
   slave_engine:
     profiles: ["slave"]
     image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
-    build: ./rust_src
     restart: always
     environment:
       <<: *engine-tuning
@@ -162,10 +166,13 @@ services:
       ADVERTISE_ADDRESS: ${ADVERTISE_ADDRESS:-}
       ADVERTISE_PORT: ${ENGINE_PORT:-3000}
       ALLOW_INSECURE_TLS: ${ALLOW_INSECURE_TLS:-false}
+      # The engine notes its master's version here, for this server's updater to follow.
+      CONTROL_DIR: /control
     ports:
       - "${ENGINE_BIND:-0.0.0.0}:${ENGINE_PORT:-3000}:3000"
     volumes:
       - engine_data:/data
+      - ./control:/control
     ulimits:
       nofile:
         soft: 65536

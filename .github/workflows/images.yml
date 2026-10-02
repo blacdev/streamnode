@@ -62,6 +62,8 @@ jobs:
           context: ${{ matrix.context }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ steps.names.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ steps.names.outputs.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ steps.names.outputs.arch }}

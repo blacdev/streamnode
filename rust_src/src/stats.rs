@@ -186,6 +186,25 @@ fn probe_sources(hub: &Arc<Hub>) {
     });
 }
 
+/// Writes the version the master runs into the control directory, where the
+/// host's updater picks it up. Only when it changes, and atomically.
+async fn note_master_version(hub: &Arc<Hub>) {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let Some(dir) = hub.cfg.control_dir.as_deref() else { return };
+    let mut redis = hub.redis.clone();
+    let version: Option<String> = redis::cmd("HGET").arg("cluster:update").arg("master_sha").query_async(&mut redis).await.unwrap_or(None);
+    let Some(version) = version.filter(|v| v.len() == 40 && v.bytes().all(|b| b.is_ascii_hexdigit())) else { return };
+    if *LAST.lock().unwrap() == version {
+        return;
+    }
+    let target = std::path::Path::new(dir).join("master-version");
+    let tmp = std::path::Path::new(dir).join(".master-version.tmp");
+    match std::fs::write(&tmp, format!("{version}\n")).and_then(|_| std::fs::rename(&tmp, &target)) {
+        Ok(()) => *LAST.lock().unwrap() = version,
+        Err(error) => tracing::debug!(%error, "could not note the master's version"),
+    }
+}
+
 /// Announces this engine with its resource figures and audio state, and learns
 /// which others are alive.
 async fn heartbeat(hub: &Arc<Hub>, sampler: &mut Sampler, started_at: u64) {
@@ -268,6 +287,7 @@ pub async fn run(hub: Arc<Hub>) {
         let elapsed = last.elapsed();
         last = Instant::now();
         heartbeat(&hub, &mut sampler, started_at).await;
+        note_master_version(&hub).await;
         flush_all(&hub, elapsed).await;
     }
 }

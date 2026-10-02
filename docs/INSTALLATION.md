@@ -72,11 +72,12 @@ rest of this guide. It:
 
 1. checks the operating system, processor, memory and whether ports 80, 443 and 3000
    are free;
-2. installs `git`, `curl` and `openssl` if missing, and offers to install Docker with
+2. installs `curl`, `tar` and `openssl` if missing, and offers to install Docker with
    Docker's official script if it is not there (it asks first);
 3. makes sure Docker and the Compose plugin are running;
-4. downloads the code to `/opt/radio-gateway` (configuration and scripts; the services
-   themselves arrive as prebuilt Docker images);
+4. downloads the gateway's files to `/opt/radio-gateway`: the Compose file, the proxy
+   configuration and the operational scripts, about 100 KB in all. The source code is
+   not placed on the server; the services arrive as prebuilt Docker images;
 5. starts `install.sh`, which asks for the role and everything else.
 
 It needs root or `sudo`. Options go after `bash -s --`; anything it does not recognise
@@ -94,15 +95,19 @@ curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | ba
 
 | Option | Meaning |
 |---|---|
-| `--dir PATH` | Where to put the code. Default `/opt/radio-gateway` |
-| `--branch NAME` | Branch or tag to install. Default: the repository's default branch |
-| `--repo URL` | Install from another repository (a fork or a mirror) |
+| `--dir PATH` | Where to install. Default `/opt/radio-gateway` |
+| `--branch NAME` | Branch to install and to follow for updates. Default: the repository's default branch |
+| `--ref COMMIT` | Install exactly this commit |
+| `--repo URL` | Install from another GitHub repository (a fork) |
+| `--with-source` | Also keep the source code on the server, for building the images there |
 | `--yes` | Do not ask before installing Docker or other missing tools |
+| `--non-interactive` | Never ask anything; use what is already configured |
 
-Running the same command again later updates the code and re-runs the installer,
-keeping settings and data. For a private repository, the server needs access to it
-(a deploy key or credentials) and the script must be fetched with a token, or copied
-to the server by other means.
+Running the same command again later updates the files and re-runs the installer,
+keeping settings and data; `scripts/update.sh` does exactly that
+([Updating](#updating)). An older installation that holds a full copy of the
+repository is slimmed down the same way. The one-line install needs the repository
+to be public.
 
 Prefer to read a script before running it? Download it first:
 
@@ -111,9 +116,19 @@ curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh -o g
 less get.sh && bash get.sh
 ```
 
-The sections below describe what the installer does in each role. If you used the
-one-line install, the code is in `/opt/radio-gateway` and `./install.sh` there is the
-same installer.
+What is left on the server afterwards:
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | The services and how they connect |
+| `haproxy.cfg` | Proxy configuration |
+| `.env` | This server's settings and secrets |
+| `certs/` | The certificate, where one is used |
+| `install.sh`, `scripts/` | Changing settings, adding servers, backups, updates, uninstalling |
+| `.version` | Which version is installed and where it came from |
+
+The sections below describe what the installer does in each role. `./install.sh` in
+`/opt/radio-gateway` is that same installer.
 
 ## Access by IP address
 
@@ -400,23 +415,84 @@ each server first, with a token that may read packages:
 docker login ghcr.io -u <github-user>
 ```
 
-## Upgrading
+## Updating
 
-Upgrade the master first, then each slave:
+The gateway watches its repository for new versions, and updates are controlled from
+the dashboard.
+
+**Dashboard > Updates** (administrators) shows the running and latest versions, and
+lets you:
+
+- switch **automatic updates** on or off and choose the **time of day** (the server's
+  own clock, shown on the page);
+- press **Install the update now** when a newer version exists;
+- see what the updater last did, and anything in its way.
+
+A notice also appears at the top of the dashboard whenever a newer version is out.
+
+How it works: the installer sets up a small scheduler on the server (a cron entry)
+that looks every five minutes for something to do: an update requested in the
+dashboard, the daily automatic update, or, on a slave node, a master to keep up with.
+The services themselves never touch Docker or the host; the dashboard and the
+scheduler exchange two small files in the installation's `control/` directory.
+
+An update backs up the database (on a master), downloads the new files and images,
+and restarts only the services that changed. Settings and data are kept. Restarting
+an engine or the proxy disconnects its listeners for a few seconds; their players
+reconnect.
+
+| | Detail |
+|---|---|
+| Default | Automatic updates are off. The notice still appears |
+| What is followed | The branch the server was installed from (`main` by default) |
+| Slave nodes | Follow the version their master runs, by themselves, within a few minutes of the master updating. Set `UPDATE_FOLLOW_MASTER=false` in a slave's `.env` to manage it by hand |
+| Just-published versions | Images take a few minutes to build after a change lands. Until they exist the update waits and tries again |
+| Pinned servers | A server with `IMAGE_TAG` set to a release (e.g. `v2.4.0`) is not moved automatically. Change it with `./install.sh --image-tag <version>` |
+| Going back | `./scripts/update.sh apply --sha <commit>` installs a specific earlier version. Database changes made by a newer version are not undone; restore a backup if needed |
+
+The same from the command line, in the installation directory:
 
 ```bash
-./scripts/backup.sh          # on the master: always back up first
-git pull                     # configuration, scripts and documentation
-./install.sh                 # downloads the newest images for your tag and restarts what changed
+./scripts/update.sh check                  # is there a newer version?
+./scripts/update.sh                        # check, ask, and install it
+./scripts/update.sh auto on --time 04:15   # same switch as in the dashboard
+./scripts/update.sh auto status            # also says whether the scheduler is installed
 ```
 
-Re-running the one-line install command does the same. The installer keeps the
-server's role, settings and data.
+and through the API: `GET /system/version`, `PUT /system/update-settings`,
+`POST /system/update` ([API guide](API.md#version-and-updates)). Each run is logged to
+`update.log` in the installation directory.
 
-Database migrations are applied automatically when the admin service starts.
-Restarting an engine disconnects its listeners; players reconnect within a few
-seconds and are placed on another server. To upgrade a slave without cutting anyone
-off, drain it first (Servers > Drain) and wait for its listeners to reach zero.
+If the server has no cron, the installer says so; install cron and run
+`./scripts/update.sh schedule install`.
+
+## Upgrading from an older version
+
+Nothing has to be done by hand. Whichever way an older installation is brought up to
+date, the installer converts it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --dir /opt/radio-gateway
+```
+
+(or, in an installation that is a git clone, `git pull && ./install.sh`). It runs
+`scripts/migrate.sh`, which:
+
+| Finds | Does |
+|---|---|
+| A full copy (clone) of the repository | Records the installed version, then removes the source code and other files a running server does not need |
+| Settings from before roles existed | Records the server as a single server (`both`) |
+| No certificate mode recorded | Works it out from the certificate in place (Let's Encrypt, your own, or self-signed) |
+| Settings naming files that no longer exist, or renamed settings | Corrects them |
+| The earlier daily-update cron entry | Moves it into the new updater, keeping its time |
+| Missing secrets and settings added since | Generates or fills them in |
+
+Passwords, API keys, the certificate, stations, accounts and statistics are kept. It
+prints each change it makes, makes none on a second run, and never deletes a git
+working copy that looks like a development copy (full history or local changes).
+
+One case cannot be converted: a streaming server set up with the old `node/` layout
+has to join its master again. The installer says so and names the command.
 
 ## Uninstalling and starting again
 

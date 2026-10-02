@@ -1,38 +1,56 @@
 #!/usr/bin/env bash
-# Radio Gateway bootstrap: checks this server, downloads the code and starts
-# the installer, which asks for everything else.
+# Radio Gateway bootstrap: checks this server, downloads what the gateway needs
+# to run and starts the installer, which asks for everything else.
 #
 #   curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
+#
+# The services run from prebuilt Docker images, so only a handful of files are
+# placed on the server (the Compose file, the proxy configuration and the
+# operational scripts), not the source code.
 #
 # Options go after "bash -s --". Those this script does not know are passed on
 # to the installer (see ./install.sh --help), for example:
 #
 #   curl -fsSL .../get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_...
 #
-#   --repo URL      Git repository to install from (default: the one below)
-#   --branch NAME   branch or tag to install (default: the repository's default branch)
-#   --dir PATH      where to put the code (default: /opt/radio-gateway)
-#   --yes           do not ask before installing Docker or other missing tools
+#   --dir PATH         where to install (default: /opt/radio-gateway)
+#   --branch NAME      branch to install and to follow for updates (default: the repository's default)
+#   --ref COMMIT       install exactly this commit
+#   --repo URL         install from another GitHub repository (a fork)
+#   --with-source      also keep the source code, for building the images on this server
+#   --yes              do not ask before installing Docker or other missing tools
+#   --non-interactive  never ask anything; use what is already configured
 #
-# Running it again in the same directory updates the code and re-runs the installer,
-# keeping existing settings and data.
+# Running it again in the same directory updates the files and re-runs the
+# installer, keeping existing settings and data. scripts/update.sh does that for you.
 set -euo pipefail
 
-# The repository this script installs from. Set this once to your repository's
-# address; RADIO_GATEWAY_REPO or --repo override it.
+# The repository this script installs from; RADIO_GATEWAY_REPO or --repo override it.
 REPO_URL="${RADIO_GATEWAY_REPO:-https://github.com/blacdev/streamnode.git}"
 BRANCH="${RADIO_GATEWAY_BRANCH:-}"
 INSTALL_DIR="${RADIO_GATEWAY_DIR:-/opt/radio-gateway}"
-ASSUME_YES=false
+REF="" TARBALL="" WITH_SOURCE=false ASSUME_YES=false INTERACTIVE=true
 INSTALLER_ARGS=()
+
+# Everything a server needs to run and operate the gateway. Kept in step with
+# the repository by a CI check.
+RUNTIME_FILES="docker-compose.yml docker-compose.build.yml haproxy.cfg .env.example install.sh scripts/add-server.sh scripts/backup.sh scripts/restore.sh scripts/letsencrypt.sh scripts/uninstall.sh scripts/update.sh scripts/migrate.sh"
+# Only needed to compile the images here instead of downloading them.
+SOURCE_DIRS="rust_src admin_src"
+# Left behind by earlier installs that cloned the whole repository.
+OBSOLETE="demo docs .git .github README.md CHANGELOG.md CONTRIBUTING.md get.sh docker-compose.demo.yml .gitignore .gitattributes scripts/try-local.sh scripts/set-repo.sh"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO_URL="${2:?--repo needs a value}"; shift 2 ;;
     --branch) BRANCH="${2:?--branch needs a value}"; shift 2 ;;
+    --ref) REF="${2:?--ref needs a value}"; shift 2 ;;
     --dir) INSTALL_DIR="${2:?--dir needs a value}"; shift 2 ;;
+    --tarball) TARBALL="${2:?--tarball needs a value}"; shift 2 ;;
+    --with-source) WITH_SOURCE=true; shift ;;
+    --build-from-source) WITH_SOURCE=true; INSTALLER_ARGS+=("$1"); shift ;;
     --yes|-y) ASSUME_YES=true; shift ;;
-    --bootstrap-help) sed -n '2,19p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --non-interactive) INTERACTIVE=false; ASSUME_YES=true; shift ;;
     *) INSTALLER_ARGS+=("$1"); shift ;;
   esac
 done
@@ -46,9 +64,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Piped from curl, standard input is the script itself, so questions are
 # asked on the terminal directly. /dev/tty can exist without being usable
 # (no controlling terminal, as under automation), so it is opened to find out.
-if [ -t 0 ]; then TTY=/dev/stdin
-elif (exec < /dev/tty) 2>/dev/null; then TTY=/dev/tty
-else TTY=""; fi
+TTY=""
+if $INTERACTIVE; then
+  if [ -t 0 ]; then TTY=/dev/stdin
+  elif (exec < /dev/tty) 2>/dev/null; then TTY=/dev/tty; fi
+fi
 
 confirm() { # confirm "Question" -> success on yes
   $ASSUME_YES && return 0
@@ -64,9 +84,6 @@ say
 
 # ── This server ────────────────────────────────────────────────────────────
 
-case "$REPO_URL" in
-  *OWNER/REPO*) fail "This script has no repository address yet. Pass one: bash -s -- --repo https://github.com/<owner>/<repo>.git" ;;
-esac
 [ "$(uname -s)" = Linux ] || fail "The gateway runs on Linux servers; this is $(uname -s)."
 case "$(uname -m)" in
   x86_64|amd64|aarch64|arm64) ok "Linux $(uname -m)" ;;
@@ -98,7 +115,7 @@ install_packages() { # install_packages NAME...
 }
 
 missing=()
-for tool in git curl openssl; do have "$tool" || missing+=("$tool"); done
+for tool in curl tar openssl; do have "$tool" || missing+=("$tool"); done
 if [ ${#missing[@]} -gt 0 ]; then
   if confirm "Missing: ${missing[*]}. Install now?"; then
     install_packages "${missing[@]}" || fail "Could not install ${missing[*]} automatically. Install them and run this again."
@@ -106,7 +123,7 @@ if [ ${#missing[@]} -gt 0 ]; then
     fail "Install ${missing[*]} and run this again."
   fi
 fi
-ok "git, curl, openssl"
+ok "curl, tar, openssl"
 
 if ! have docker; then
   say "  Docker is not installed."
@@ -137,46 +154,81 @@ fi
 ok "Docker Compose $($SUDO docker compose version --short 2>/dev/null)"
 
 # Not fatal: which ports matter depends on the role chosen in the next step.
-if have ss; then
+if have ss && [ ! -f "$INSTALL_DIR/.env" ]; then
   busy="$(ss -ltnH 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | sort -un | grep -xE '80|443|3000' | paste -sd' ' || true)"
   if [ -n "$busy" ]; then
-    warn "Port(s) already in use on this server: $busy. A master uses 80 and 443, a slave node 3000."
+    warn "Port(s) already in use on this server: $busy. A master uses 80 and 443 (see --http-port), a slave node 3000."
   else
     ok "Ports 80, 443 and 3000 are free"
   fi
 fi
 
-# ── The code ───────────────────────────────────────────────────────────────
+# ── The files ──────────────────────────────────────────────────────────────
+
+slug="${REPO_URL#*github.com[:/]}"; slug="${slug%.git}"; slug="${slug%/}"
+case "$slug" in */*) ;; *) [ -n "$TARBALL" ] || fail "Not a GitHub repository address: $REPO_URL" ;; esac
+
+# An existing install keeps following the branch it was installed from.
+if [ -z "$BRANCH" ] && [ -f "$INSTALL_DIR/.version" ]; then
+  BRANCH="$($SUDO sed -n 's/^BRANCH=//p' "$INSTALL_DIR/.version" | head -n1)"
+fi
+if [ -z "$BRANCH" ] && [ -z "$TARBALL" ]; then
+  BRANCH="$(curl -fsSL -m 20 "https://api.github.com/repos/$slug" 2>/dev/null | sed -n 's/.*"default_branch": *"\([^"]*\)".*/\1/p' | head -n1 || true)"
+fi
+[ -n "$BRANCH" ] || BRANCH=main
+# Pin the download to one commit, so the files and the recorded version agree.
+if [ -z "$REF" ] && [ -z "$TARBALL" ]; then
+  REF="$(curl -fsSL -m 20 -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/$slug/commits/$BRANCH" 2>/dev/null || true)"
+  case "$REF" in *[!0-9a-f]*|"") REF="" ;; esac
+fi
+[ -n "$TARBALL" ] || TARBALL="https://codeload.github.com/$slug/tar.gz/${REF:-$BRANCH}"
+
+# Building from source was chosen earlier for this server: keep doing so.
+if [ -f "$INSTALL_DIR/.env" ] && $SUDO grep -q '^INSTALL_FROM=source' "$INSTALL_DIR/.env"; then WITH_SOURCE=true; fi
 
 say
-if [ -d "$INSTALL_DIR/.git" ]; then
-  say "Updating the code in $INSTALL_DIR"
-  current="$($SUDO git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"
-  [ "$current" = "$REPO_URL" ] || warn "That directory was installed from $current; keeping that source."
-  if [ -n "$BRANCH" ]; then $SUDO git -C "$INSTALL_DIR" fetch --quiet origin "$BRANCH" && $SUDO git -C "$INSTALL_DIR" checkout --quiet "$BRANCH"; fi
-  $SUDO git -C "$INSTALL_DIR" pull --quiet --ff-only || fail "Could not update $INSTALL_DIR (local changes?). Resolve it with git and run this again."
+if [ -f "$INSTALL_DIR/install.sh" ]; then
+  say "Updating the gateway files in $INSTALL_DIR"
 elif [ -e "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
   fail "$INSTALL_DIR exists and is not empty. Choose another place with --dir, or remove it."
 else
-  say "Downloading the code to $INSTALL_DIR"
-  $SUDO mkdir -p "$(dirname "$INSTALL_DIR")"
-  if [ -n "$BRANCH" ]; then
-    $SUDO git clone --quiet --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
-  else
-    $SUDO git clone --quiet --depth 1 "$REPO_URL" "$INSTALL_DIR"
-  fi || fail "Could not download $REPO_URL. Check the address and, for a private repository, your access."
+  say "Downloading the gateway files to $INSTALL_DIR"
 fi
-[ -x "$INSTALL_DIR/install.sh" ] || fail "$INSTALL_DIR does not contain the gateway installer."
-ok "Code is in $INSTALL_DIR ($($SUDO git -C "$INSTALL_DIR" log -1 --format='%h, %cs' 2>/dev/null || echo 'version unknown'))"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+curl -fsSL -m 120 "$TARBALL" -o "$work/bundle.tar.gz" || fail "Could not download $TARBALL. Check the address and, for a private repository, your access."
+mkdir "$work/src"
+tar -xzf "$work/bundle.tar.gz" -C "$work/src" --strip-components=1 || fail "The download is not a valid archive."
+[ -f "$work/src/install.sh" ] && [ -f "$work/src/docker-compose.yml" ] || fail "The download does not contain the gateway."
+
+$SUDO mkdir -p "$INSTALL_DIR/scripts" "$INSTALL_DIR/certs"
+for file in $RUNTIME_FILES; do
+  [ -f "$work/src/$file" ] || fail "The download is missing $file."
+  $SUDO install -m "$( [ -x "$work/src/$file" ] && echo 755 || echo 644 )" "$work/src/$file" "$INSTALL_DIR/$file"
+done
+# Source code only where images are built on this server; otherwise it is not
+# kept, including what an earlier full copy left behind.
+for dir in $SOURCE_DIRS; do
+  $SUDO rm -rf "${INSTALL_DIR:?}/$dir"
+  if $WITH_SOURCE; then $SUDO cp -R "$work/src/$dir" "$INSTALL_DIR/$dir"; fi
+done
+for item in $OBSOLETE; do $SUDO rm -rf "${INSTALL_DIR:?}/$item"; done
+[ -f "$INSTALL_DIR/edge/.env" ] || $SUDO rm -rf "${INSTALL_DIR:?}/edge"
+
+printf 'REPO=%s\nBRANCH=%s\nSHA=%s\nTARBALL=%s\nINSTALLED_AT=%s\n' "$slug" "$BRANCH" "$REF" "$TARBALL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | $SUDO tee "$INSTALL_DIR/.version" >/dev/null
+ok "Files are in $INSTALL_DIR (version ${REF:0:7}${REF:+, }branch $BRANCH; $($SUDO du -sh "$INSTALL_DIR" 2>/dev/null | cut -f1) on disk)"
 
 # ── Hand over to the installer ─────────────────────────────────────────────
 
 say
-say "Starting the installer. It asks which role this server has and what it needs."
+say "Starting the installer."
 say
 cd "$INSTALL_DIR"
-if [ -n "$TTY" ] && [ "$TTY" != /dev/stdin ]; then
-  exec $SUDO ./install.sh "${INSTALLER_ARGS[@]}" < "$TTY"
-else
+if [ "$TTY" = /dev/tty ]; then
+  exec $SUDO ./install.sh "${INSTALLER_ARGS[@]}" < /dev/tty
+elif [ -n "$TTY" ]; then
   exec $SUDO ./install.sh "${INSTALLER_ARGS[@]}"
+else
+  exec $SUDO ./install.sh "${INSTALLER_ARGS[@]}" < /dev/null
 fi

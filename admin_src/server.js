@@ -10,6 +10,7 @@ const stations = require('./src/stations');
 const stats = require('./src/stats');
 const haproxy = require('./src/haproxy');
 const cluster = require('./src/cluster');
+const updates = require('./src/updates');
 const routes = require('./src/routes');
 const openapi = require('./src/openapi');
 const { errorHandler } = require('./src/errors');
@@ -84,6 +85,12 @@ async function main() {
   await cluster.publishOverrides();
   every(config.stationSyncMs, 'audio-overrides', cluster.publishOverrides);
   every(3600 * 1000, 'retention', stats.prune);
+  if (updates.enabled()) {
+    updates.check();
+    every(config.updateCheckMs, 'update-check', updates.check);
+  }
+  await updates.publishVersion();
+  every(config.stationSyncMs, 'version-publish', updates.publishVersion);
   if (haproxy.enabled()) {
     haproxy.sync().catch(() => {});
     // Failures are already logged once by the sync itself.
