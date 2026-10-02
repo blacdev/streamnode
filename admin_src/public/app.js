@@ -99,6 +99,7 @@ async function start() {
   $('whoami').textContent = state.user.username;
   for (const el of document.querySelectorAll('[data-admin]')) el.hidden = !isAdmin();
   await refresh();
+  if (isAdmin()) showUpdateNotice().catch(() => {});
   clearInterval(state.timer);
   state.timer = setInterval(() => refresh().catch(() => {}), 5000);
 }
@@ -123,6 +124,18 @@ $('logout').addEventListener('click', async () => {
   showLogin();
 });
 
+async function showUpdateNotice() {
+  const version = await api('GET', '/system/version');
+  const notice = $('updateNotice');
+  notice.hidden = version.update_available !== true;
+  if (notice.hidden) return;
+  notice.replaceChildren(
+    h('strong', {}, 'A newer version of the gateway is available. '),
+    h('button', { class: 'link', onclick: () => document.querySelector('[data-tab=updates]').click() }, 'Open Updates'),
+    ' to install it or to switch on automatic updates.'
+  );
+}
+
 // ── Tabs ───────────────────────────────────────────────────────────────────
 
 $('tabs').addEventListener('click', (event) => {
@@ -135,6 +148,7 @@ $('tabs').addEventListener('click', (event) => {
   if (tab === 'keys') loadKeys().catch(fail);
   if (tab === 'users') loadUsers().catch(fail);
   if (tab === 'servers') loadServers().catch(fail);
+  if (tab === 'updates') loadUpdates(true).catch(fail);
 });
 
 // ── Stations ───────────────────────────────────────────────────────────────
@@ -477,6 +491,83 @@ async function changeStationLimit(user) {
   if (!Number.isInteger(limit) || limit < 0) return toast('Enter a whole number, 0 or more.');
   await api('PATCH', `/users/${user.id}`, { max_stations: limit }).then(loadUsers).catch(fail);
 }
+
+// ── Updates ────────────────────────────────────────────────────────────────
+
+const short = (sha) => (sha ? sha.slice(0, 7) : 'Unknown');
+const UPDATE_STATES = { running: 'Installing', waiting: 'Waiting', ok: 'Last run', failed: 'Failed', idle: '' };
+
+async function loadUpdates(fillForm) {
+  const v = await api('GET', '/system/version');
+  const up = v.updater;
+  tiles($('updateTiles'), [
+    ['Running version', short(v.installed)],
+    ['Latest version', short(v.latest)],
+    ['Status', v.update_available === true ? 'Update available' : v.update_available === false ? 'Up to date' : 'Unknown'],
+    ['Automatic updates', v.settings.auto ? `Daily at ${v.settings.time}` : 'Off'],
+  ]);
+
+  // What the updater on the server is doing or last did, and anything in its way.
+  const lines = [];
+  if (!v.enabled) lines.push('This server is not watching a repository for updates (UPDATE_REPO is not set).');
+  else if (v.error) lines.push(`Could not check for updates: ${v.error}.`);
+  else if (v.update_available === null && !v.installed) lines.push('The running version is unknown because the images were built on this server, so updates cannot be detected here.');
+  if (!up.scheduler_running) lines.push('The update scheduler is not running on the server, so nothing is installed by itself. On the server, in the installation directory, run: ./scripts/update.sh schedule install');
+  if (up.install_pending) lines.push('An update has been requested and will start within 5 minutes.');
+  if (up.message && UPDATE_STATES[up.state]) lines.push(`${UPDATE_STATES[up.state]}: ${up.message}${up.updated_at ? ` (${formatDate(up.updated_at)})` : ''}`);
+  const stateBox = $('updateState');
+  stateBox.hidden = lines.length === 0;
+  stateBox.className = `notice${up.state === 'failed' || !up.scheduler_running ? ' alert' : ''}`;
+  stateBox.replaceChildren(...lines.flatMap((line, i) => (i ? [h('br'), line] : [line])));
+
+  if (fillForm) {
+    $('updateForm').elements.auto.checked = v.settings.auto;
+    $('updateForm').elements.time.value = v.settings.time;
+  }
+  $('updateClock').textContent = up.server_time
+    ? `On the server's own clock, which now reads ${up.server_time}${up.server_zone ? ` ${up.server_zone}` : ''}.`
+    : "On the server's own clock.";
+  const busy = up.install_pending || up.state === 'running';
+  $('installNow').disabled = v.update_available !== true || busy || !up.scheduler_running;
+  $('installText').textContent = v.update_available === true
+    ? `Version ${short(v.latest)} is available. Installing it backs up the database, downloads the new version and restarts the services that changed; listeners are disconnected for a few seconds and reconnect. It starts within 5 minutes of pressing the button.`
+    : v.update_available === false ? 'This server is on the latest version.' : 'It is not known whether a newer version exists.';
+  // Keep the page current while an update is under way.
+  clearTimeout(loadUpdates.timer);
+  if (busy && !$('tab-updates').hidden) loadUpdates.timer = setTimeout(() => loadUpdates(false).catch(() => {}), 10000);
+}
+
+$('updateForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('updateError').textContent = '';
+  const form = event.target.elements;
+  try {
+    await api('PUT', '/system/update-settings', { auto: form.auto.checked, time: form.time.value });
+    toast(form.auto.checked ? `Automatic updates are on, daily at ${form.time.value}` : 'Automatic updates are off');
+    await loadUpdates(true);
+  } catch (err) {
+    $('updateError').textContent = err.message;
+  }
+});
+
+$('installNow').addEventListener('click', async () => {
+  if (!confirm('Install the update now? Listeners are disconnected for a few seconds while services restart.')) return;
+  try {
+    await api('POST', '/system/update');
+    toast('Update requested; it starts within 5 minutes');
+    await loadUpdates(false);
+    showUpdateNotice().catch(() => {});
+  } catch (err) {
+    fail(err);
+  }
+});
+
+$('checkNow').addEventListener('click', async () => {
+  await api('GET', '/system/version?refresh').catch(fail);
+  await loadUpdates(false).catch(fail);
+  showUpdateNotice().catch(() => {});
+  toast('Checked for updates');
+});
 
 // ── Streaming servers ──────────────────────────────────────────────────────
 

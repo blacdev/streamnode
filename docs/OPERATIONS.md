@@ -133,6 +133,13 @@ docker compose exec postgres_db psql -U gateway -d gateway_management \
 docker compose up -d
 ```
 
+### Keeping up to date
+
+The dashboard's **Updates** tab shows when a newer version exists, installs it on
+request, and can do so automatically at a time of day you choose. Slave nodes follow
+their master. `./scripts/update.sh` does the same from the command line. Details:
+[Updating](INSTALLATION.md#updating).
+
 ### Certificate renewal
 
 With Let's Encrypt, the cron entry from [Installation](INSTALLATION.md#option-a-lets-encrypt-optional-automated)

@@ -165,3 +165,53 @@ test('URLs follow the request when the server is reached by IP address', () => {
     config.publicBaseUrl = saved;
   }
 });
+
+test('update status compares the running commit with the latest', () => {
+  const config = require('../src/config');
+  const updates = require('../src/updates');
+  const saved = { version: config.version, repo: config.updateRepo };
+  try {
+    config.updateRepo = 'acme/radio-gateway';
+    config.version = 'a'.repeat(40);
+    assert.strictEqual(updates.status().update_available, null, 'unknown until the repository has been checked');
+    config.version = '';
+    assert.strictEqual(updates.status().installed, null, 'a source build has no known version');
+    config.updateRepo = '';
+    assert.strictEqual(updates.status().enabled, false);
+  } finally {
+    config.version = saved.version;
+    config.updateRepo = saved.repo;
+  }
+});
+
+test('update settings are stored where the host updater reads them', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const config = require('../src/config');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'control-'));
+  const saved = config.controlDir;
+  config.controlDir = dir;
+  delete require.cache[require.resolve('../src/updates')];
+  const updates = require('../src/updates');
+  try {
+    assert.deepStrictEqual(updates.settings(), { auto: false, time: '04:15' }, 'defaults before anything is saved');
+    assert.deepStrictEqual(updates.saveSettings({ auto: true, time: '03:30' }), { auto: true, time: '03:30' });
+    assert.match(fs.readFileSync(path.join(dir, 'update-settings'), 'utf8'), /AUTO=true\nTIME=03:30\nREQUEST=0\n/);
+    assert.throws(() => updates.saveSettings({ time: '25:00' }), /invalid/);
+    assert.throws(() => updates.saveSettings({ auto: 'yes' }), /invalid/);
+
+    assert.strictEqual(updates.updater().scheduler_running, false, 'no scheduler has reported yet');
+    fs.writeFileSync(path.join(dir, 'update-status'), `TICK=${new Date().toISOString()}\nSTATE=ok\nMESSAGE=Updated to abc1234 (scheduled).\nHANDLED_REQUEST=0\nSERVER_TIME=03:31\n`);
+    updates.requestInstall();
+    const seen = updates.updater();
+    assert.strictEqual(seen.scheduler_running, true);
+    assert.strictEqual(seen.install_pending, true);
+    assert.strictEqual(seen.message, 'Updated to abc1234 (scheduled).');
+    assert.deepStrictEqual(updates.settings(), { auto: true, time: '03:30' }, 'a request keeps the settings');
+  } finally {
+    config.controlDir = saved;
+    delete require.cache[require.resolve('../src/updates')];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

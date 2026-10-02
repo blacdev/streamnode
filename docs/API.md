@@ -334,6 +334,44 @@ An optional [edge server](SCALING.md#edge-servers-optional) is listed with
 `{"name": "edge-2", "host": "203.0.113.20", "mode": "direct"}`. For those, `state` is
 `UP` while the engine is reporting, and weight and draining do not apply.
 
+## Version and updates
+
+Administrators only. These are what the dashboard's Updates tab uses.
+
+```bash
+curl $API/system/version -H "X-API-Key: $KEY"
+```
+
+```json
+{ "enabled": true, "repository": "blacdev/streamnode", "branch": "main",
+  "installed": "5f3d7b3c0d...", "latest": "9a1e44f2b7...", "update_available": true,
+  "checked_at": "2026-03-01T14:00:00.000Z", "error": null,
+  "settings": { "auto": true, "time": "04:15" },
+  "updater": { "scheduler_running": true, "server_time": "14:05", "server_zone": "UTC",
+               "state": "ok", "message": "Updated to 5f3d7b3 (scheduled).",
+               "updated_at": "2026-03-01T04:16:10Z", "install_pending": false } }
+```
+
+```bash
+# automatic updates, daily at 04:15 on the server's clock
+curl -X PUT $API/system/update-settings -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"auto": true, "time": "04:15"}'
+# install the latest version now (starts within 5 minutes)
+curl -X POST $API/system/update -H "X-API-Key: $KEY"
+```
+
+| Field | Meaning |
+|---|---|
+| `update_available` | `null` when it cannot be told: images built from source, or GitHub not reachable |
+| `settings.time` | Time of day on the server's own clock; `updater.server_time` shows what that clock reads |
+| `updater.scheduler_running` | `false` means nothing is installed by itself: the scheduler is missing on the server |
+| `updater.state` | `idle`, `running`, `waiting` (images still being built), `ok` or `failed`, with `message` |
+| `updater.install_pending` | An "install now" request is waiting for the next scheduler pass |
+
+The gateway checks its repository every 6 hours; add `?refresh` to check now.
+`POST /system/update` answers `409` when already current and `503` when the scheduler
+is not running. See [Updating](INSTALLATION.md#updating).
+
 ## Capacity: is another server needed?
 
 Administrators only.

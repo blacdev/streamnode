@@ -1,0 +1,13 @@
+# Adds the build instructions for compiling the images on this server instead
+# of downloading them. Needs the source directories (rust_src/, admin_src/).
+# install.sh --build-from-source arranges both and puts this file in
+# COMPOSE_FILE, after which plain "docker compose" commands include it.
+services:
+  admin_dashboard:
+    build: ./admin_src
+
+  audio_engine:
+    build: ./rust_src
+
+  slave_engine:
+    build: ./rust_src

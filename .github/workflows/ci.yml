@@ -45,15 +45,20 @@ jobs:
       - name: Shell syntax
         run: |
           for f in get.sh install.sh scripts/*.sh edge/sync-cert.sh; do bash -n "$f"; done
+      - name: The one-line installer's file list matches the repository
+        run: |
+          for f in $(sed -n 's/^RUNTIME_FILES="\(.*\)"$/\1/p' get.sh); do test -e "$f" || { echo "get.sh lists $f, which does not exist"; exit 1; }; done
       - name: ShellCheck
         run: shellcheck --severity=error get.sh install.sh scripts/*.sh edge/sync-cert.sh
       - name: Compose files, every role
         run: |
           for profiles in master slave master,local-engine; do
             COMPOSE_PROFILES=$profiles docker compose --env-file .env.example config -q
+            COMPOSE_PROFILES=$profiles docker compose --env-file .env.example \
+              -f docker-compose.yml -f docker-compose.build.yml config -q
           done
           docker compose --env-file .env.example --profile master --profile local-engine \
-            -f docker-compose.yml -f docker-compose.demo.yml config -q
+            -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.demo.yml config -q
           (cd edge && docker compose --env-file .env.example config -q)
       - name: HAProxy configuration
         run: |

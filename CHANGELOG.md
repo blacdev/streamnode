@@ -4,6 +4,48 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-10-02
+
+### Added
+
+- **Updates tab in the dashboard:** running and latest version, a switch and time of
+  day for automatic updates, "Install the update now", and what the updater last did.
+  API: `PUT /system/update-settings`, `POST /system/update`.
+- **Slave nodes follow their master's version** automatically.
+- **Automatic migration of older installations** (`scripts/migrate.sh`, run by the
+  installer): full clones are slimmed down, old settings are converted, the earlier
+  update cron entry is carried over. Nothing has to be done by hand.
+- The installer sets up the update scheduler itself.
+
+### Changed
+
+- `scripts/update.sh auto on|off` now sets the same switch the dashboard does; the
+  scheduler entry is managed with `scripts/update.sh schedule install|remove`.
+
+### Fixed
+
+- Removing a cron entry failed when it was the only entry in the crontab.
+
+## [2.6.0] - 2026-10-02
+
+### Added
+
+- **Update monitoring.** The dashboard shows a notice when the repository has a newer
+  version (`GET /api/v1/system/version`). `scripts/update.sh` checks and installs
+  updates, optionally every day (`auto on`), backing up first and waiting until the
+  new version's images are published.
+- `get.sh` options `--ref`, `--with-source` and `--non-interactive`; installer option
+  `--prebuilt`.
+
+### Changed
+
+- **Servers no longer hold the source code.** `get.sh` downloads only the runtime
+  files (about 100 KB) instead of cloning the repository, and `git` is no longer
+  required. The source is fetched on demand for `--build-from-source` and removed
+  again when a server returns to prebuilt images. Existing full copies are slimmed
+  down on the next run.
+- Build instructions moved from `docker-compose.yml` to `docker-compose.build.yml`.
+
 ## [2.5.0] - 2026-10-01
 
 ### Added
@@ -26,6 +68,8 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- HAProxy accepted at most 2,000 simultaneous connections per frontend (its built-in
+  default); the limit is now 50,000, matching the global setting.
 - The installer now asks how HTTPS is provided on a fresh interactive install with a
   domain (it previously kept the self-signed default without asking).
 - `scripts/add-server.sh` prints the master's real address when no public URL is set.

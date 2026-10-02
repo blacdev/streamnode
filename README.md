@@ -45,13 +45,15 @@ On the server, run:
 curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
 ```
 
-It checks the server, offers to install Docker if it is missing, downloads the code to
-`/opt/radio-gateway` and starts the installer. The services run in Docker from
-prebuilt images, so nothing is compiled on the server and a small one is enough. The
-installer asks which role the server has, the domain, and how HTTPS is provided. At the end it prints the dashboard address,
+It checks the server, offers to install Docker if it is missing, places the handful of
+files the gateway needs in `/opt/radio-gateway` and starts the installer. The services
+run in Docker from prebuilt images, so the source code is not kept on the server,
+nothing is compiled there and a small one is enough. Afterwards the dashboard's
+Updates tab shows when a new version is out and installs it, on request or
+automatically at a time you choose. The installer asks which role the server has, the domain, and how HTTPS is provided. At the end it prints the dashboard address,
 password and administrator API key.
 
-If you already have the code, run the installer directly:
+If you have cloned the repository (for development), run the installer directly:
 
 ```bash
 ./install.sh --role both --domain stream.example.com
@@ -130,6 +132,7 @@ The interactive API reference (OpenAPI/Swagger) is served by the gateway itself 
 get.sh                One-line bootstrap: checks the server, downloads the code, runs install.sh
 install.sh            Installer for every role: both, master, slave
 docker-compose.yml    All services; the role decides which ones start
+docker-compose.build.yml   Build instructions, used only when compiling on the server
 edge/                 Optional edge server: own HAProxy and engine, same domain
 demo/                 Demo radio source used by scripts/try-local.sh
 haproxy.cfg           Edge proxy: TLS, routing, rate limiting
@@ -137,7 +140,7 @@ rust_src/             Audio relay engine (Rust)
 admin_src/            Management API, dashboard, statistics (Node.js)
   migrations/         Database schema, applied automatically on start
   public/             Dashboard
-scripts/              add-server, local test, Let's Encrypt, backup and restore
+scripts/              update, add-server, uninstall, backup, restore, Let's Encrypt, local test
 docs/                 Documentation
 ```
 

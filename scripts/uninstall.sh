@@ -117,9 +117,16 @@ if $REMOVE_CODE && [ -d "$DIR" ]; then
 elif [ -d "$DIR" ]; then
   # A fresh install must not reuse the old role, passwords or certificate.
   if ! $KEEP_DATA; then
-    $SUDO rm -f "$DIR/.env" "$DIR/.env.local" "$DIR/certs/stream.pem" "$DIR/edge/.env" "$DIR/edge/certs/stream.pem"
+    $SUDO rm -f "$DIR/.env" "$DIR/.env.local" "$DIR/certs/stream.pem" "$DIR/certs/cluster.pem" "$DIR/edge/.env" "$DIR/edge/certs/stream.pem"
+    $SUDO rm -rf "$DIR/control"
     echo "Removed the old settings and certificate from $DIR."
   fi
+fi
+
+# Stop the daily automatic update, if it was turned on for this installation.
+if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qE "# radio-gateway (updater|auto-update) \($DIR\)"; then
+  { crontab -l 2>/dev/null | grep -vF "# radio-gateway updater ($DIR)" | grep -vF "# radio-gateway auto-update ($DIR)" || true; } | crontab -
+  echo "Removed the update scheduler."
 fi
 
 echo

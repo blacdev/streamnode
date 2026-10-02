@@ -17,7 +17,13 @@ Only the services whose settings changed are restarted.
 | `IMAGE_PREFIX` | your repository's registry | Where the images are, e.g. `ghcr.io/acme/radio-gateway`. The images are `<prefix>/engine` and `<prefix>/admin` |
 | `IMAGE_TAG` | `latest` | Version to run: `latest`, or a release such as `v2.4.0` (`--image-tag`) |
 
-These apply to every role. See [Images](INSTALLATION.md#images).
+| `UPDATE_REPO` | the repository installed from | Repository watched for new versions, as `owner/name`. Empty turns the dashboard's update notice off |
+| `UPDATE_BRANCH` | `main` | Branch whose latest commit counts as the newest version |
+| `UPDATE_FOLLOW_MASTER` | `true` | On a slave node: follow the version the master runs. `false` leaves the slave to be updated by hand |
+| `COMPOSE_FILE` | unset | Set to `docker-compose.yml:docker-compose.build.yml` by `--build-from-source`, so the build instructions are included |
+
+These apply to every role. See [Images](INSTALLATION.md#images) and
+[Updating](INSTALLATION.md#updating).
 
 ## General
 
