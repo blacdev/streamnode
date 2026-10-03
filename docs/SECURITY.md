@@ -134,7 +134,14 @@ What follows from this:
 - The dashboard builds the page with DOM methods, never by inserting HTML, so station
   names and song titles from untrusted sources cannot inject markup. A
   Content-Security-Policy restricts scripts to the gateway's own origin.
-- Request bodies are limited to 64 KB.
+- JSON request bodies are limited to 64 KB. Uploaded audio is limited by the account's
+  storage quota, checked before and while the file is received, and is never executed
+  or decoded: only its frame headers are read.
+- Uploaded files are visible only to their account and to administrators. Streaming
+  servers fetch them from `/api/v1/internal/files/{id}` with the engine secret.
+- The Dropbox app secret and refresh token are stored in the database (`settings`
+  table) and are never returned by the API. Creating the app with *App folder* access
+  confines the gateway to its own folder in the Dropbox account.
 - The engine and admin containers run as non-root users. HAProxy starts as root to
   read the certificate and bind ports, then drops to an unprivileged user.
 - Changes to stations, accounts and keys are recorded in the audit log with the

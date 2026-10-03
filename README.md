@@ -120,6 +120,7 @@ the other commands.
 | [Integration guide](docs/INTEGRATION.md) | Developers | Connecting a billing system or existing platform |
 | [Architecture](docs/ARCHITECTURE.md) | Developers | Components, data flow, design decisions |
 | [Station guide](docs/STATION_GUIDE.md) | Station owners | What to provide, title and artwork URL formats |
+| [Failover, idents and fallback audio](docs/FAILOVER.md) | Station owners, operators | What plays when a stream stops, uploading files, quotas, Dropbox |
 | [Listener and player guide](docs/PLAYERS.md) | Station owners, support | Stream URLs, player compatibility, web player embed |
 | [Changelog](CHANGELOG.md) | Everyone | Release history |
 

@@ -4,7 +4,9 @@ mod health;
 mod hub;
 mod icy;
 mod listener;
+mod frames;
 mod nowplaying;
+mod playout;
 mod station;
 mod stats;
 mod sysinfo;
@@ -84,7 +86,9 @@ async fn main() {
     }
     let redis = connect_redis(&cluster.redis_url).await;
     let bind = cfg.bind.clone();
-    let hub = Hub::new(cfg, redis);
+    // A master reached without certificate verification is fetched from the same way.
+    let insecure = cluster.redis_url.ends_with("#insecure") || cfg.allow_insecure_tls;
+    let hub = Hub::new(cfg, redis, cluster.master_url.clone(), cluster.engine_secret.clone(), insecure);
 
     tokio::spawn(stats::run(hub.clone()));
     tokio::spawn(flush_on_shutdown(hub.clone()));

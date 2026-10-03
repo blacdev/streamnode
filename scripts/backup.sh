@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Writes a compressed PostgreSQL dump to backups/. Everything that must
 # survive lives in PostgreSQL; Redis is rebuilt from it on start-up.
+# Uploaded audio files are not part of the dump: they are in Dropbox when it
+# is connected, and otherwise in the media_files volume (see docs/OPERATIONS.md).
 #
 #   scripts/backup.sh            create backups/gateway-YYYYmmdd-HHMMSS.sql.gz
 #   KEEP_DAYS=30 scripts/backup.sh   also delete dumps older than 30 days

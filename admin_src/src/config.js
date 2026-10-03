@@ -53,6 +53,14 @@ module.exports = {
   // Directory shared with the host, through which the dashboard steers the updater.
   controlDir: text('CONTROL_DIR', '/control'),
 
+  // Uploaded idents and fallback audio. With Dropbox connected, local copies
+  // beyond FILE_CACHE_MB are dropped and fetched again when needed.
+  filesDir: text('FILES_DIR', '/files'),
+  fileCacheMb: int('FILE_CACHE_MB', 2048),
+  dropboxAuthUrl: text('DROPBOX_AUTH_URL', 'https://www.dropbox.com').replace(/\/+$/, ''),
+  dropboxApiUrl: text('DROPBOX_API_URL', 'https://api.dropboxapi.com').replace(/\/+$/, ''),
+  dropboxContentUrl: text('DROPBOX_CONTENT_URL', 'https://content.dropboxapi.com').replace(/\/+$/, ''),
+
   // HAProxy runtime API (host:port), used to add and remove streaming servers.
   // Empty disables server management.
   haproxyAdmin: text('HAPROXY_ADMIN'),

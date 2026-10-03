@@ -38,14 +38,49 @@ VLC plays it, the gateway can relay it.
 | `https://provider.example/yourstation.mp3` | Addresses that need a username and password |
 | A `.m3u` or `.pls` playlist pointing at any of the above | Private or internal network addresses |
 
+### Supported stream types
+
+Every format in the first four rows is relayed unchanged. What differs is what the
+gateway can add to it.
+
+| Your stream | Relayed | Silence detection | Fades | Ident and fallback audio |
+|---|---|---|---|---|
+| **MP3** (Icecast, SHOUTcast or a hosted provider; any bitrate, constant or variable) | Yes | Yes | Yes | Yes |
+| **AAC** (AAC-LC as ADTS, content type `audio/aac`) | Yes | Yes | No: direct cuts | Yes |
+| **HE-AAC / AAC+ / aacPlus** (`audio/aacp`, common at 32 to 64 kbps) | Yes | No | No: direct cuts | Yes |
+| **Other audio** (Ogg Vorbis, Opus, FLAC, MPEG Layer II, AAC in LATM form) | Yes, exactly as it arrives | No | No | No |
+| HLS (`.m3u8`), DASH, web pages with a player, streams that need a login | **No** | | | |
+
+- **Silence detection** means a stream that stays connected but carries only silence
+  is treated as down. Every relayed type is still treated as down when it stops
+  sending or disconnects.
+- **HE-AAC** frames stay full even when they carry silence, so silence cannot be
+  recognised without decoding. The gateway takes an AAC stream to be HE-AAC when it is
+  announced as `audio/aacp` or its frame headers state 24 kHz or less.
+- A stream whose content does not match its label, or that changes format while
+  playing, is treated as "other audio" from that moment.
+
+The type is detected the first time the station plays. From then on the dashboard
+shows it under the station's name, with what is and is not available, and the API
+reports it as `live.stream_format`. The same table is served at
+`/api/v1/stream-types`.
+
 ### Backup stream
 
 A second source that takes over automatically if your primary cannot be reached,
-drops, or goes silent for about 10 seconds. Listeners stay connected and hear a short
-gap. When your primary is healthy again the gateway switches back by itself.
+drops, or goes silent for 6 seconds (you can change the number). Listeners stay
+connected. When your primary is healthy again the gateway switches back by itself.
 
 Use the **same format and bitrate** as your primary. Different formats can make
 players stutter or stop when the switch happens.
+
+### Ident and fallback audio
+
+You can upload a short **ident** that is played whenever the station has to switch
+away from a failed stream, and a **fallback file** that plays in a loop if neither
+stream has audio, so listeners are never left in silence. Files must be in exactly
+the same format as your stream, because the gateway does not convert audio. See
+[Failover, idents and fallback audio](FAILOVER.md).
 
 ### Song titles
 

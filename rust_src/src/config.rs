@@ -17,6 +17,9 @@ pub struct Config {
     /// address defaults to wherever the join request came from.
     pub advertise_address: Option<String>,
     pub advertise_port: u16,
+    /// The master's API, for an engine on the same server; a slave uses the
+    /// address it enrolled with.
+    pub admin_url: Option<String>,
     /// Accept a master whose certificate cannot be verified (self-signed).
     pub allow_insecure_tls: bool,
     /// Where the enrolment is saved between restarts.
@@ -96,6 +99,7 @@ impl Config {
             setup_key: opt("NODE_SETUP_KEY"),
             advertise_address: opt("ADVERTISE_ADDRESS"),
             advertise_port: var("ADVERTISE_PORT", 3000u16),
+            admin_url: opt("ADMIN_URL"),
             allow_insecure_tls: var("ALLOW_INSECURE_TLS", false),
             data_dir: var("DATA_DIR", "/data".to_string()),
             bind: var("BIND_ADDR", "0.0.0.0:3000".to_string()),

@@ -75,13 +75,27 @@ A source is considered connected only once it has delivered audio bytes, not mer
 accepted a connection. From then on the relay treats three events as loss of source:
 a read error, end of stream, and no data for `STALL_TIMEOUT_SECS`.
 
+MP3 and AAC streams are cut into frames as they pass through (headers only; nothing is
+decoded), which gives the relay three things: switches land on frame boundaries, a
+frame can be recognised as digital silence (an MP3 frame with no spectral data, an AAC
+frame of a few bytes), and the stream's format is known (`format:<slug>` in Redis) so
+uploaded files can be checked against it. Other formats are relayed as opaque bytes.
+
 | Situation | Behaviour |
 |---|---|
 | Primary fails on connect | Backup is tried immediately |
-| Primary drops or stalls mid-stream | Backup is connected; listeners stay connected and hear a short gap |
-| Running on backup | Primary is probed every `PRIMARY_RETRY_SECS` in the background; when it delivers audio the relay switches back |
-| Backup also fails | Primary is retried first, then both with backoff (1 s up to 15 s) for as long as listeners remain |
-| Both down, new listener | Receives `502` after the first failed round, or `504` if the attempt outlasts `READY_TIMEOUT_SECS` |
+| The playing stream drops, stalls or goes silent | It is retried for the station's failover delay (6 s by default). If it returns, nothing else happens |
+| Still no audio after the delay | The ident plays, then the next source: the backup stream, else the fallback file, looped and paced in real time |
+| Running on the backup or the fallback file | Streams that are down are probed in the background every 2 s; one that has delivered a second of real audio is returned to at once: the ident first if the station has one, otherwise (MP3) a fade out and in made by lowering each frame's `global_gain`, with no decoding |
+| Any join into an MP3 stream | Frames whose data begins before the join (the bit reservoir) are sent with empty side information, so players decode silence for about 26 ms each instead of noise |
+| Nothing left to play | Sources are retried with backoff; after `STATION_FAIL_ROUNDS` the station is marked silent on that server and its listeners released |
+| Both down, new listener | Hears the fallback file if there is one; otherwise receives `502` after the first failed round, or `504` if the attempt outlasts `READY_TIMEOUT_SECS` |
+
+Idents and fallback files are fetched from the master
+(`GET /api/v1/internal/files/{id}`, authenticated with the engine secret): the ident
+into memory when the relay starts, the fallback file as a stream read about a second
+ahead of what is played, so its size does not matter. A file whose format differs from
+the stream's is skipped. See [Failover, idents and fallback audio](FAILOVER.md).
 
 Listeners keep the response headers they received when they connected, so the backup
 should use the same codec as the primary.
@@ -172,6 +186,8 @@ live:<slug>:<node> hash (expires after 15 s)   --> read directly by the API
 | `api_keys` | SHA-256 hashes of API keys, with a display prefix |
 | `station_stats_minute` | One row per station per flush while active |
 | `station_stats_daily` | One row per station per UTC day, permanent |
+| `media_files` | Uploaded idents and fallback files: owner, format, length, where the audio starts, where it is stored |
+| `settings` | Gateway-wide settings changed while running (ident limit, default quota, Dropbox connection) |
 | `engine_nodes` | Streaming servers HAProxy balances across |
 | `join_tokens` | Hashes of one-time tokens for enrolling slave nodes |
 | `audit_log` | Who changed what, from which address |
@@ -191,6 +207,7 @@ advisory lock.
 | `engine:nodes` | sorted set | engine | Heartbeat of each engine |
 | `node:<node>` | hash, 30 s expiry | engine | Resource figures and audio state of each engine |
 | `silent:<node>` | hash, 30 s expiry | engine | Stations with no audio on that engine |
+| `format:<slug>` | hash | engine | Codec, sample rate, channels and bitrate last seen on the station's stream |
 | `node:<node>:audio_override` | string | admin | Reason, while an administrator forces "no audio" |
 | `stats:*` | hash / sorted set | engine | Counters awaiting persistence |
 | `flush:<ts>:stats:*` | hash / sorted set | admin | Snapshot being persisted |

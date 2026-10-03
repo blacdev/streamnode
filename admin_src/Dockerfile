@@ -8,6 +8,8 @@ COPY . .
 # with the repository to tell when an update is available.
 ARG GIT_SHA=""
 ENV GATEWAY_VERSION=$GIT_SHA
+# Uploaded audio; a volume mounted here keeps this ownership.
+RUN mkdir -p /files && chown node:node /files
 USER node
 EXPOSE 8000
 CMD ["node", "server.js"]

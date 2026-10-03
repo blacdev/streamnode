@@ -4,6 +4,49 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] - 2026-10-02
+
+### Added
+
+- **Failover delay per station** (`failover_delay_secs`, default 6): how long a stream
+  may be without audio before the station moves on. A stream that recovers within the
+  delay is simply carried on with. Returning to a stream that is back is immediate.
+- **Clean returns.** The ident, if the station has one, introduces the returning
+  stream. Without an ident, MP3 stations fade out what is playing and fade the stream
+  in, done by adjusting each frame's stated volume rather than converting audio. If
+  only silence is playing, the stream starts at once.
+- **Silence counts as no audio.** A stream that keeps sending but carries only digital
+  silence fails over like one that is down. Read from MP3 and AAC frame headers
+  without decoding; can be switched off per station (`silence_detection`).
+- **Fallback audio.** An uploaded file, looped when neither the primary nor the backup
+  stream has audio. The station returns to a live stream by itself.
+- **Idents.** An optional short clip played at every change of source. The longest allowed ident (5 s by default) is set by the
+  administrator.
+- **Audio files library** with per-account storage quotas, set by the administrator
+  for everyone or per account. API: `/files`, `/settings`, `storage_quota_mb` on
+  accounts. Dashboard: *Audio files* and *Settings* tabs.
+- **Dropbox storage.** The administrator connects a Dropbox app (OAuth); uploaded files
+  are kept there, with a size-limited copy on the server (`FILE_CACHE_MB`).
+- Uploaded files are never converted. One that does not match its station's stream, or
+  is not MP3/AAC, too long for an ident or over quota, is refused with the reason and
+  what to change.
+- **Stream types.** `GET /stream-types` (no sign-in needed) and the station form list
+  which kinds of stream are supported and what is available on each. Once a station
+  has played, the dashboard and `live.stream_format` show its detected type (MP3, AAC,
+  HE-AAC or other) and the features that apply to it.
+- A stream labelled MP3 or AAC that is really something else, or that changes format
+  while playing, is relayed as it arrives instead of being treated as silent.
+- Variable-bitrate MP3 streams are recognised; files for them are not held to a bitrate.
+- `live.source` can be `fallback`.
+- Guide: [Failover, idents and fallback audio](docs/FAILOVER.md).
+
+### Changed
+
+- Switches between sources now happen on audio frame boundaries for MP3 and AAC.
+- A stream that stalls mid-broadcast is given up on after the station's failover delay
+  rather than `STALL_TIMEOUT_SECS`, which now only covers a source's first bytes.
+- New `media_files` volume on the master; the local engine is given `ADMIN_URL`.
+
 ## [2.7.0] - 2026-10-02
 
 ### Added
