@@ -113,7 +113,7 @@ impl Config {
             stats_flush: secs("STATS_FLUSH_SECS", 2),
             burst_bytes: var("BURST_BYTES", 65_536usize),
             allow_private_sources: var("ALLOW_PRIVATE_SOURCES", false),
-            user_agent: var("UPSTREAM_USER_AGENT", "RadioGateway/1.0".to_string()),
+            user_agent: var("UPSTREAM_USER_AGENT", "StreamNode/1.0".to_string()),
             station_fail_rounds: var("STATION_FAIL_ROUNDS", 3u32).max(1),
             station_retry: secs("STATION_RETRY_SECS", 30),
             control_dir: opt("CONTROL_DIR"),

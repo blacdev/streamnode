@@ -34,7 +34,7 @@ const stationWritable = {
 module.exports = {
   openapi: '3.0.3',
   info: {
-    title: 'Radio Gateway API',
+    title: 'StreamNode API',
     version: '1.0.0',
     description: [
       'Management API for the radio rebroadcast gateway. Provision stations, suspend and resume them, read live listener counts and pull usage for billing.',

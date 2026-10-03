@@ -171,7 +171,7 @@ test('update status compares the running commit with the latest', () => {
   const updates = require('../src/updates');
   const saved = { version: config.version, repo: config.updateRepo };
   try {
-    config.updateRepo = 'acme/radio-gateway';
+    config.updateRepo = 'acme/streamnode';
     config.version = 'a'.repeat(40);
     assert.strictEqual(updates.status().update_available, null, 'unknown until the repository has been checked');
     config.version = '';

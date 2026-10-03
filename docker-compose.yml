@@ -9,7 +9,7 @@
 # .env) and downloaded, so this file, haproxy.cfg and .env are all a server
 # needs. To compile the images from source instead, the source directories and
 # docker-compose.build.yml are added (install.sh --build-from-source).
-name: radio-gateway
+name: streamnode
 
 x-engine-tuning: &engine-tuning
   ALLOW_PRIVATE_SOURCES: ${ALLOW_PRIVATE_SOURCES:-false}
@@ -58,7 +58,7 @@ services:
 
   admin_dashboard:
     profiles: ["master"]
-    image: ${IMAGE_PREFIX:-radio-gateway}/admin:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-streamnode}/admin:${IMAGE_TAG:-latest}
     restart: always
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:-}@postgres_db:5432/${POSTGRES_DB:-gateway_management}
@@ -138,7 +138,7 @@ services:
   # the internal network.
   audio_engine:
     profiles: ["local-engine"]
-    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     restart: always
     environment:
       <<: *engine-tuning
@@ -161,7 +161,7 @@ services:
   # result in its volume; the master's HAProxy then sends it listeners.
   slave_engine:
     profiles: ["slave"]
-    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     restart: always
     environment:
       <<: *engine-tuning

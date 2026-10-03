@@ -14,7 +14,7 @@ Only the services whose settings changed are restarted.
 | Variable | Default | Description |
 |---|---|---|
 | `INSTALL_FROM` | `images` | `images` downloads the prebuilt images; `source` compiles them on the server (`--build-from-source`) |
-| `IMAGE_PREFIX` | your repository's registry | Where the images are, e.g. `ghcr.io/acme/radio-gateway`. The images are `<prefix>/engine` and `<prefix>/admin` |
+| `IMAGE_PREFIX` | your repository's registry | Where the images are, e.g. `ghcr.io/acme/streamnode`. The images are `<prefix>/engine` and `<prefix>/admin` |
 | `IMAGE_TAG` | `latest` | Version to run: `latest`, or a release such as `v2.4.0` (`--image-tag`) |
 
 | `UPDATE_REPO` | the repository installed from | Repository watched for new versions, as `owner/name`. Empty turns the dashboard's update notice off |
@@ -135,7 +135,7 @@ The following are read by the engine but not listed in `.env.example`; add them 
 | `READY_TIMEOUT_SECS` | `15` | How long a new listener waits for a source before receiving an error |
 | `CONFIG_REFRESH_SECS` | `5` | How quickly a running relay notices edits, suspension or deletion |
 | `STATS_FLUSH_SECS` | `2` | How often counters and live state are written to Redis |
-| `UPSTREAM_USER_AGENT` | `RadioGateway/1.0` | User-Agent presented to sources |
+| `UPSTREAM_USER_AGENT` | `StreamNode/1.0` | User-Agent presented to sources |
 | `RUST_LOG` | `info` | Log level: `error`, `warn`, `info`, `debug` |
 | `NODE_ID` | `local` on the master | Name this engine reports under and joins with |
 | `ADMIN_URL` | `http://admin_dashboard:8000` on the master | Where the engine on the master's own server fetches idents and fallback files from. Slave nodes use the master address they joined with |

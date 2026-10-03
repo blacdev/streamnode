@@ -1,4 +1,4 @@
-# Radio Gateway
+# StreamNode
 
 A self-hosted rebroadcast gateway for internet radio. A station gives it the URL of
 its existing stream; the gateway opens **one** connection to that stream and fans it
@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | ba
 ```
 
 It checks the server, offers to install Docker if it is missing, places the handful of
-files the gateway needs in `/opt/radio-gateway` and starts the installer. The services
+files the gateway needs in `/opt/streamnode` and starts the installer. The services
 run in Docker from prebuilt images, so the source code is not kept on the server,
 nothing is compiled there and a small one is enough. Afterwards the dashboard's
 Updates tab shows when a new version is out and installs it, on request or

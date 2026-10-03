@@ -23,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_FILE=.env.local
-PROJECT=radio-gateway-local
+PROJECT=streamnode-local
 
 fail() { echo "Error: $*" >&2; exit 1; }
 

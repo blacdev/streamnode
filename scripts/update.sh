@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 DIR="$(pwd)"
 
 ACTION="${1:-run}"; [ $# -gt 0 ] && shift
-SUB="" YES=false BACKUP=true TARGET="" AT="" GET_SH="${RADIO_GATEWAY_GET_SH:-}"
+SUB="" YES=false BACKUP=true TARGET="" AT="" GET_SH="${STREAMNODE_GET_SH:-${RADIO_GATEWAY_GET_SH:-}}"
 while [ $# -gt 0 ]; do
   case "$1" in
     on|off|status|install|remove) SUB="$1"; shift ;;
@@ -75,7 +75,8 @@ if [ ! -f .version ] && [ -x scripts/migrate.sh ]; then ./scripts/migrate.sh pre
 [ -f .version ] || fail "This installation's version is not recorded. Run the one-line install command again in this directory; it keeps settings and data."
 REPO="$(info REPO)"; BRANCH="$(info BRANCH)"; INSTALLED="$(info SHA)"
 [ -n "$REPO" ] || fail ".version does not name a repository."
-MARK="# radio-gateway updater ($DIR)"
+MARK="# streamnode updater ($DIR)"
+TARBALL_OVERRIDE="${STREAMNODE_TARBALL:-${RADIO_GATEWAY_TARBALL:-}}"
 
 latest_sha() {
   local sha
@@ -133,7 +134,7 @@ apply() {
   # get.sh replaces the files (this script included) with new ones and re-runs
   # the installer with the existing settings.
   bash "$script" --dir "$DIR" --ref "$LATEST" --branch "${BRANCH:-main}" --non-interactive \
-    ${RADIO_GATEWAY_TARBALL:+--tarball "$RADIO_GATEWAY_TARBALL"}
+    ${TARBALL_OVERRIDE:+--tarball "$TARBALL_OVERRIDE"}
 }
 
 # One pass of the scheduler: act on what the dashboard (or the master) asks.
@@ -236,7 +237,7 @@ case "$ACTION" in
   schedule)
     command -v crontab >/dev/null 2>&1 || fail "cron is not installed on this server (crontab not found), so updates cannot be scheduled. Install cron, then run: scripts/update.sh schedule install"
     current="$(crontab -l 2>/dev/null || true)"
-    kept="$(printf '%s\n' "$current" | grep -vF "$MARK" | grep -vF "# radio-gateway auto-update ($DIR)" | sed '/^$/d' || true)"
+    kept="$(printf '%s\n' "$current" | grep -vF "$MARK" | grep -vF "# radio-gateway updater (" | grep -vF "# radio-gateway auto-update (" | sed '/^$/d' || true)"
     case "$SUB" in
       install)
         ensure_control

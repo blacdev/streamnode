@@ -8,6 +8,8 @@
 #                                the source code and other files a server does not need
 #   scripts/migrate.sh slim --force   the same for a full "git clone" made by hand, which
 #                                is otherwise left alone in case it is a development copy
+#   scripts/migrate.sh drop-old-data  remove the data volumes kept as a backup after the
+#                                move from the old project name (radio-gateway)
 #
 # What it handles:
 #   - installs that are a full copy (git clone) of the repository
@@ -15,6 +17,7 @@
 #     password, the engine secret or prebuilt images existed
 #   - settings that refer to files which no longer exist
 #   - the daily update entry used before the dashboard-controlled updater
+#   - servers installed before the project was renamed from radio-gateway
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -45,6 +48,103 @@ is_installer_clone() {
   [ -d .git ] && command -v git >/dev/null 2>&1 || return 1
   [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ] || return 1
   $FORCE || [ -f .git/shallow ]
+}
+
+OLD_PROJECT=radio-gateway
+NEW_PROJECT=streamnode
+
+# The project was renamed from radio-gateway to streamnode. Docker names
+# containers and data volumes after the project, so a server set up under the
+# old name has its database, statistics, uploads and enrolment in volumes
+# called radio-gateway_*. This copies each one to its streamnode_* name and
+# removes the old containers, after which the server starts under the new name
+# with all of its data. The old volumes are not touched: they are the backup,
+# removed later with "scripts/migrate.sh drop-old-data". If anything goes
+# wrong nothing is lost: the copies are discarded and the server carries on
+# under its old name.
+rename_project() {
+  command -v docker >/dev/null 2>&1 || return 0
+  # Set by an earlier run that could not move the data, or by the operator.
+  ! has_env COMPOSE_PROJECT_NAME || return 0
+  local containers volumes volume new helper="" image created="" failed=""
+  containers="$(docker ps -aq --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null || true)"
+  volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null || true)"
+  [ -n "$containers$volumes" ] || return 0
+  if [ -z "$containers" ]; then
+    # Nothing runs under the old name. If every old volume has its new one, the move was done before.
+    local pending=false
+    for volume in $volumes; do
+      docker volume inspect "${NEW_PROJECT}_${volume#"${OLD_PROJECT}"_}" >/dev/null 2>&1 || pending=true
+    done
+    $pending || return 0
+  fi
+
+  echo "  migrate: this server was installed as \"$OLD_PROJECT\". Moving its data to \"$NEW_PROJECT\"..."
+  # Something with a shell and cp to do the copying: an image already on this server, if possible.
+  for image in postgres:16-alpine redis:7-alpine haproxy:2.8-alpine alpine:3.20; do
+    if docker image inspect "$image" >/dev/null 2>&1; then helper="$image"; break; fi
+  done
+  if [ -z "$helper" ] && docker pull -q alpine:3.20 >/dev/null 2>&1; then helper=alpine:3.20; fi
+
+  # The services stop first, so that the database is copied at rest.
+  # shellcheck disable=SC2086
+  [ -z "$containers" ] || docker stop -t 30 $containers >/dev/null 2>&1 || true
+  if [ -z "$helper" ]; then
+    failed="no image could be found or downloaded to copy with"
+  else
+    for volume in $volumes; do
+      new="${NEW_PROJECT}_${volume#"${OLD_PROJECT}"_}"
+      if docker volume inspect "$new" >/dev/null 2>&1; then
+        failed="a volume named $new already exists"; break
+      fi
+      if ! docker volume create --label "com.docker.compose.project=$NEW_PROJECT" \
+             --label "com.docker.compose.volume=${volume#"${OLD_PROJECT}"_}" "$new" >/dev/null 2>&1; then
+        failed="could not create $new"; break
+      fi
+      created="$created $new"
+      if ! docker run --rm --user 0 --entrypoint sh -v "$volume":/from:ro -v "$new":/to "$helper" -c 'cp -a /from/. /to/' >/dev/null 2>&1; then
+        failed="could not copy $volume (is the disk full?)"; break
+      fi
+      echo "  migrate:   copied $volume -> $new"
+    done
+  fi
+
+  if [ -n "$failed" ]; then
+    # shellcheck disable=SC2086
+    [ -z "$created" ] || docker volume rm $created >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    [ -z "$containers" ] || docker start $containers >/dev/null 2>&1 || true
+    set_env COMPOSE_PROJECT_NAME "$OLD_PROJECT"
+    note "the data was NOT moved ($failed). Nothing is lost: this server keeps its old internal name (COMPOSE_PROJECT_NAME=$OLD_PROJECT in .env). To try again, fix the cause, remove that line and run ./install.sh"
+    return 0
+  fi
+
+  # shellcheck disable=SC2086
+  [ -z "$containers" ] || docker rm -f $containers >/dev/null 2>&1 || true
+  local networks
+  networks="$(docker network ls -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null || true)"
+  # shellcheck disable=SC2086
+  [ -z "$networks" ] || docker network rm $networks >/dev/null 2>&1 || true
+  note "moved this server's data to the new name. The old volumes are kept as a backup; once you have seen that everything is in place, free the space with: scripts/migrate.sh drop-old-data"
+}
+
+# Removes the volumes left under the old project name, once the new ones are in use.
+drop_old_data() {
+  command -v docker >/dev/null 2>&1 || { echo "Docker is not installed." >&2; exit 1; }
+  if has_env COMPOSE_PROJECT_NAME && [ "$(get_env COMPOSE_PROJECT_NAME)" = "$OLD_PROJECT" ]; then
+    echo "This server still runs under its old name, so those volumes are its data. Nothing was removed." >&2; exit 1
+  fi
+  if [ -n "$(docker ps -aq --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null)" ]; then
+    echo "Services are still running under the old name. Run ./install.sh first. Nothing was removed." >&2; exit 1
+  fi
+  local volume removed=0
+  for volume in $(docker volume ls -q --filter "label=com.docker.compose.project=$OLD_PROJECT" 2>/dev/null); do
+    if ! docker volume inspect "${NEW_PROJECT}_${volume#"${OLD_PROJECT}"_}" >/dev/null 2>&1; then
+      echo "Kept $volume: it has no copy under the new name."; continue
+    fi
+    docker volume rm "$volume" >/dev/null && { echo "Removed $volume"; removed=$((removed + 1)); }
+  done
+  echo "$removed old volume(s) removed."
 }
 
 prepare() {
@@ -85,6 +185,8 @@ prepare() {
     set_env TLS_MODE "$mode"
     note "recorded how HTTPS is provided, from the certificate in place: $mode"
   fi
+
+  rename_project
 
   # ── Settings that point at files which no longer exist ───────────────────
   local compose_file; compose_file="$(get_env COMPOSE_FILE)"
@@ -160,6 +262,7 @@ slim() {
 case "$PHASE" in
   prepare) prepare ;;
   slim) slim ;;
-  *) echo "Usage: scripts/migrate.sh prepare|slim" >&2; exit 1 ;;
+  drop-old-data) drop_old_data ;;
+  *) echo "Usage: scripts/migrate.sh prepare|slim|drop-old-data" >&2; exit 1 ;;
 esac
 $changed && echo "  migrate: done." || true

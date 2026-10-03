@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Radio Gateway bootstrap: checks this server, downloads what the gateway needs
+# StreamNode bootstrap: checks this server, downloads what the gateway needs
 # to run and starts the installer, which asks for everything else.
 #
 #   curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
@@ -13,7 +13,7 @@
 #
 #   curl -fsSL .../get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_...
 #
-#   --dir PATH         where to install (default: /opt/radio-gateway)
+#   --dir PATH         where to install (default: /opt/streamnode)
 #   --branch NAME      branch to install and to follow for updates (default: the repository's default)
 #   --ref COMMIT       install exactly this commit
 #   --repo URL         install from another GitHub repository (a fork)
@@ -25,10 +25,16 @@
 # installer, keeping existing settings and data. scripts/update.sh does that for you.
 set -euo pipefail
 
-# The repository this script installs from; RADIO_GATEWAY_REPO or --repo override it.
-REPO_URL="${RADIO_GATEWAY_REPO:-https://github.com/blacdev/streamnode.git}"
-BRANCH="${RADIO_GATEWAY_BRANCH:-}"
-INSTALL_DIR="${RADIO_GATEWAY_DIR:-/opt/radio-gateway}"
+# The repository this script installs from; STREAMNODE_REPO or --repo override it.
+# (The RADIO_GATEWAY_* names, from before the project was renamed, still work.)
+REPO_URL="${STREAMNODE_REPO:-${RADIO_GATEWAY_REPO:-https://github.com/blacdev/streamnode.git}}"
+BRANCH="${STREAMNODE_BRANCH:-${RADIO_GATEWAY_BRANCH:-}}"
+INSTALL_DIR="${STREAMNODE_DIR:-${RADIO_GATEWAY_DIR:-}}"
+DIR_GIVEN=true
+if [ -z "$INSTALL_DIR" ]; then
+  DIR_GIVEN=false
+  INSTALL_DIR=/opt/streamnode
+fi
 REF="" TARBALL="" WITH_SOURCE=false ASSUME_YES=false INTERACTIVE=true
 INSTALLER_ARGS=()
 
@@ -45,7 +51,7 @@ while [ $# -gt 0 ]; do
     --repo) REPO_URL="${2:?--repo needs a value}"; shift 2 ;;
     --branch) BRANCH="${2:?--branch needs a value}"; shift 2 ;;
     --ref) REF="${2:?--ref needs a value}"; shift 2 ;;
-    --dir) INSTALL_DIR="${2:?--dir needs a value}"; shift 2 ;;
+    --dir) INSTALL_DIR="${2:?--dir needs a value}"; DIR_GIVEN=true; shift 2 ;;
     --tarball) TARBALL="${2:?--tarball needs a value}"; shift 2 ;;
     --with-source) WITH_SOURCE=true; shift ;;
     --build-from-source) WITH_SOURCE=true; INSTALLER_ARGS+=("$1"); shift ;;
@@ -54,6 +60,20 @@ while [ $# -gt 0 ]; do
     *) INSTALLER_ARGS+=("$1"); shift ;;
   esac
 done
+
+# A server installed before the project was renamed lives in /opt/radio-gateway.
+# It is moved to /opt/streamnode (further down, once we know how to become
+# root), leaving a link at the old path so that anything still pointing there
+# keeps working. It is never installed a second time beside itself.
+OLD_DIR=/opt/radio-gateway
+NEW_DIR=/opt/streamnode
+MOVE_DIR=false
+if [ -e "$OLD_DIR/install.sh" ] && [ ! -L "$OLD_DIR" ] && [ ! -e "$NEW_DIR" ] && { ! $DIR_GIVEN || [ "${INSTALL_DIR%/}" = "$OLD_DIR" ]; }; then
+  MOVE_DIR=true
+  INSTALL_DIR="$NEW_DIR"
+elif ! $DIR_GIVEN && [ ! -e "$NEW_DIR/install.sh" ] && [ -e "$OLD_DIR/install.sh" ]; then
+  INSTALL_DIR="$OLD_DIR"
+fi
 
 say() { printf '%s\n' "$*"; }
 ok() { printf '  [ok]   %s\n' "$*"; }
@@ -79,7 +99,7 @@ confirm() { # confirm "Question" -> success on yes
   case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-say "Radio Gateway setup"
+say "StreamNode setup"
 say
 
 # ── This server ────────────────────────────────────────────────────────────
@@ -141,6 +161,19 @@ if ! $SUDO docker info >/dev/null 2>&1; then
   $SUDO docker info >/dev/null 2>&1 || fail "Docker is installed but not running. Start it (sudo systemctl start docker) and run this again."
 fi
 ok "Docker is running"
+
+if $MOVE_DIR; then
+  if $SUDO mv "$OLD_DIR" "$NEW_DIR" && $SUDO ln -s "$NEW_DIR" "$OLD_DIR"; then
+    # Scheduled jobs (updates, backups, certificate renewal) follow the move.
+    if have crontab && crontab -l 2>/dev/null | grep -qF "$OLD_DIR"; then
+      crontab -l 2>/dev/null | sed "s#$OLD_DIR#$NEW_DIR#g" | crontab - || warn "Could not update the scheduled jobs; they still work through $OLD_DIR."
+    fi
+    ok "Moved the installation from $OLD_DIR to $NEW_DIR (a link is left at the old path)"
+  else
+    warn "Could not move $OLD_DIR to $NEW_DIR; updating it where it is."
+    [ -e "$OLD_DIR/install.sh" ] && INSTALL_DIR="$OLD_DIR"
+  fi
+fi
 
 if ! $SUDO docker compose version >/dev/null 2>&1; then
   say "  The Docker Compose plugin is missing."

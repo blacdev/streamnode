@@ -1,5 +1,5 @@
 [package]
-name = "radio_gateway"
+name = "streamnode"
 version = "2.2.0"
 edition = "2021"
 description = "Asynchronous audio relay engine: one upstream connection per station, fanned out to every listener."

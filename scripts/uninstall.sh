@@ -8,7 +8,7 @@
 #   scripts/uninstall.sh --remove-images also delete the downloaded or built images
 #   scripts/uninstall.sh --yes           do not ask for confirmation
 #   scripts/uninstall.sh --dir PATH      the installation to remove (default: where this script lives,
-#                                        or /opt/radio-gateway when it is piped from curl)
+#                                        or /opt/streamnode when it is piped from curl)
 #
 # It also works without the code present:
 #   curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/scripts/uninstall.sh | bash -s -- --yes
@@ -34,7 +34,7 @@ fail() { echo "Error: $*" >&2; exit 1; }
 if [ -z "$DIR" ]; then
   # Run from a checkout, the installation is the directory above scripts/.
   # Piped from curl there is no script file, so the default location is used.
-  if [ -f "${BASH_SOURCE[0]:-}" ]; then DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; else DIR=/opt/radio-gateway; fi
+  if [ -f "${BASH_SOURCE[0]:-}" ]; then DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; elif [ ! -e /opt/streamnode ] && [ -e /opt/radio-gateway ]; then DIR=/opt/radio-gateway; else DIR=/opt/streamnode; fi
 fi
 
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed, so there are no gateway services on this server."
@@ -48,7 +48,8 @@ SUDO=""; [ "${DOCKER[0]}" = sudo ] && SUDO=sudo
 # Everything the gateway creates carries its Compose project name, whichever
 # version or role installed it. The local test and edge variants are separate
 # projects and are removed too.
-PROJECTS="radio-gateway radio-gateway-edge radio-gateway-local"
+# The radio-gateway names are what the project was called before it was renamed.
+PROJECTS="streamnode streamnode-edge streamnode-local radio-gateway radio-gateway-edge radio-gateway-local"
 list() { # list containers|volumes|networks
   local kind="$1" project
   for project in $PROJECTS; do
@@ -102,7 +103,7 @@ if $REMOVE_IMAGES; then
   prefix="$(grep '^IMAGE_PREFIX=' "$DIR/.env" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
   images="$("${DOCKER[@]}" images --format '{{.Repository}}:{{.Tag}}' | awk -v prefix="$prefix" '
     { repo = $0; sub(/:[^:\/]*$/, "", repo) }
-    repo ~ /^radio-gateway(-[a-z]+)?[\/-]/ { print; next }
+    repo ~ /^(streamnode|radio-gateway)(-[a-z]+)?[\/-]/ { print; next }
     prefix != "" && (repo == prefix "/engine" || repo == prefix "/admin") { print }' || true)"
   # shellcheck disable=SC2086
   [ -z "$images" ] || "${DOCKER[@]}" rmi $images >/dev/null 2>&1 || true
@@ -124,8 +125,8 @@ elif [ -d "$DIR" ]; then
 fi
 
 # Stop the daily automatic update, if it was turned on for this installation.
-if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qE "# radio-gateway (updater|auto-update) \($DIR\)"; then
-  { crontab -l 2>/dev/null | grep -vF "# radio-gateway updater ($DIR)" | grep -vF "# radio-gateway auto-update ($DIR)" || true; } | crontab -
+if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qE "# (streamnode|radio-gateway) (updater|auto-update) \($DIR\)"; then
+  { crontab -l 2>/dev/null | grep -vF "# streamnode updater ($DIR)" | grep -vF "# radio-gateway updater ($DIR)" | grep -vF "# radio-gateway auto-update ($DIR)" || true; } | crontab -
   echo "Removed the update scheduler."
 fi
 

@@ -36,7 +36,7 @@ rejected.
 
 **The source blocks the gateway.** Some providers limit connections per address or
 filter by User-Agent. The gateway makes one connection per station from the server's
-address with the User-Agent `RadioGateway/1.0` (configurable with
+address with the User-Agent `StreamNode/1.0` (configurable with
 `UPSTREAM_USER_AGENT`).
 
 ## Audio problems
