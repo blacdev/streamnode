@@ -26,7 +26,7 @@ use tokio::time::{interval, Instant, MissedTickBehavior};
 
 use crate::{
     health::Evidence,
-    hub::{unix_now, Hub, Relay},
+    hub::{unix_now, Hub, Relay, Source},
     sysinfo::Sampler,
 };
 
@@ -212,7 +212,11 @@ async fn heartbeat(hub: &Arc<Hub>, sampler: &mut Sampler, started_at: u64) {
     let usage = sampler.sample();
     let relays = hub.snapshot();
     let listeners: usize = relays.iter().map(|relay| relay.listeners()).sum();
-    let live_relays = relays.iter().filter(|relay| relay.current_info().is_some()).count();
+    // Playing a fallback file says nothing about whether sources can be reached.
+    let live_relays = relays
+        .iter()
+        .filter(|relay| relay.current_info().is_some() && matches!(relay.source(), Source::Primary | Source::Backup))
+        .count();
 
     if let Some(change) = hub.audio.evaluate(audio_evidence(hub, live_relays).await) {
         match &change {

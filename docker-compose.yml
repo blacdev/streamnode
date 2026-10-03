@@ -75,6 +75,8 @@ services:
       UPDATE_REPO: ${UPDATE_REPO:-}
       UPDATE_BRANCH: ${UPDATE_BRANCH:-main}
       DEFAULT_MAX_STATIONS: ${DEFAULT_MAX_STATIONS:-5}
+      # Local copies of uploaded audio that is also kept in Dropbox, in megabytes.
+      FILE_CACHE_MB: ${FILE_CACHE_MB:-2048}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
@@ -85,6 +87,8 @@ services:
     volumes:
       # Update settings chosen in the dashboard, and what the host's updater reports back.
       - ./control:/control
+      # Uploaded idents and fallback audio.
+      - media_files:/files
     depends_on:
       postgres_db:
         condition: service_healthy
@@ -141,6 +145,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis_cache:6379
       ENGINE_SECRET: ${ENGINE_SECRET:-}
       NODE_ID: local
+      # Where idents and fallback audio are fetched from; a slave uses its master's address.
+      ADMIN_URL: http://admin_dashboard:8000
     ulimits:
       nofile:
         soft: 65536
@@ -193,6 +199,7 @@ volumes:
   redis_data:
   letsencrypt_data:
   engine_data:
+  media_files:
 
 networks:
   dynamic_gateway_fabric:

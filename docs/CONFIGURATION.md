@@ -61,6 +61,16 @@ These apply to every role. See [Images](INSTALLATION.md#images) and
 |---|---|---|
 | `DEFAULT_MAX_STATIONS` | `5` | How many stations a new tenant account may create and manage. Change it per account from the dashboard (Accounts > Station limit) or with `PATCH /users/{id}`. `0` means only administrators create stations |
 
+## Uploaded audio
+
+Idents and fallback files; see [Failover, idents and fallback audio](FAILOVER.md).
+Quotas, the ident length and the Dropbox connection are changed while running, in the
+dashboard under **Settings** or with `PUT /settings`, not in `.env`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FILE_CACHE_MB` | `2048` | With Dropbox connected: how many megabytes of files that are in Dropbox are also kept on the master for immediate use. Files beyond it are dropped locally and fetched again when needed. Without Dropbox every file stays on the master and this has no effect |
+
 ## Roles and slave nodes
 
 See [Installation](INSTALLATION.md) and [Adding servers](SCALING.md).
@@ -109,8 +119,8 @@ variables below may be added to a slave's `.env` to override the defaults there.
 | Variable | Default | Description |
 |---|---|---|
 | `IDLE_GRACE_SECS` | `10` | How long the gateway stays connected to a source after its last listener leaves |
-| `STALL_TIMEOUT_SECS` | `10` | A source that sends nothing for this long is treated as failed |
-| `PRIMARY_RETRY_SECS` | `30` | While on the backup, how often the primary is probed |
+| `STALL_TIMEOUT_SECS` | `10` | How long a source may take to start sending after it accepts a connection. Once a station is playing, the station's own failover delay (6 seconds by default) decides when a stream without audio is given up on |
+| `PRIMARY_RETRY_SECS` | `30` | No longer slows the return to a stream: while a station plays its backup or fallback file, a stream that is down is tried again every 2 seconds (or this often, if lower) |
 | `METADATA_POLL_SECS` | `10` | How often a station's title and artwork URL is fetched while it has listeners |
 | `STATION_FAIL_ROUNDS` | `3` | Failed attempts on a station's sources (primary and backup together count as one) after which a server gives up on that station, releasing its listeners and resources |
 | `STATION_RETRY_SECS` | `30` | How long the server then refuses that station before trying its sources again |
@@ -128,6 +138,7 @@ The following are read by the engine but not listed in `.env.example`; add them 
 | `UPSTREAM_USER_AGENT` | `RadioGateway/1.0` | User-Agent presented to sources |
 | `RUST_LOG` | `info` | Log level: `error`, `warn`, `info`, `debug` |
 | `NODE_ID` | `local` on the master | Name this engine reports under and joins with |
+| `ADMIN_URL` | `http://admin_dashboard:8000` on the master | Where the engine on the master's own server fetches idents and fallback files from. Slave nodes use the master address they joined with |
 | `DISK_PATH` | `/` | Filesystem whose free space is reported as the server's disk |
 
 ## Statistics

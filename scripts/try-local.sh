@@ -8,8 +8,10 @@
 #   scripts/try-local.sh              build, start and set up the demo
 #   scripts/try-local.sh status       show services and live numbers
 #   scripts/try-local.sh logs [name]  follow logs (optionally one service)
-#   scripts/try-local.sh primary-down switch the demo station's primary source off (watch failover)
-#   scripts/try-local.sh primary-up   switch it back on (watch it return to primary)
+#   scripts/try-local.sh primary-down    switch the demo station's primary stream off (watch failover)
+#   scripts/try-local.sh primary-silent  keep it connected but sending silence
+#   scripts/try-local.sh primary-up      bring it back (watch the station return to it)
+#   scripts/try-local.sh backup-down | backup-silent | backup-up    the same for the backup stream
 #   scripts/try-local.sh loadtest     hit HTTPS and the stream with bursts of requests and report
 #   scripts/try-local.sh stop         stop everything, keep the data
 #   scripts/try-local.sh reset        stop everything and delete the test data
@@ -26,7 +28,7 @@ PROJECT=radio-gateway-local
 fail() { echo "Error: $*" >&2; exit 1; }
 
 case "${1:-}" in
-  -h|--help|help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help|help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed. See https://docs.docker.com/engine/install/"
@@ -49,7 +51,7 @@ compose() {
   "${DOCKER[@]}" compose -p "$PROJECT" --env-file "$ENV_FILE" --profile master --profile local-engine \
     -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.demo.yml "$@"
 }
-get_env() { grep "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
+get_env() { grep "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true; }
 
 write_env() {
   local http="${HTTP_PORT:-8080}" https="${HTTPS_PORT:-8443}"
@@ -98,8 +100,8 @@ api() { # api METHOD PATH [JSON]
 }
 
 # Runs a command inside the demo source container (it is not published on the host).
-demo_control() {
-  compose exec -T demo_source wget -q -O - "http://127.0.0.1:8000/control?primary=$1"
+demo_control() { # demo_control primary|backup up|down|silent
+  compose exec -T demo_source wget -q -O - "http://127.0.0.1:8000/control?$1=$2"
   echo
 }
 
@@ -167,6 +169,9 @@ start() {
   if ! api GET /servers | grep -q '"name":"edge-3"'; then
     api POST /servers '{"name": "edge-3", "host": "localhost", "mode": "direct"}' >/dev/null
   fi
+  # Sample files for trying idents and fallback audio.
+  rm -rf demo-samples
+  compose cp demo_source:/app/samples ./demo-samples >/dev/null 2>&1 || echo "Could not copy the sample audio files out of the demo source."
 
   cat <<EOF
 
@@ -185,8 +190,20 @@ Things to try:
 
   1. Play the demo stream, then watch "Listeners" change on the dashboard.
   2. Failover: while it plays, run   scripts/try-local.sh primary-down
-     The tone changes (backup source) and the station shows "On air (backup)".
-     Run   scripts/try-local.sh primary-up   and it returns within about 10 seconds.
+     After 6 seconds (the station's failover delay) the tone changes (backup
+     stream) and the station shows "On air (backup)".
+     Run   scripts/try-local.sh primary-up   and it returns within about 3 seconds,
+     fading out the backup and fading the primary in.
+     Silence counts too:   scripts/try-local.sh primary-silent
+  2b. Ident and fallback audio: on the dashboard, Stations > Demo Station > Edit.
+     Under Ident upload   demo-samples/ident.mp3   and under Fallback audio
+     upload   demo-samples/fallback.mp3   then save. Play the stream and run:
+       scripts/try-local.sh primary-down    -> 6 s, the ident, then the backup
+       scripts/try-local.sh backup-down     -> 6 s, the ident, then the fallback file
+                                               ("On air (fallback audio)")
+       scripts/try-local.sh primary-up      -> within about 3 s: the ident, then the live stream
+     The demo-samples/refused-*.* files are each turned down, with the reason.
+     Storage quotas: Accounts > Storage, and Settings.
   3. Load spreading: open the stream in several players and look at the
      Servers tab. Listeners are shared between "local" (the engine beside the
      master) and "edge-2" (the slave node), and the tab shows each server's
@@ -245,9 +262,9 @@ case "${1:-start}" in
   loadtest) loadtest ;;
   status) status ;;
   logs) require_env; shift; compose logs -f --tail 100 "$@" ;;
-  primary-down) require_env; demo_control down ;;
-  primary-up) require_env; demo_control up ;;
+  primary-down|primary-up|primary-silent|backup-down|backup-up|backup-silent)
+    require_env; demo_control "${1%%-*}" "${1##*-}" ;;
   stop|down) require_env; compose down ;;
-  reset) require_env; compose down -v --remove-orphans; rm -f "$ENV_FILE"; echo "Test data removed." ;;
+  reset) require_env; compose down -v --remove-orphans; rm -rf "$ENV_FILE" demo-samples; echo "Test data removed." ;;
   *) fail "Unknown command: $1 (try: scripts/try-local.sh help)" ;;
 esac

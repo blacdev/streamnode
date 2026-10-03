@@ -21,3 +21,6 @@ backups/
 # The updater's shared directory and its log
 control/
 .version
+
+# Sample audio copied out by scripts/try-local.sh
+demo-samples/

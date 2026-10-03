@@ -44,7 +44,13 @@ address with the User-Agent `RadioGateway/1.0` (configurable with
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Playback cuts out every few minutes | A proxy or CDN in front of the gateway | Point DNS directly at the server; see [Installation](INSTALLATION.md#dns-do-not-proxy-the-hostname) |
-| Short gap, then audio continues | Failover between primary and backup. The log shows `source read failed` or `source stalled` | Expected. Investigate the station's primary source if frequent |
+| Short gap, then audio continues | Failover between primary and backup. The log shows `no audio from the source for the failover delay` or `live stream lost` | Expected. Investigate the station's primary source if frequent |
+| The station switches to its backup or fallback although the stream is up | The stream is sending digital silence, which counts as no audio | Fix the feed into the encoder, or switch silence detection off for the station |
+| The dashboard shows a station's stream as "relayed as it is", and idents or fallback audio are refused | The stream is not MP3 or AAC (ADTS), or its content does not match its label (MPEG Layer II sent as `audio/mpeg`, say), or it changed format while playing. The engine log says `the stream is not made of MP3 or AAC (ADTS) frames` | Expected for those formats: the stream is still relayed. For the other features, have the station send MP3 or AAC. See [Supported stream types](STATION_GUIDE.md#supported-stream-types) |
+| An HE-AAC (AAC+) station does not switch when its stream goes silent | Silence cannot be recognised in HE-AAC without decoding | The station still switches when the stream stops or disconnects. Use plain AAC or MP3 if silence detection matters |
+| The station does not switch although nothing can be heard | The stream carries faint noise rather than true silence; only digital silence is recognised | Fix the source. A longer or shorter failover delay does not change this |
+| Ident or fallback file is not played; log says `skipped: its format differs from the stream's` | The file was uploaded before the station's format was known, or the stream's format has changed since | Upload a file in the stream's format (shown in the station's edit form) |
+| Log says `fallback file could not be opened` or `the ident could not be loaded` | The streaming server cannot reach the master's API, or the file is no longer stored | From that server, check the master's address answers `/api/v1/health`; upload the file again if it is missing |
 | Garbled audio after a failover | Primary and backup use different codecs or sample rates | Make both sources the same format |
 | Clicks or chirps on one player only | That player ignores stream metadata it asked for | Rare; use the `.m3u` playlist URL in that player |
 | Starts with several seconds of delay | The burst buffer on a low-bitrate stream | Lower `BURST_BYTES` |
@@ -69,6 +75,17 @@ address with the User-Agent `RadioGateway/1.0` (configurable with
 | Title is empty while nobody is listening | Titles are only tracked while the station has listeners | Expected |
 | Metadata URL set but stream titles shown | The URL is failing, so the gateway fell back to stream titles | Run the engine with `RUST_LOG=debug` and look for `metadata URL poll failed`; check the format in the [Station guide](STATION_GUIDE.md#title-and-artwork-url) |
 | Wrong characters in titles | The source sends a legacy encoding other than Latin-1 | Set the encoder to UTF-8 |
+
+## Uploading audio
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "cannot be played on this station because ..." | The file's format, bitrate, sample rate or channels differ from the stream's | Export it with the settings named in the message. See [Failover, idents and fallback audio](FAILOVER.md) |
+| "This is an MP4/M4A file" (or WAV, FLAC, Ogg) | Only MP3 and raw AAC (`.aac`) can be spliced into a stream | Export as MP3, or AAC in an `.aac` file |
+| "only ... of storage is free" | The account's quota is used up | Delete files, or raise the quota under Accounts > Storage |
+| A large upload fails at once with `413` and no message from the gateway | A proxy in front of the gateway limits upload size | Raise it there, e.g. `client_max_body_size 0;` in nginx or the Advanced tab of Nginx Proxy Manager |
+| Dropbox says the redirect URI is not allowed | The address under Settings > Dropbox storage is not among the app's Redirect URIs, or the dashboard was opened by IP address or over HTTP | Add exactly that address in the Dropbox developer console, and connect while using the dashboard by its HTTPS domain |
+| Files stay "This server" after Dropbox is connected | Copying failed; the admin log says `was not copied to Dropbox` with the reason | Fix the cause (app permissions `files.content.write`, a full Dropbox); copying is retried every 5 minutes |
 
 ## Statistics
 

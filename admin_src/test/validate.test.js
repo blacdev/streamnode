@@ -215,3 +215,23 @@ test('update settings are stored where the host updater reads them', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the command for a new server works on an empty machine', () => {
+  const config = require('../src/config');
+  const { installCommand } = require('../src/cluster');
+  const saved = { repo: config.updateRepo, branch: config.updateBranch, tls: config.tlsMode };
+  try {
+    config.updateRepo = 'acme/radio'; config.updateBranch = 'main'; config.tlsMode = 'letsencrypt';
+    assert.strictEqual(installCommand('https://stream.example.com', 'rgj_x'),
+      'curl -fsSL https://raw.githubusercontent.com/acme/radio/main/get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_x');
+    // A master that cannot be verified needs --insecure on the slave.
+    config.tlsMode = 'selfsigned';
+    assert.match(installCommand('https://stream.example.com', 'rgj_x'), / --insecure$/);
+    config.tlsMode = 'external';
+    assert.match(installCommand('http://192.168.1.20:8080', 'rgj_x'), /--master http:\/\/192\.168\.1\.20:8080 --token rgj_x --insecure$/);
+    config.updateRepo = '';
+    assert.match(installCommand('https://stream.example.com', 'rgj_x'), /^\.\/install\.sh --role slave/);
+  } finally {
+    config.updateRepo = saved.repo; config.updateBranch = saved.branch; config.tlsMode = saved.tls;
+  }
+});

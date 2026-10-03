@@ -97,6 +97,10 @@ curl -X PUT $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: appl
 | `artwork_url` | No | Station artwork, used when the metadata URL gives none |
 | `max_listeners` | No | Administrators only. `0` (default) is unlimited |
 | `external_id` | No | Administrators only. Your identifier for the station |
+| `failover_delay_secs` | No | Seconds without audio before moving to the next source. 1 to 300, default 6. Returning to a stream that is back is immediate |
+| `silence_detection` | No | `true` (default) treats a stream that sends only silence as having no audio |
+| `ident_file_id` | No | An [uploaded file](#audio-files) played once at every change of source: on leaving a failed stream and on returning to one that is back. `null` clears |
+| `fallback_file_id` | No | An uploaded file looped while neither stream has audio. `null` clears |
 | `user_id` | No | Administrators only. Owning account; defaults to the caller |
 | `is_active` | No | Administrators only. `false` suspends |
 
@@ -119,6 +123,10 @@ The response is the station:
   "artwork_url": "https://example.com/logo.png",
   "max_listeners": 500,
   "is_active": true,
+  "failover_delay_secs": 6,
+  "silence_detection": true,
+  "ident_file_id": 3,
+  "fallback_file_id": 4,
   "stream_url": "https://stream.example.com/powerbeats",
   "playlist_urls": {
     "m3u": "https://stream.example.com/powerbeats.m3u",
@@ -136,6 +144,31 @@ The response is the station:
 `live.online` is `true` while the gateway is connected to the station's source, which
 happens only while the station has listeners. A station with nobody listening is on
 standby, not broken.
+
+`live.source` is `primary`, `backup`, or `fallback` while the station is playing its
+fallback file because neither stream has audio.
+
+`live.stream_format` says what the stream was last seen to be and what the gateway can
+do with it. It is `null` until the station has been on air.
+
+```json
+"stream_format": {
+  "type": "mp3", "name": "MP3", "summary": "MP3, 96 kbps, 44.1 kHz, stereo",
+  "codec": "mp3", "sample_rate": 44100, "channels": 2, "bitrate_kbps": 96, "variable_bitrate": false,
+  "content_type": "audio/mpeg",
+  "features": { "silence_detection": true, "fades": true, "idents": true, "fallback_audio": true },
+  "notes": "Everything is available."
+}
+```
+
+`type` is `mp3`, `aac`, `he-aac` or `other`. Uploaded files must match `codec`,
+`sample_rate`, `channels` and, when it is not `null`, `bitrate_kbps`. With type `other`
+the stream is relayed as it arrives and no file can be used on it. The full list of
+types, readable without signing in:
+
+```bash
+curl $API/stream-types
+```
 
 Two more fields in `live` say when a station really is in trouble:
 
@@ -168,6 +201,79 @@ curl -X DELETE $API/stations/powerbeats -H "X-API-Key: $KEY"
   Configuration and history are kept.
 - Deleting removes the station **and all of its statistics**. Read final usage first.
   Tenants can delete their own stations; suspending is administrator-only.
+
+## Audio files
+
+Idents and fallback audio. Background and the format rules are in
+[Failover, idents and fallback audio](FAILOVER.md).
+
+```bash
+# Upload. The body is the file itself, not a form.
+curl -H "X-API-Key: $KEY" --data-binary @ident.mp3 \
+  "$API/files?filename=ident.mp3&name=Station%20ident&use=ident&station=powerbeats"
+
+curl $API/files -H "X-API-Key: $KEY"                    # the library, with storage used and free
+curl $API/files/3 -H "X-API-Key: $KEY"
+curl -X PATCH $API/files/3 -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"name": "New ident"}'
+curl -X DELETE "$API/files/3?force" -H "X-API-Key: $KEY"   # ?force also removes it from stations using it
+curl -o copy.mp3 $API/files/3/content -H "X-API-Key: $KEY"
+```
+
+| Upload parameter | Notes |
+|---|---|
+| `filename` | The file's own name |
+| `name` | Display name, also the title listeners see while a fallback file plays. Defaults to the file name without its extension |
+| `use` | `ident` or `fallback`. With it, the file is checked for that use: an ident must not exceed the ident limit |
+| `station` | A station slug (requires `use`). The file is checked against that station's stream and, if accepted, assigned to it |
+| `assign` | `false` checks against `station` and stores the file without assigning it; set it later with `ident_file_id` or `fallback_file_id` |
+| `user_id` | Administrators only: upload into another account |
+
+```json
+{
+  "id": 3, "user_id": 4, "name": "Station ident", "original_name": "ident.mp3",
+  "size_bytes": 24451, "format": "MP3, 96 kbps, 44.1 kHz, stereo",
+  "codec": "mp3", "sample_rate": 44100, "channels": 2, "bitrate_kbps": 96, "constant_bitrate": true,
+  "duration_seconds": 2.04, "stored_in": "local",
+  "used_by": [{ "station": "powerbeats", "as": "ident" }],
+  "usage": { "used_bytes": 24451, "quota_bytes": 524288000, "free_bytes": 524263549 }
+}
+```
+
+Uploading a file the account already holds (the same bytes) stores nothing new: the
+existing file is returned with `200` and `"already_stored": true`.
+
+Nothing is converted. A file that cannot be used is refused, and the message says why
+and what to do:
+
+| Status | `code` | When |
+|---|---|---|
+| `422` | `file_not_usable` | Not MP3 or AAC (ADTS); an ident longer than the limit; or, with `station`, a format, bitrate, sample rate or channel count different from the stream's, or a variable-bitrate MP3 |
+| `413` | `quota_exceeded` | The file does not fit in the account's remaining storage. `details` has `file_bytes`, `used_bytes`, `quota_bytes`, `free_bytes` |
+| `507` | `server_storage_full` | The server's own disk is full |
+| `409` | `file_in_use` | Deleting a file a station still uses, without `?force` |
+
+The same checks apply when a file is assigned with `ident_file_id` or
+`fallback_file_id` on a station; a mismatch is a `422` naming the field.
+
+### Settings and storage (administrators)
+
+```bash
+curl $API/settings -H "X-API-Key: $KEY"
+curl -X PUT $API/settings -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"ident_max_seconds": 5, "default_storage_quota_mb": 2048}'
+curl -X PATCH $API/users/4 -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"storage_quota_mb": 4096}'                        # one account; null returns it to the default
+
+# Dropbox: save the app's key and secret, then open authorize_url in a browser.
+curl -X PUT $API/settings -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"dropbox_app_key": "...", "dropbox_app_secret": "..."}'
+curl -X POST $API/storage/dropbox/authorize -H "X-API-Key: $KEY"
+curl -X DELETE $API/storage/dropbox -H "X-API-Key: $KEY"   # copies every file back first
+```
+
+`GET /auth/me` includes the caller's `storage` (`used_bytes`, `quota_bytes`,
+`free_bytes`), and `GET /users` includes each account's `storage_quota_mb` and
+`storage_used_bytes`.
 
 ## Live state
 
@@ -245,10 +351,11 @@ curl -X DELETE $API/users/4 -H "X-API-Key: $KEY"
 |---|---|
 | `password` | Optional. Only needed if the account signs in to the dashboard. Minimum 10 characters |
 | `external_id` | Your identifier for the customer. Unique |
+| `storage_quota_mb` | Megabytes of uploaded audio the account may hold. `null` (the default) uses the gateway-wide setting |
 | `max_stations` | How many stations the account may create and manage. Defaults to 5 (`DEFAULT_MAX_STATIONS`). `0` means stations are created by an administrator only |
 | `is_active` | `false` blocks the account's keys and sign-in. It does **not** stop its stations; suspend those separately |
 
-Deleting an account deletes its stations, keys and statistics.
+Deleting an account deletes its stations, keys, statistics and uploaded files.
 
 ## Servers
 
@@ -266,11 +373,12 @@ curl -X POST $API/cluster/join-tokens -H "X-API-Key: $KEY" -H "Content-Type: app
   "id": 4, "token_prefix": "rgj_4be1a09c", "expires_at": "2026-03-01T15:00:00.000Z", "max_uses": 1, "uses": 0,
   "token": "rgj_4be1a09c...",
   "master_url": "https://stream.example.com",
-  "install_command": "./install.sh --role slave --master https://stream.example.com --token rgj_4be1a09c..."
+  "install_command": "curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_4be1a09c..."
 }
 ```
 
-The token is shown only here. `GET /cluster/join-tokens` lists tokens that are still
+The token is shown only here. `install_command` is for a new, empty server: it installs
+what is needed and joins this master. `GET /cluster/join-tokens` lists tokens that are still
 usable; `DELETE /cluster/join-tokens/{id}` revokes one.
 
 **Or connect a slave that is installed and waiting,** using the values its installer

@@ -45,7 +45,7 @@ async function api(method, path, body) {
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     const err = (data && data.error) || {};
-    const details = (err.details || []).map((d) => `${d.field} ${d.message}`).join('; ');
+    const details = (Array.isArray(err.details) ? err.details : []).map((d) => `${FIELD_LABELS[d.field] || d.field} ${d.message}`).join('; ');
     throw new Error(details || err.message || `Request failed (${res.status})`);
   }
   return data;
@@ -60,6 +60,9 @@ function toast(message) {
 }
 
 const fail = (err) => toast(err.message);
+
+// How fields are named to the user when the server refuses one.
+const FIELD_LABELS = { ident_file_id: 'Ident:', fallback_file_id: 'Fallback audio:' };
 
 function formatBytes(n) {
   if (!n) return '0 MB';
@@ -100,6 +103,7 @@ async function start() {
   for (const el of document.querySelectorAll('[data-admin]')) el.hidden = !isAdmin();
   await refresh();
   if (isAdmin()) showUpdateNotice().catch(() => {});
+  if (isAdmin()) dropboxReturn();
   clearInterval(state.timer);
   state.timer = setInterval(() => refresh().catch(() => {}), 5000);
 }
@@ -145,6 +149,8 @@ $('tabs').addEventListener('click', (event) => {
     button.setAttribute('aria-selected', String(button === event.target));
     $(`tab-${button.dataset.tab}`).hidden = button !== event.target;
   }
+  if (tab === 'files') loadFiles().catch(fail);
+  if (tab === 'settings') loadSettings().catch(fail);
   if (tab === 'keys') loadKeys().catch(fail);
   if (tab === 'users') loadUsers().catch(fail);
   if (tab === 'servers') loadServers().catch(fail);
@@ -177,6 +183,7 @@ function statusOf(station) {
   if (!station.is_active) return ['off', 'Suspended'];
   if (station.live.source_offline) return ['off', 'Source offline'];
   if (!station.live.online) return ['', 'Standby'];
+  if (station.live.source === 'fallback') return ['backup', 'On air (fallback audio)'];
   return station.live.source === 'backup' ? ['backup', 'On air (backup)'] : ['live', 'On air'];
 }
 
@@ -188,7 +195,8 @@ function renderStations() {
     const playing = [live.artist, live.title].filter(Boolean).join(' - ');
     const art = live.artwork || station.artwork_url;
     return h('tr', {},
-      h('td', {}, h('div', { class: 'station-name' }, station.name), h('code', {}, `/${station.slug}`)),
+      h('td', {}, h('div', { class: 'station-name' }, station.name), h('code', {}, `/${station.slug}`),
+        live.stream_format && h('small', { title: `${featureWords(live.stream_format.features)} ${live.stream_format.notes}` }, live.stream_format.summary)),
       h('td', {}, h('span', { class: `status ${kind}` }, label),
         // Name the servers that get no audio for this station, with the reason on hover.
         live.no_audio_on.length > 0 && h('small', { title: live.no_audio_on.map((n) => `${n.server}: ${n.reason || 'no audio'}`).join('\n') },
@@ -198,7 +206,7 @@ function renderStations() {
       h('td', {}, h('code', {}, station.stream_url)),
       h('td', { class: 'row-actions' },
         h('button', { onclick: () => openDetail(station).catch(fail) }, 'Stats'),
-        h('button', { onclick: () => openStationForm(station) }, 'Edit'),
+        h('button', { onclick: () => openStationForm(station).catch(fail) }, 'Edit'),
         isAdmin() && h('button', { onclick: () => toggleSuspend(station) }, station.is_active ? 'Suspend' : 'Resume'),
         h('button', { class: 'danger', onclick: () => removeStation(station) }, 'Delete'))
     );
@@ -213,18 +221,106 @@ $('search').addEventListener('input', () => {
 
 const STATION_FIELDS = ['name', 'slug', 'primary_url', 'backup_url', 'metadata_url', 'artwork_url', 'max_listeners'];
 
-function openStationForm(station) {
+const FEATURE_NAMES = { silence_detection: 'silence detection', fades: 'fades', idents: 'idents', fallback_audio: 'fallback audio' };
+
+// What a stream of this kind gets and does not get, in words.
+function featureWords(features) {
+  const names = (wanted) => Object.keys(FEATURE_NAMES).filter((key) => features[key] === wanted).map((key) => FEATURE_NAMES[key]);
+  const [on, off] = [names(true), names(false)];
+  if (!off.length) return 'All features are available.';
+  if (!on.length) return 'Relayed as it is: no silence detection, fades, idents or fallback audio.';
+  return `Available: ${on.join(', ')}. Not available: ${off.join(', ')}.`;
+}
+
+// The table of supported stream types, loaded once.
+async function showStreamTypes() {
+  if (state.streamTypes) return;
+  state.streamTypes = (await api('GET', '/stream-types')).stream_types;
+  $('streamTypes').replaceChildren(
+    h('thead', {}, h('tr', {}, ['Stream', 'Relayed', 'Silence detection', 'Fades', 'Ident and fallback audio'].map((t) => h('th', {}, t)))),
+    h('tbody', {}, state.streamTypes.map((t) => h('tr', {},
+      h('td', { class: 'wrap' }, h('div', { class: 'station-name' }, t.name), h('small', {}, t.description)),
+      ...[t.relayed, t.features.silence_detection, t.features.fades, t.features.idents && t.features.fallback_audio].map((yes) => h('td', {}, yes ? 'Yes' : 'No')))))
+  );
+}
+
+async function openStationForm(station) {
   const form = $('stationForm');
   form.reset();
+  // The files of the account that owns the station.
+  const owner = station && station.user_id !== state.user.id ? `?user_id=${station.user_id}` : '';
+  const library = await api('GET', `/files${owner}`).catch(() => ({ files: [], limits: {}, usage: null }));
+  // Every file in the account's storage can be chosen; one that does not suit this station is refused on saving, with the reason.
+  for (const field of ['ident_file_id', 'fallback_file_id']) {
+    form.elements[field].replaceChildren(
+      h('option', { value: '' }, 'None'),
+      ...library.files.map((file) => h('option', { value: file.id }, `${file.name} (${file.format}, ${formatLength(file.duration_seconds)})`))
+    );
+  }
+  state.stationFiles = { usage: library.usage, owner: owner.slice(1) };
+  showStationStorage();
+  $('stationUpload').textContent = '';
+  const format = station && station.live.stream_format;
+  const usable = !format || format.features.idents;
+  $('stationFormat').textContent = !format ? 'Files must be in exactly the same format as the stream.'
+    : usable ? `This station's stream is ${format.summary}; files must match it exactly.`
+      : `This station's stream is ${format.summary}, so idents and fallback audio cannot be used on it.`;
+  $('stationStream').textContent = format ? `Detected: ${format.summary}. ${featureWords(format.features)} ${format.features.fallback_audio && !Object.values(format.features).every(Boolean) ? format.notes : ''}` : '';
+  showStreamTypes().catch(() => {});
   form.dataset.slug = station ? station.slug : '';
   $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : 'Add station';
   $('stationError').textContent = '';
   form.elements.slug.disabled = Boolean(station);
-  if (station) for (const field of STATION_FIELDS) form.elements[field].value = station[field] ?? '';
+  if (station) {
+    for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id']) form.elements[field].value = station[field] ?? '';
+    form.elements.silence_detection.checked = station.silence_detection;
+  }
   $('stationDialog').showModal();
 }
 
-$('newStation').addEventListener('click', () => openStationForm(null));
+function showStationStorage() {
+  const usage = state.stationFiles && state.stationFiles.usage;
+  $('stationStorage').textContent = !usage ? ''
+    : usage.quota_bytes === null ? `${formatSize(usage.used_bytes)} of storage used.`
+      : `${formatSize(usage.used_bytes)} of ${formatSize(usage.quota_bytes)} of storage used, shared by all of this account's stations.`;
+}
+
+// Uploading from a station's form: the file goes into the account's storage,
+// is checked for this station, and is selected. Saving the station applies it.
+for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], ['fallback_upload', 'fallback_file_id', 'fallback']]) {
+  $('stationForm').elements[input].addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const form = $('stationForm');
+    const note = $('stationUpload');
+    $('stationError').textContent = '';
+    const query = new URLSearchParams({ filename: file.name, use });
+    if (form.dataset.slug) {
+      query.set('station', form.dataset.slug);
+      query.set('assign', 'false');
+    }
+    const scope = state.stationFiles.owner;
+    form.querySelector('button.primary').disabled = true;
+    try {
+      const stored = await uploadFile(file, `${query}${scope ? `&${scope}` : ''}`, state.stationFiles.usage, (text) => { note.textContent = `${file.name}: ${text}`; });
+      for (const name of ['ident_file_id', 'fallback_file_id']) {
+        if ([...form.elements[name].options].some((option) => option.value === String(stored.id))) continue;
+        form.elements[name].append(h('option', { value: stored.id }, `${stored.name} (${stored.format}, ${formatLength(stored.duration_seconds)})`));
+      }
+      form.elements[field].value = stored.id;
+      state.stationFiles.usage = stored.usage;
+      showStationStorage();
+      note.textContent = `${stored.name} ${stored.already_stored ? 'is already in your storage and has been' : 'uploaded and'} selected. Save the station to use it.`;
+    } catch (err) {
+      note.textContent = '';
+      $('stationError').textContent = err.message;
+    }
+    event.target.value = '';
+    form.querySelector('button.primary').disabled = false;
+  });
+}
+
+$('newStation').addEventListener('click', () => openStationForm(null).catch(fail));
 $('stationCancel').addEventListener('click', () => $('stationDialog').close());
 
 $('stationForm').addEventListener('submit', async (event) => {
@@ -238,6 +334,10 @@ $('stationForm').addEventListener('submit', async (event) => {
       if (isAdmin()) body.max_listeners = Number(form.elements.max_listeners.value) || 0;
     } else body[field] = form.elements[field].value.trim();
   }
+  body.failover_delay_secs = Number(form.elements.failover_delay_secs.value);
+  body.silence_detection = form.elements.silence_detection.checked;
+  body.ident_file_id = Number(form.elements.ident_file_id.value) || null;
+  body.fallback_file_id = Number(form.elements.fallback_file_id.value) || null;
   try {
     await api(editing ? 'PATCH' : 'POST', editing ? `/stations/${editing}` : '/stations', body);
     $('stationDialog').close();
@@ -412,6 +512,189 @@ $('detailDialog').addEventListener('close', () => {
   for (const audio of $('detailLinks').querySelectorAll('audio')) audio.pause();
 });
 
+// ── Audio files ────────────────────────────────────────────────────────────
+
+const formatSize = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const formatLength = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+  : s >= 60 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : `${s.toFixed(1)} s`);
+const fileScope = () => (isAdmin() && $('fileAccount').value && Number($('fileAccount').value) !== state.user.id ? `user_id=${$('fileAccount').value}` : '');
+
+async function loadFiles() {
+  if (isAdmin() && !$('fileAccount').options.length) {
+    const { users } = await api('GET', '/users');
+    $('fileAccount').replaceChildren(...users.map((user) => h('option', { value: user.id, selected: user.id === state.user.id }, user.username)));
+  }
+  const scope = fileScope();
+  const library = await api('GET', `/files${scope ? `?${scope}` : ''}`);
+  state.files = library;
+  const { used_bytes: used, quota_bytes: quota } = library.usage;
+  $('fileUsage').textContent = quota === null ? `${formatSize(used)} used` : `${formatSize(used)} of ${formatSize(quota)} used`;
+  $('fileLimits').textContent = `An ident may be at most ${library.limits.ident_max_seconds} seconds long.`;
+  $('filesEmpty').hidden = library.files.length > 0;
+  $('fileRows').replaceChildren(...library.files.map((file) => h('tr', {},
+    h('td', {}, h('div', { class: 'station-name' }, file.name), file.original_name && h('small', {}, file.original_name)),
+    h('td', {}, file.format),
+    h('td', { class: 'num' }, formatLength(file.duration_seconds)),
+    h('td', { class: 'num' }, formatSize(file.size_bytes)),
+    h('td', { class: 'wrap' }, file.used_by.length ? file.used_by.map((u) => `${u.station} (${u.as})`).join(', ') : h('span', { class: 'muted' }, 'Not in use')),
+    h('td', {}, file.stored_in === 'dropbox' ? 'Dropbox' : 'This server'),
+    h('td', { class: 'row-actions' },
+      h('button', { onclick: () => renameFile(file) }, 'Rename'),
+      h('button', { class: 'danger', onclick: () => removeFile(file) }, 'Delete'))
+  )));
+  // Stations of the account being shown, for "use it as".
+  const owner = scope ? Number($('fileAccount').value) : state.user.id;
+  const mine = (isAdmin() ? (await api('GET', `/stations?limit=500&user_id=${owner}`)).stations : state.stations);
+  state.fileStations = mine;
+  $('fileForm').elements.station.replaceChildren(...mine.map((station) => h('option', { value: station.slug }, station.name)));
+  showFileStation();
+}
+
+function showFileStation() {
+  const form = $('fileForm').elements;
+  $('fileStationLabel').hidden = !form.use.value;
+  const station = (state.fileStations || []).find((s) => s.slug === form.station.value);
+  const format = station && station.live.stream_format;
+  $('fileStationFormat').textContent = !station ? 'This account has no stations yet.'
+    : format && !format.features.idents ? `Its stream is ${format.summary}, so idents and fallback audio cannot be used on it.`
+      : format ? `Its stream is ${format.summary}. The file must be exactly that.`
+      : 'This station has not been on air yet, so its format is not known. The file is checked when it is first needed, and skipped if it does not match.';
+}
+$('fileForm').elements.use.addEventListener('change', showFileStation);
+$('fileForm').elements.station.addEventListener('change', showFileStation);
+$('fileAccount').addEventListener('change', () => loadFiles().catch(fail));
+
+// Sends a file to the account's storage. `query` says what it is for; the
+// server answers with the reason and the remedy when it cannot be accepted.
+function uploadFile(file, query, usage, onProgress) {
+  return new Promise((resolve, reject) => {
+    const free = usage && usage.free_bytes;
+    if (free !== null && free !== undefined && file.size > free) {
+      return reject(new Error(`This file is ${formatSize(file.size)} but only ${formatSize(free)} of storage is free. Delete files that are no longer needed, or ask the administrator to raise the storage quota.`));
+    }
+    // XMLHttpRequest rather than fetch, for the progress of large uploads.
+    const request = new XMLHttpRequest();
+    request.open('POST', `${API}/files?${query}`);
+    request.setRequestHeader('Authorization', `Bearer ${state.token}`);
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(`${Math.round((e.loaded / e.total) * 100)}% sent`); };
+    request.onerror = () => reject(new Error('The upload did not complete. Check the connection and try again.'));
+    request.onload = () => {
+      let data = null;
+      try { data = JSON.parse(request.responseText); } catch { /* not JSON */ }
+      if (request.status === 201 || request.status === 200) return resolve(data);
+      if (request.status === 401) showLogin();
+      const err = (data && data.error) || {};
+      reject(new Error((Array.isArray(err.details) && err.details.map((d) => `${FIELD_LABELS[d.field] || d.field} ${d.message}`).join('; ')) || err.message || `Upload failed (${request.status})`));
+    };
+    onProgress('Starting');
+    request.send(file);
+  });
+}
+
+$('fileForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  const file = form.file.files[0];
+  const error = $('fileError');
+  error.textContent = '';
+  if (!file) return;
+  const query = new URLSearchParams({ filename: file.name });
+  if (form.name.value.trim()) query.set('name', form.name.value.trim());
+  if (form.use.value && form.station.value) {
+    query.set('use', form.use.value);
+    query.set('station', form.station.value);
+  } else if (form.use.value) {
+    error.textContent = 'Choose a station, or add the file to the library only.';
+    return;
+  }
+  const scope = fileScope();
+  const button = event.target.querySelector('button');
+  button.disabled = true;
+  try {
+    const stored = await uploadFile(file, `${query}${scope ? `&${scope}` : ''}`, state.files && state.files.usage, (text) => { $('fileProgress').textContent = text; });
+    event.target.reset();
+    toast(stored.already_stored ? `${stored.name} is already in your storage` : `${stored.name} uploaded`);
+    loadFiles().catch(fail);
+    refresh().catch(() => {});
+  } catch (err) {
+    error.textContent = err.message;
+  }
+  button.disabled = false;
+  $('fileProgress').textContent = '';
+});
+
+async function renameFile(file) {
+  const name = prompt('Name of this file (listeners see it as the title while it plays):', file.name);
+  if (name === null || !name.trim()) return;
+  await api('PATCH', `/files/${file.id}`, { name: name.trim() }).then(loadFiles).catch(fail);
+}
+
+async function removeFile(file) {
+  const inUse = file.used_by.length ? ` It is used by ${file.used_by.map((u) => u.station).join(', ')} and will be removed from there.` : '';
+  if (!confirm(`Delete "${file.name}"?${inUse}`)) return;
+  await api('DELETE', `/files/${file.id}${file.used_by.length ? '?force' : ''}`).then(loadFiles).catch(fail);
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+
+async function loadSettings() {
+  const s = await api('GET', '/settings');
+  const d = s.storage.dropbox;
+  $('settingsForm').elements.ident_max_seconds.value = s.ident_max_seconds;
+  $('settingsForm').elements.default_storage_quota_mb.value = s.default_storage_quota_mb;
+  $('dropboxRedirect').textContent = d.redirect_uri;
+  $('dropboxForm').elements.dropbox_app_key.value = d.app_key || '';
+  $('dropboxForm').elements.dropbox_app_secret.placeholder = d.app_secret_set ? 'Saved. Leave empty to keep it.' : '';
+  $('dropboxForm').hidden = d.connected;
+  $('dropboxDisconnect').hidden = !d.connected;
+  $('dropboxState').textContent = d.connected
+    ? `Connected${d.account ? ` to ${d.account}` : ''}. ${d.files} file(s), ${formatSize(d.bytes)}, are kept in Dropbox; this server keeps up to ${formatSize(s.storage.cache_mb * 1024 ** 2)} of them at hand.${s.storage.local.files ? ` ${s.storage.local.files} file(s) are still being copied.` : ''}`
+    : `Not connected. Uploaded files are kept on this server only (${s.storage.local.files} file(s), ${formatSize(s.storage.local.bytes)}).`;
+}
+
+$('settingsForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('settingsError').textContent = '';
+  try {
+    await api('PUT', '/settings', { ident_max_seconds: Number(form.ident_max_seconds.value), default_storage_quota_mb: Number(form.default_storage_quota_mb.value) });
+    toast('Settings saved');
+  } catch (err) {
+    $('settingsError').textContent = err.message;
+  }
+});
+
+$('dropboxForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('dropboxError').textContent = '';
+  const body = { dropbox_app_key: form.dropbox_app_key.value.trim() };
+  if (form.dropbox_app_secret.value.trim()) body.dropbox_app_secret = form.dropbox_app_secret.value.trim();
+  try {
+    await api('PUT', '/settings', body);
+    const { authorize_url: url } = await api('POST', '/storage/dropbox/authorize');
+    // Dropbox asks for the approval and sends the browser back here.
+    window.location.href = url;
+  } catch (err) {
+    $('dropboxError').textContent = err.message;
+  }
+});
+
+$('dropboxDisconnect').addEventListener('click', async () => {
+  if (!confirm('Disconnect Dropbox? Every file is first copied back to this server, which needs the disk space for them. The copies in Dropbox are left there.')) return;
+  await api('DELETE', '/storage/dropbox').then(() => { toast('Dropbox disconnected'); return loadSettings(); }).catch(fail);
+});
+
+// Dropbox sends the administrator back with the outcome in the address.
+function dropboxReturn() {
+  const query = new URLSearchParams(window.location.search);
+  if (!query.has('dropbox')) return;
+  history.replaceState(null, '', window.location.pathname);
+  document.querySelector('[data-tab=settings]').click();
+  toast(query.get('dropbox') === 'connected' ? 'Dropbox is connected' : `Dropbox was not connected: ${query.get('reason') || 'unknown error'}`);
+}
+
 // ── API keys ───────────────────────────────────────────────────────────────
 
 async function loadKeys() {
@@ -453,9 +736,12 @@ async function loadUsers() {
     h('td', {}, user.role === 'admin' ? 'Administrator' : 'Tenant'),
     h('td', {}, user.external_id || h('span', { class: 'muted' }, 'None')),
     h('td', { class: 'num' }, user.role === 'admin' ? user.station_count : `${user.station_count} of ${user.max_stations}`),
+    h('td', { class: 'num' }, user.role === 'admin' ? formatSize(user.storage_used_bytes)
+      : `${formatSize(user.storage_used_bytes)} of ${user.storage_quota_mb === null ? 'default' : formatSize(user.storage_quota_mb * 1024 ** 2)}`),
     h('td', {}, h('span', { class: `status ${user.is_active ? 'live' : 'off'}` }, user.is_active ? 'Active' : 'Disabled')),
     h('td', { class: 'row-actions' }, user.id !== state.user.id && [
       user.role !== 'admin' && h('button', { onclick: () => changeStationLimit(user) }, 'Station limit'),
+      user.role !== 'admin' && h('button', { onclick: () => changeStorageQuota(user) }, 'Storage'),
       h('button', { onclick: () => api('PATCH', `/users/${user.id}`, { is_active: !user.is_active }).then(loadUsers).catch(fail) }, user.is_active ? 'Disable' : 'Enable'),
       h('button', { class: 'danger', onclick: () => removeUser(user) }, 'Delete'),
     ])
@@ -469,6 +755,7 @@ $('userForm').addEventListener('submit', async (event) => {
   if (form.get('password')) body.password = form.get('password');
   if (form.get('external_id').trim()) body.external_id = form.get('external_id').trim();
   if (form.get('max_stations') !== '') body.max_stations = Number(form.get('max_stations'));
+  if (form.get('storage_quota_mb') !== '') body.storage_quota_mb = Number(form.get('storage_quota_mb'));
   try {
     await api('POST', '/users', body);
     event.target.reset();
@@ -490,6 +777,14 @@ async function changeStationLimit(user) {
   const limit = Number(answer);
   if (!Number.isInteger(limit) || limit < 0) return toast('Enter a whole number, 0 or more.');
   await api('PATCH', `/users/${user.id}`, { max_stations: limit }).then(loadUsers).catch(fail);
+}
+
+async function changeStorageQuota(user) {
+  const answer = prompt(`Storage for ${user.username}'s uploaded audio, in MB (1024 MB is 1 GB). Leave empty to use the default from Settings.`, user.storage_quota_mb ?? '');
+  if (answer === null) return;
+  const quota = answer.trim() === '' ? null : Number(answer);
+  if (quota !== null && (!Number.isInteger(quota) || quota < 0)) return toast('Enter a whole number of MB, or leave it empty.');
+  await api('PATCH', `/users/${user.id}`, { storage_quota_mb: quota }).then(loadUsers).catch(fail);
 }
 
 // ── Updates ────────────────────────────────────────────────────────────────

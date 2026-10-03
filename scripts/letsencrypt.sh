@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
-get_env() { grep "^$1=" .env | head -n1 | cut -d= -f2-; }
+get_env() { grep "^$1=" .env | head -n1 | cut -d= -f2- || true; }
 DOMAIN="$(get_env DOMAIN)"
 EMAIL="$(get_env LETSENCRYPT_EMAIL)"
 [ -n "$DOMAIN" ] || { echo "DOMAIN is not set in .env" >&2; exit 1; }

@@ -110,6 +110,23 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     else out[field] = body[field];
   }
 
+  if (has(body, 'failover_delay_secs')) {
+    if (!Number.isInteger(body.failover_delay_secs) || body.failover_delay_secs < 1 || body.failover_delay_secs > 300) {
+      fail('failover_delay_secs', 'must be an integer from 1 to 300');
+    } else out.failover_delay_secs = body.failover_delay_secs;
+  }
+  if (has(body, 'silence_detection')) {
+    if (typeof body.silence_detection !== 'boolean') fail('silence_detection', 'must be true or false');
+    else out.silence_detection = body.silence_detection;
+  }
+  // Whether the files exist, belong to the account and fit the stream is checked by the caller.
+  for (const field of ['ident_file_id', 'fallback_file_id']) {
+    if (!has(body, field)) continue;
+    if (blank(body[field])) out[field] = null;
+    else if (!Number.isInteger(body[field]) || body[field] < 1) fail(field, 'must be the id of an uploaded file, or null');
+    else out[field] = body[field];
+  }
+
   for (const field of ADMIN_ONLY) {
     if (has(body, field) && !isAdmin) fail(field, 'can only be set by an administrator');
   }
@@ -173,7 +190,39 @@ function parseUser(body, { partial = false } = {}) {
     if (typeof body.is_active !== 'boolean') fail('is_active', 'must be true or false');
     else out.is_active = body.is_active;
   }
+  if (has(body, 'storage_quota_mb')) {
+    // null returns the account to the gateway's default quota.
+    if (body.storage_quota_mb === null) out.storage_quota_mb = null;
+    else if (!Number.isInteger(body.storage_quota_mb) || body.storage_quota_mb < 0 || body.storage_quota_mb > 10000000) {
+      fail('storage_quota_mb', 'must be an integer from 0 to 10000000 (megabytes), or null for the default');
+    } else out.storage_quota_mb = body.storage_quota_mb;
+  }
 
+  if (errors.length) throw invalid(errors);
+  return out;
+}
+
+// Gateway-wide settings an administrator may change.
+function parseSettings(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', message: 'must be a JSON object' }]);
+  const errors = [];
+  const out = {};
+  const fail = (field, message) => errors.push({ field, message });
+  if (has(body, 'ident_max_seconds')) {
+    if (!Number.isInteger(body.ident_max_seconds) || body.ident_max_seconds < 1 || body.ident_max_seconds > 30) fail('ident_max_seconds', 'must be an integer from 1 to 30');
+    else out.ident_max_seconds = body.ident_max_seconds;
+  }
+  if (has(body, 'default_storage_quota_mb')) {
+    if (!Number.isInteger(body.default_storage_quota_mb) || body.default_storage_quota_mb < 0 || body.default_storage_quota_mb > 10000000) {
+      fail('default_storage_quota_mb', 'must be an integer from 0 to 10000000 (megabytes)');
+    } else out.default_storage_quota_mb = body.default_storage_quota_mb;
+  }
+  for (const field of ['dropbox_app_key', 'dropbox_app_secret']) {
+    if (!has(body, field)) continue;
+    if (blank(body[field])) out[field] = null;
+    else if (typeof body[field] !== 'string' || !/^[A-Za-z0-9_-]{6,100}$/.test(body[field].trim())) fail(field, 'does not look like a Dropbox app key or secret');
+    else out[field] = body[field].trim();
+  }
   if (errors.length) throw invalid(errors);
   return out;
 }
@@ -247,4 +296,4 @@ function dateParam(value, name, fallback) {
   return value;
 }
 
-module.exports = { parseStation, parseUser, parseNode, checkSlug, checkUrl, isPrivateHost, intParam, timeParam, dateParam, RESERVED_SLUGS };
+module.exports = { parseStation, parseUser, parseSettings, parseNode, checkSlug, checkUrl, isPrivateHost, intParam, timeParam, dateParam, RESERVED_SLUGS };

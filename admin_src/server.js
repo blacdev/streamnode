@@ -11,6 +11,7 @@ const stats = require('./src/stats');
 const haproxy = require('./src/haproxy');
 const cluster = require('./src/cluster');
 const updates = require('./src/updates');
+const media = require('./src/media');
 const routes = require('./src/routes');
 const openapi = require('./src/openapi');
 const { errorHandler } = require('./src/errors');
@@ -42,7 +43,7 @@ app.use('/api', (req, res, next) => {
     res.set({
       'Access-Control-Allow-Origin': origin,
       Vary: 'Origin',
-      'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, Authorization, X-File-Name',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
       'Access-Control-Max-Age': '600',
     });
@@ -78,6 +79,7 @@ async function main() {
   await redis.connect();
   await auth.bootstrap();
   await cluster.ensureLocalEngine();
+  await media.init();
   console.log(`[stations] published ${await stations.syncAll()} station profile(s) to the engine registry`);
 
   every(config.statsFlushMs, 'stats-flush', stats.flush);
@@ -85,6 +87,8 @@ async function main() {
   await cluster.publishOverrides();
   every(config.stationSyncMs, 'audio-overrides', cluster.publishOverrides);
   every(3600 * 1000, 'retention', stats.prune);
+  media.sync().catch((err) => console.error('[files]', err.message));
+  every(config.stationSyncMs, 'files', media.sync);
   if (updates.enabled()) {
     updates.check();
     every(config.updateCheckMs, 'update-check', updates.check);

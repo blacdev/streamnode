@@ -41,6 +41,8 @@ pub struct ClusterConfig {
     pub engine_secret: Option<String>,
     /// The master's setting, so every engine applies the same source policy.
     pub allow_private_sources: Option<bool>,
+    /// Where the master's API is, for fetching idents and fallback files.
+    pub master_url: Option<String>,
 }
 
 impl ClusterConfig {
@@ -58,6 +60,7 @@ impl ClusterConfig {
             redis_url: value.get("redis_url")?.as_str()?.to_string(),
             engine_secret: value.get("engine_secret").and_then(Value::as_str).map(str::to_string),
             allow_private_sources: value.get("allow_private_sources").and_then(Value::as_bool),
+            master_url: value.get("master_url").and_then(Value::as_str).map(str::to_string),
         })
     }
 }
@@ -168,6 +171,7 @@ pub async fn join(cfg: &Config, master_url: &str, token: &str) -> Result<Cluster
         redis_url: redis_url(&master, redis["host"].as_str(), port, password, tls, redis_insecure).map_err(JoinError::Rejected)?,
         engine_secret: answer["engine_secret"].as_str().map(str::to_string),
         allow_private_sources: answer["settings"]["allow_private_sources"].as_bool(),
+        master_url: Some(master_url.to_string()),
     };
     if let Err(error) = save(cfg, &cluster, master_url) {
         tracing::error!(%error, path = %saved_path(cfg).display(), "enrolled, but the result could not be saved; this server will have to enrol again after a restart");
@@ -237,6 +241,7 @@ pub async fn resolve(cfg: &Config) -> ClusterConfig {
             redis_url: redis_url.clone(),
             engine_secret: cfg.engine_secret.clone(),
             allow_private_sources: None,
+            master_url: cfg.admin_url.clone(),
         };
     }
     if let Some(saved) = load_saved(cfg) {
@@ -284,6 +289,7 @@ mod tests {
             redis_url: "rediss://:pw@m.example:6380".into(),
             engine_secret: Some("s3cret".into()),
             allow_private_sources: Some(false),
+            master_url: Some("https://m.example".into()),
         };
         let json = cluster.to_json("https://m.example");
         assert_eq!(ClusterConfig::from_json(&json), Some(cluster));

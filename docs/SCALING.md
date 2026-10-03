@@ -82,14 +82,15 @@ On the master:
 ```
 
 (or dashboard: **Servers > Add server > Create install command**, or
-`POST /api/v1/cluster/join-tokens`). Run the printed command on the new server, in a
-copy of this project:
+`POST /api/v1/cluster/join-tokens`). It prints one command for the new server, which
+can be completely empty: nothing has to be installed or copied to it first.
 
 ```bash
-./install.sh --role slave --master https://stream.example.com --token rgj_4be1a09c...
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- \
+  --role slave --master https://stream.example.com --token rgj_4be1a09c...
 ```
 
-The slave installs the engine, presents the token to the master, receives its
+It installs Docker if missing, downloads the engine, presents the token to the master, receives its
 credentials, and is added to HAProxy. Nothing else needs doing.
 
 ### Option 2: finish from the master

@@ -23,9 +23,11 @@
       <strong>Radio Gateway</strong>
       <nav id="tabs" role="tablist">
         <button role="tab" data-tab="stations" aria-selected="true">Stations</button>
+        <button role="tab" data-tab="files">Audio files</button>
         <button role="tab" data-tab="keys">API keys</button>
         <button role="tab" data-tab="users" data-admin>Accounts</button>
         <button role="tab" data-tab="servers" data-admin>Servers</button>
+        <button role="tab" data-tab="settings" data-admin>Settings</button>
         <button role="tab" data-tab="updates" data-admin>Updates</button>
         <a href="/api/v1/docs" target="_blank" rel="noopener">API docs ↗</a>
       </nav>
@@ -51,6 +53,65 @@
         <p id="stationsEmpty" class="muted empty" hidden>No stations yet. Add one to start relaying.</p>
       </section>
 
+      <section id="tab-files" hidden>
+        <div class="bar"><h2>Audio files</h2>
+          <span id="fileUsage" class="muted"></span>
+          <span class="muted">Shared by all of the account's stations</span>
+          <select id="fileAccount" data-admin aria-label="Account"></select>
+        </div>
+        <p class="notice prose"><strong>Files are played exactly as uploaded: the gateway does not convert audio.</strong>
+          A file must be MP3 or AAC (an .aac file, not .m4a) and match the station's stream exactly: the same format, bitrate, sample rate and mono or stereo. MP3 files must use a constant bitrate.
+          A file that does not match is refused with the settings to export it with. <span id="fileLimits"></span></p>
+        <form id="fileForm" class="card wide-card">
+          <h3>Upload a file</h3>
+          <label>Audio file <input name="file" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac" required></label>
+          <label>Name <input name="name" maxlength="100" placeholder="Shown in the dashboard and to listeners as the title"></label>
+          <label>Use it as
+            <select name="use">
+              <option value="">Just add it to the library</option>
+              <option value="fallback">Fallback audio for a station</option>
+              <option value="ident">Ident for a station</option>
+            </select></label>
+          <label id="fileStationLabel" hidden>Station <select name="station"></select>
+            <small id="fileStationFormat"></small></label>
+          <p id="fileError" class="error" role="alert"></p>
+          <div class="actions left"><button class="primary">Upload</button> <span id="fileProgress" class="muted"></span></div>
+        </form>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Name</th><th>Format</th><th class="num">Length</th><th class="num">Size</th><th>Used by</th><th>Kept in</th><th></th></tr></thead>
+          <tbody id="fileRows"></tbody>
+        </table></div>
+        <p id="filesEmpty" class="muted empty" hidden>No files yet.</p>
+      </section>
+
+      <section id="tab-settings" hidden>
+        <div class="bar"><h2>Settings</h2></div>
+        <div class="card wide-card">
+          <h3>Uploads</h3>
+          <form id="settingsForm">
+            <label>Longest ident, in seconds <input name="ident_max_seconds" type="number" min="1" max="30" required class="short"></label>
+            <label>Storage for each account, in MB <input name="default_storage_quota_mb" type="number" min="0" required class="short">
+              <small>Applies to accounts without a quota of their own. Set a quota for one account under Accounts.</small></label>
+            <p id="settingsError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button></div>
+          </form>
+        </div>
+        <div class="card wide-card">
+          <h3>Dropbox storage</h3>
+          <p id="dropboxState" class="muted"></p>
+          <form id="dropboxForm">
+            <p class="muted">To keep uploaded files in your Dropbox: create an app at dropbox.com/developers/apps (Scoped access, App folder), allow it
+              <code>files.content.write</code> and <code>files.content.read</code>, and add this address to its Redirect URIs:</p>
+            <p><code id="dropboxRedirect"></code></p>
+            <label>App key <input name="dropbox_app_key" autocomplete="off"></label>
+            <label>App secret <input name="dropbox_app_secret" type="password" autocomplete="off"></label>
+            <p id="dropboxError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save and connect</button></div>
+          </form>
+          <div class="actions left"><button id="dropboxDisconnect" class="danger" hidden>Disconnect Dropbox</button></div>
+        </div>
+      </section>
+
       <section id="tab-keys" hidden>
         <div class="bar"><h2>API keys</h2>
           <form id="keyForm" class="inline"><input name="name" placeholder="Key name, e.g. billing module" maxlength="50" required aria-label="Key name"><button class="primary">Create key</button></form>
@@ -69,11 +130,12 @@
             <input name="password" type="password" placeholder="Password (optional)" aria-label="Password" autocomplete="new-password">
             <input name="external_id" placeholder="External ID (optional)" aria-label="External ID">
             <input name="max_stations" type="number" min="0" placeholder="Station limit" aria-label="Station limit" class="short">
+            <input name="storage_quota_mb" type="number" min="0" placeholder="Storage MB" aria-label="Storage quota in MB" class="short">
             <button class="primary">Add account</button>
           </form>
         </div>
         <div class="tablewrap"><table>
-          <thead><tr><th>Username</th><th>Role</th><th>External ID</th><th class="num">Stations</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Role</th><th>External ID</th><th class="num">Stations</th><th class="num">Storage</th><th>Status</th><th></th></tr></thead>
           <tbody id="userRows"></tbody>
         </table></div>
       </section>
@@ -123,12 +185,28 @@
       <label>Station name <input name="name" maxlength="100" required></label>
       <label>Slug <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" required>
         <small>The public path of the stream: /slug</small></label>
-      <label>Primary stream URL <input name="primary_url" type="url" required placeholder="https://encoder.example.com/live"></label>
+      <label>Primary stream URL <input name="primary_url" type="url" required placeholder="https://encoder.example.com/live">
+        <small>The direct address of an MP3 or AAC stream. <span id="stationStream"></span></small></label>
+      <details><summary>Which streams are supported</summary>
+        <div class="tablewrap"><table id="streamTypes"></table></div>
+        <p class="muted">Every listed format is relayed unchanged. What differs is what the gateway can add to it. The type is detected the first time the station plays.</p>
+      </details>
       <label>Backup stream URL <input name="backup_url" type="url" placeholder="Optional">
         <small>Used when the primary is unreachable, drops or stalls.</small></label>
       <label>Title &amp; artwork URL <input name="metadata_url" type="url" placeholder="Optional">
         <small>A JSON or text endpoint with the current title, artist and artwork. Leave empty to use titles from the stream.</small></label>
       <label>Station artwork URL <input name="artwork_url" type="url" placeholder="Optional"></label>
+      <label>Seconds without audio before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
+        <small>How long a stream may be down or silent before the station moves to the next source. When a stream is back the station returns to it at once.</small></label>
+      <label class="check"><input type="checkbox" name="silence_detection" checked> Treat a stream that sends silence as having no audio</label>
+      <label>Ident <select name="ident_file_id"></select>
+        <small>Played at every change: on leaving a failed stream and on returning to one that is back. Without an ident, MP3 stations fade out and in instead. Choose a file already in your storage, or upload one:</small>
+        <input name="ident_upload" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac"></label>
+      <label>Fallback audio <select name="fallback_file_id"></select>
+        <small>Played in a loop when neither stream has audio. Choose a file already in your storage, or upload one:</small>
+        <input name="fallback_upload" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac"></label>
+      <p class="muted"><span id="stationFormat"></span> The gateway does not convert audio. <span id="stationStorage"></span></p>
+      <p id="stationUpload" class="muted" role="status"></p>
       <label data-admin>Listener limit <input name="max_listeners" type="number" min="0" value="0">
         <small>0 for unlimited.</small></label>
       <p id="stationError" class="error" role="alert"></p>
@@ -141,10 +219,10 @@
 
   <dialog id="serverDialog">
     <h2>Add a server</h2>
-    <p class="muted">Install the gateway on the new server as a <strong>slave node</strong>, then connect it either way.</p>
+    <p class="muted">A new server joins as a <strong>slave node</strong>. Connect it either way.</p>
 
     <h3>Option 1: run one command on the new server</h3>
-    <p>The command installs the engine and joins this master by itself.</p>
+    <p>For a new, empty server. The command installs everything it needs, including Docker if it is missing, and joins this master by itself.</p>
     <button id="makeJoinCommand">Create install command</button>
     <div id="joinCommand" class="notice" hidden>
       <code id="joinCommandText"></code>

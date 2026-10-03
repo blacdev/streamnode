@@ -33,6 +33,7 @@ input { background: var(--surface); border: 1px solid var(--line); border-radius
 input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 label { display: block; margin: 12px 0; font-weight: 600; font-size: 13px; }
 label input { margin-top: 4px; font-weight: 400; }
+label > select { display: block; width: 100%; margin-top: 4px; font-weight: 400; }
 
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 28px; width: 100%; max-width: 360px; }
@@ -127,3 +128,5 @@ summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
   main { padding: 14px; }
   .bar input[type="search"], .inline input { width: 100%; }
 }
+.notice.prose { word-break: normal; }
+#fileForm { margin: 16px 0; }

@@ -21,6 +21,10 @@ const stationWritable = {
   backup_url: { type: 'string', format: 'uri', nullable: true, description: 'Used when the primary cannot be reached, drops or stalls. Should carry the same codec as the primary.', example: 'https://backup.example.com/live' },
   metadata_url: { type: 'string', format: 'uri', nullable: true, description: 'Optional endpoint polled for the current title, artist and artwork (JSON or plain text). When absent, titles embedded in the stream are used.', example: 'https://example.com/nowplaying.json' },
   artwork_url: { type: 'string', format: 'uri', nullable: true, description: 'Optional station artwork, used whenever the metadata URL supplies none.', example: 'https://example.com/logo.png' },
+  failover_delay_secs: { type: 'integer', minimum: 1, maximum: 300, default: 6, description: 'Seconds a stream may be down or silent before the station moves to the next source (primary, then backup, then the fallback file). Returning to a stream that is back is immediate.' },
+  silence_detection: { type: 'boolean', default: true, description: 'Treat a stream that keeps sending but carries only silence as having no audio. Applies to MP3 and AAC streams.' },
+  ident_file_id: { type: 'integer', nullable: true, description: 'An uploaded file played once at every change of source: on leaving a failed stream and on returning to one that is back. Without it, MP3 stations fade between sources. Must belong to the station\'s account, match the stream\'s format and be no longer than the ident limit.' },
+  fallback_file_id: { type: 'integer', nullable: true, description: 'An uploaded file looped while neither stream has audio. Must belong to the station\'s account and match the stream\'s format.' },
   max_listeners: { type: 'integer', minimum: 0, description: 'Concurrent listener cap, 0 for unlimited. Administrators only.', example: 500 },
   external_id: { type: 'string', nullable: true, maxLength: 100, description: 'Your own identifier for this station, such as a billing service id. Administrators only.', example: 'whmcs-service-1042' },
   is_active: { type: 'boolean', description: 'false suspends the station. Administrators only.' },
@@ -47,6 +51,8 @@ module.exports = {
   tags: [
     { name: 'Stations', description: 'Provision and manage relayed stations.' },
     { name: 'Statistics', description: 'Live status, history and billing usage.' },
+    { name: 'Files', description: 'Uploaded audio: station idents and the files played when a station\'s streams have no audio. The gateway never converts audio, so a file must already match the stream it is used on.' },
+    { name: 'Settings', description: 'Gateway-wide settings and where uploaded files are kept.' },
     { name: 'Accounts', description: 'Tenant accounts and API keys.' },
     { name: 'Servers', description: 'Streaming servers that listeners are spread across.' },
     { name: 'Updates', description: 'Version monitoring and installing updates.' },
@@ -137,6 +143,81 @@ module.exports = {
     },
     '/overview': {
       get: { tags: ['Statistics'], summary: 'Headline numbers', responses: { 200: ok('Totals across visible stations.', ref('Overview')), ...AUTH_ERRORS } },
+    },
+    '/files': {
+      get: {
+        tags: ['Files'], summary: 'List uploaded files',
+        description: 'The caller\'s files with the account\'s storage use. Administrators may pass `user_id` (an account id, or `all`).',
+        parameters: [{ name: 'user_id', in: 'query', schema: { type: 'string' } }],
+        responses: { 200: ok('Files, storage use and limits.', ref('FileList')), ...AUTH_ERRORS },
+      },
+      post: {
+        tags: ['Files'], summary: 'Upload a file',
+        description: [
+          'The request body is the file itself (not a form). Example:',
+          '',
+          '`curl -H "X-API-Key: $KEY" --data-binary @ident.mp3 "https://stream.example.com/api/v1/files?filename=ident.mp3&use=ident&station=powerbeats"`',
+          '',
+          'The file is read, not converted. It is refused with `422 file_not_usable`, and a message saying what to change, when it is not MP3 or AAC (ADTS), when `use=ident` and it is longer than the ident limit, or when `station` is given and it does not match that station\'s stream (codec, bitrate, sample rate, channels; MP3 must be constant bitrate). It is refused with `413 quota_exceeded` when it does not fit in the account\'s remaining storage.',
+          '',
+          'With `station` and `use`, the file is also set as that station\'s ident or fallback.',
+        ].join('\n'),
+        parameters: [
+          { name: 'filename', in: 'query', schema: { type: 'string' }, description: 'The file\'s own name, e.g. `ident.mp3`.' },
+          { name: 'name', in: 'query', schema: { type: 'string', maxLength: 100 }, description: 'Display name; listeners see it as the title while a fallback file plays. Defaults to the file name without its extension.' },
+          { name: 'use', in: 'query', schema: { type: 'string', enum: ['ident', 'fallback'] } },
+          { name: 'station', in: 'query', schema: { type: 'string' }, description: 'Slug of a station to check the file against and assign it to. Requires `use`.' },
+          { name: 'assign', in: 'query', schema: { type: 'boolean', default: true }, description: '`false` checks the file against `station` and stores it without assigning it.' },
+          { name: 'user_id', in: 'query', schema: { type: 'integer' }, description: 'Administrators only: upload into another account.' },
+        ],
+        requestBody: { required: true, content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+        responses: {
+          200: ok('The account already holds this exact file; the existing one is returned (`already_stored: true`) and no storage is used.', ref('File')),
+          201: ok('Stored.', ref('File')),
+          413: error('The file does not fit in the account\'s remaining storage (`quota_exceeded`).'),
+          422: error('The file cannot be used (`file_not_usable`); the message says why and what to do.'),
+          507: error('The server itself is out of disk space.'),
+          ...AUTH_ERRORS,
+        },
+      },
+    },
+    '/files/{id}': {
+      parameters: [idParam],
+      get: { tags: ['Files'], summary: 'Get a file\'s details', responses: { 200: ok('The file.', ref('File')), 404: error('No such file.'), ...AUTH_ERRORS } },
+      patch: { tags: ['Files'], summary: 'Rename a file', requestBody: { required: true, content: json({ type: 'object', required: ['name'], properties: { name: { type: 'string', maxLength: 100 } } }) }, responses: { 200: ok('Renamed.', ref('File')), ...AUTH_ERRORS } },
+      delete: {
+        tags: ['Files'], summary: 'Delete a file',
+        description: 'Refused with `409 file_in_use` while a station uses the file, unless `force` is passed, which also removes it from those stations.',
+        parameters: [{ name: 'force', in: 'query', schema: { type: 'boolean' }, allowEmptyValue: true }],
+        responses: { 204: { description: 'Deleted.' }, 409: error('A station still uses the file.'), ...AUTH_ERRORS },
+      },
+    },
+    '/files/{id}/content': {
+      parameters: [idParam],
+      get: { tags: ['Files'], summary: 'Download a file', parameters: [{ name: 'download', in: 'query', schema: { type: 'boolean' }, allowEmptyValue: true, description: 'Send it as an attachment.' }], responses: { 200: { description: 'The file as uploaded.', content: { 'audio/mpeg': {}, 'audio/aac': {} } }, ...AUTH_ERRORS } },
+    },
+    '/settings': {
+      get: { tags: ['Settings'], summary: 'Read the settings', description: 'Administrators only.', responses: { 200: ok('Settings and storage state.', ref('Settings')), ...AUTH_ERRORS } },
+      put: {
+        tags: ['Settings'], summary: 'Change settings',
+        description: 'Administrators only. Only the supplied fields change. A shorter ident limit applies to idents chosen from then on.',
+        requestBody: { required: true, content: json(ref('SettingsUpdate')) },
+        responses: { 200: ok('Saved.', ref('Settings')), 409: error('Dropbox must be disconnected before its app key or secret is changed.'), ...AUTH_ERRORS },
+      },
+    },
+    '/storage/dropbox/authorize': {
+      post: {
+        tags: ['Settings'], summary: 'Start connecting Dropbox',
+        description: 'Administrators only. Returns the address to open in a browser to approve the Dropbox app whose key and secret were saved with `PUT /settings`. The app must list `redirect_uri` among its redirect URIs. After approval Dropbox returns the browser to the dashboard and the files are copied to Dropbox.',
+        responses: { 200: ok('Where to send the administrator.', { type: 'object', properties: { authorize_url: { type: 'string' }, redirect_uri: { type: 'string' }, expires_in: { type: 'integer' } } }), 409: error('The app key and secret have not been saved.'), ...AUTH_ERRORS },
+      },
+    },
+    '/storage/dropbox': {
+      delete: {
+        tags: ['Settings'], summary: 'Disconnect Dropbox',
+        description: 'Administrators only. Every file is first copied back to the server; if one cannot be, nothing changes and `409 files_not_retrieved` is returned. Copies in Dropbox are left there.',
+        responses: { 200: ok('Disconnected.', ref('Settings')), 409: error('Some files could not be copied back.'), ...AUTH_ERRORS },
+      },
     },
     '/users': {
       get: { tags: ['Accounts'], summary: 'List accounts', description: 'Administrators only.', parameters: [{ name: 'external_id', in: 'query', schema: { type: 'string' } }], responses: { 200: ok('Accounts.', { type: 'object', properties: { users: { type: 'array', items: ref('User') } } }), ...AUTH_ERRORS } },
@@ -241,6 +322,9 @@ module.exports = {
       parameters: [slugParam],
       get: { tags: ['Public'], summary: 'What a station is playing', security: [], description: 'For web players and widgets; callable from any origin. Title and artist are present while the station has at least one listener.', responses: { 200: ok('Now playing.', ref('NowPlaying')), 404: error('No such station, or it is suspended.') } },
     },
+    '/stream-types': {
+      get: { tags: ['Public'], summary: 'Supported stream types', security: [], description: 'The kinds of stream a station can supply and what is available on each: relaying, silence detection, fades, idents and fallback audio, and what uploaded files must be.', responses: { 200: ok('The stream types.', { type: 'object', properties: { stream_types: { type: 'array', items: ref('StreamType') } } }) } },
+    },
     '/health': {
       get: { tags: ['Public'], summary: 'Service health', security: [], responses: { 200: ok('Healthy.', ref('Health')), 503: ok('Database or cache unavailable.', ref('Health')) } },
     },
@@ -269,7 +353,8 @@ module.exports = {
         properties: {
           online: { type: 'boolean', description: 'True while the gateway is connected to a source for this station, which happens only while it has listeners.' },
           listeners: { type: 'integer' },
-          source: { type: 'string', enum: ['primary', 'backup'], nullable: true },
+          source: { type: 'string', enum: ['primary', 'backup', 'fallback'], nullable: true, description: '`fallback` while the station is playing its fallback file because neither stream has audio.' },
+          stream_format: { ...ref('StreamFormat'), nullable: true },
           title: { type: 'string', nullable: true },
           artist: { type: 'string', nullable: true },
           artwork: { type: 'string', nullable: true },
@@ -279,6 +364,70 @@ module.exports = {
           servers: { type: 'integer', description: 'Streaming servers currently relaying this station.' },
           no_audio_on: { type: 'array', description: 'Servers that currently get no audio from this station\'s sources. Such a server has released the station\'s listeners and resources and refuses the station until it retries (every 30 seconds while listeners ask for it); listeners are served by the other servers.', items: { type: 'object', properties: { server: { type: 'string', example: 'edge-2' }, since: { type: 'string', format: 'date-time' }, reason: { type: 'string', example: 'primary: source answered HTTP 404' } } } },
           source_offline: { type: 'boolean', description: 'true when every server has found the station\'s sources silent, i.e. the station itself is off the air.' },
+        },
+      },
+      StreamFeatures: {
+        type: 'object', description: 'What the gateway can do with a stream of this type.',
+        properties: {
+          silence_detection: { type: 'boolean', description: 'A stream that stays connected but carries silence is treated as having no audio.' },
+          fades: { type: 'boolean', description: 'Without an ident, changes of source fade out and in rather than cut.' },
+          idents: { type: 'boolean' }, fallback_audio: { type: 'boolean' },
+        },
+      },
+      StreamType: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['mp3', 'aac', 'he-aac', 'other', 'unsupported'] }, name: { type: 'string' }, description: { type: 'string' },
+          relayed: { type: 'boolean', description: 'false: the gateway cannot relay this at all.' },
+          features: ref('StreamFeatures'), files: { type: 'string', description: 'What an ident or fallback file must be for a stream of this type.' }, notes: { type: 'string' },
+        },
+      },
+      StreamFormat: {
+        type: 'object', description: 'What the streaming servers last saw the station\'s stream to be, and which features apply to it. Uploaded files must match it. null until the station has been on air.',
+        properties: {
+          type: { type: 'string', enum: ['mp3', 'aac', 'he-aac', 'other'], description: 'See `GET /stream-types`. `other` is relayed as it arrives.' },
+          name: { type: 'string', example: 'MP3' }, summary: { type: 'string', example: 'MP3, 96 kbps, 44.1 kHz, stereo' },
+          codec: { type: 'string', enum: ['mp3', 'aac'], nullable: true }, sample_rate: { type: 'integer', nullable: true, example: 44100 }, channels: { type: 'integer', nullable: true, example: 2 },
+          bitrate_kbps: { type: 'integer', nullable: true, example: 96, description: 'null for a variable-bitrate stream, or when unknown.' }, variable_bitrate: { type: 'boolean' },
+          content_type: { type: 'string', nullable: true, example: 'audio/mpeg' }, features: ref('StreamFeatures'), notes: { type: 'string' },
+        },
+      },
+      File: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' }, user_id: { type: 'integer' }, name: { type: 'string', example: 'Night mix' }, original_name: { type: 'string', nullable: true, example: 'night-mix.mp3' },
+          size_bytes: { type: 'integer' }, format: { type: 'string', example: 'MP3, 96 kbps, 44.1 kHz, stereo' },
+          codec: { type: 'string', enum: ['mp3', 'aac'] }, sample_rate: { type: 'integer' }, channels: { type: 'integer' },
+          bitrate_kbps: { type: 'integer', description: 'Exact for constant-bitrate MP3, otherwise the average.' }, constant_bitrate: { type: 'boolean' },
+          duration_seconds: { type: 'number' },
+          stored_in: { type: 'string', enum: ['local', 'dropbox'] },
+          used_by: { type: 'array', items: { type: 'object', properties: { station: { type: 'string' }, as: { type: 'string', enum: ['ident', 'fallback'] } } } },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
+      StorageUsage: { type: 'object', properties: { used_bytes: { type: 'integer' }, quota_bytes: { type: 'integer', nullable: true, description: 'null for administrators, who are not limited.' }, free_bytes: { type: 'integer', nullable: true } } },
+      FileList: { type: 'object', properties: { files: { type: 'array', items: ref('File') }, usage: ref('StorageUsage'), limits: { type: 'object', properties: { ident_max_seconds: { type: 'integer' } } } } },
+      SettingsUpdate: {
+        type: 'object',
+        properties: {
+          ident_max_seconds: { type: 'integer', minimum: 1, maximum: 30, default: 5, description: 'Longest ident a station may use.' },
+          default_storage_quota_mb: { type: 'integer', minimum: 0, default: 500, description: 'Upload space, in megabytes, for accounts without a quota of their own.' },
+          dropbox_app_key: { type: 'string', nullable: true }, dropbox_app_secret: { type: 'string', nullable: true, description: 'Write-only.' },
+        },
+      },
+      Settings: {
+        type: 'object',
+        properties: {
+          ident_max_seconds: { type: 'integer' }, default_storage_quota_mb: { type: 'integer' },
+          storage: {
+            type: 'object',
+            properties: {
+              backend: { type: 'string', enum: ['local', 'dropbox'] },
+              local: { type: 'object', properties: { files: { type: 'integer' }, bytes: { type: 'integer' } } },
+              cache_mb: { type: 'integer', description: 'FILE_CACHE_MB: how much of what is in Dropbox is also kept on the server.' },
+              dropbox: { type: 'object', properties: { app_key: { type: 'string', nullable: true }, app_secret_set: { type: 'boolean' }, connected: { type: 'boolean' }, account: { type: 'string', nullable: true }, files: { type: 'integer' }, bytes: { type: 'integer' }, redirect_uri: { type: 'string', description: 'Add this to the Dropbox app\'s redirect URIs.' } } },
+            },
+          },
         },
       },
       Station: {
@@ -357,9 +506,10 @@ module.exports = {
           role: { type: 'string', enum: ['admin', 'tenant'], default: 'tenant' },
           external_id: { type: 'string', nullable: true, description: 'Your identifier for this customer, such as a billing client id.', example: 'whmcs-client-311' },
           max_stations: { type: 'integer', description: 'How many stations this account may create and manage. Defaults to DEFAULT_MAX_STATIONS (5). 0 means only administrators provision stations for it.' },
+          storage_quota_mb: { type: 'integer', nullable: true, minimum: 0, description: 'Megabytes of uploaded audio the account may hold. null uses the default from the settings.' },
         },
       },
-      UserPatch: { type: 'object', properties: { password: { type: 'string', format: 'password' }, role: { type: 'string', enum: ['admin', 'tenant'] }, external_id: { type: 'string', nullable: true }, max_stations: { type: 'integer' }, is_active: { type: 'boolean' } } },
+      UserPatch: { type: 'object', properties: { password: { type: 'string', format: 'password' }, role: { type: 'string', enum: ['admin', 'tenant'] }, external_id: { type: 'string', nullable: true }, max_stations: { type: 'integer' }, storage_quota_mb: { type: 'integer', nullable: true, description: 'null uses the default from the settings.' }, is_active: { type: 'boolean' } } },
       ApiKey: { type: 'object', properties: { id: { type: 'integer' }, user_id: { type: 'integer' }, username: { type: 'string' }, name: { type: 'string' }, key_prefix: { type: 'string', example: 'rgw_3f9a01bc' }, last_used_at: { type: 'string', format: 'date-time', nullable: true }, created_at: { type: 'string', format: 'date-time' } } },
       ApiKeyCreated: { allOf: [ref('ApiKey'), { type: 'object', properties: { key: { type: 'string', description: 'The secret. Shown only once.' } } }] },
       AuditEntry: { type: 'object', properties: { id: { type: 'integer' }, at: { type: 'string', format: 'date-time' }, username: { type: 'string', nullable: true }, action: { type: 'string', example: 'station.suspend' }, target: { type: 'string', nullable: true }, detail: { type: 'object', nullable: true }, ip: { type: 'string' } } },
@@ -406,7 +556,7 @@ module.exports = {
         },
       },
       JoinToken: { type: 'object', properties: { id: { type: 'integer' }, token_prefix: { type: 'string', example: 'rgj_4be1a09c' }, note: { type: 'string', nullable: true }, bound_address: { type: 'string', nullable: true }, max_uses: { type: 'integer' }, uses: { type: 'integer' }, expires_at: { type: 'string', format: 'date-time' }, created_at: { type: 'string', format: 'date-time' } } },
-      JoinTokenCreated: { allOf: [ref('JoinToken'), { type: 'object', properties: { token: { type: 'string', description: 'Shown only once.' }, master_url: { type: 'string' }, install_command: { type: 'string', example: './install.sh --role slave --master https://stream.example.com --token rgj_…' } } }] },
+      JoinTokenCreated: { allOf: [ref('JoinToken'), { type: 'object', properties: { token: { type: 'string', description: 'Shown only once.' }, master_url: { type: 'string' }, install_command: { type: 'string', description: 'Run on the new, empty server: it downloads the bootstrap script, installs what is needed and joins this master.', example: 'curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --role slave --master https://stream.example.com --token rgj_…' } } }] },
       UpdateStatus: {
         type: 'object',
         properties: {

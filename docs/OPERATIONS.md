@@ -81,6 +81,18 @@ Schedule it and copy the dumps off the server:
 
 Also keep a copy of `.env` (credentials) and `certs/` somewhere safe.
 
+**Uploaded audio is not in the dump.** With Dropbox connected the files are in your
+Dropbox and need nothing more. Without it they exist only in the `media_files` volume;
+copy it as well:
+
+```bash
+docker run --rm -v radio-gateway_media_files:/files:ro -v "$PWD/backups":/out alpine \
+  tar czf /out/media-files-$(date +%Y%m%d).tar.gz -C /files .
+```
+
+After restoring a dump without its files, stations whose ident or fallback file is
+missing simply play without it, and the file can be uploaded again.
+
 ### Restore
 
 ```bash

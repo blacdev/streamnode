@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const db = require('./db');
 const { redis } = require('./cache');
@@ -9,6 +10,10 @@ const haproxy = require('./haproxy');
 const capacity = require('./capacity');
 const cluster = require('./cluster');
 const updates = require('./updates');
+const media = require('./media');
+const settings = require('./settings');
+const dropbox = require('./dropbox');
+const streamTypes = require('./streamtypes');
 const config = require('./config');
 const v = require('./validate');
 const { wrap, badRequest, invalid, forbidden, notFound, conflict, HttpError } = require('./errors');
@@ -88,6 +93,13 @@ router.get('/public/stations/:slug/now-playing', wrap(async (req, res) => {
   });
 }));
 
+// Which kinds of stream can be relayed and what is available on each. Open, so
+// that it can be read before an account exists.
+router.get('/stream-types', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.json({ stream_types: streamTypes.TYPES });
+});
+
 router.post('/auth/login', wrap(async (req, res) => {
   const { username, password } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
@@ -101,6 +113,36 @@ router.post('/cluster/join', wrap(async (req, res) => {
   res.json(await cluster.join(req.body || {}, req.ip));
 }));
 
+// An engine fetching a station's ident or fallback file. Only the audio is
+// sent: tags are left out so the file can be spliced straight into a stream.
+router.get('/internal/files/:id', wrap(async (req, res) => {
+  if (config.engineSecret) {
+    const given = Buffer.from(req.get('x-engine-auth') || '');
+    const expected = Buffer.from(config.engineSecret);
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) throw forbidden('Only streaming servers may fetch files here.');
+  }
+  const row = /^\d{1,9}$/.test(req.params.id) ? await media.find(Number(req.params.id)) : null;
+  if (!row) throw notFound('File');
+  await media.send(res, row, { audioOnly: true });
+}));
+
+// Where Dropbox sends the administrator's browser back to after the approval.
+// The state value, handed out to a signed-in administrator, is what authorises it.
+router.get('/storage/dropbox/callback', wrap(async (req, res) => {
+  const back = (result, reason) => res.redirect(`/admin/?dropbox=${result}${reason ? `&reason=${encodeURIComponent(reason)}` : ''}`);
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const redirectUri = /^[a-f0-9]{48}$/.test(state) ? await redis.getDel(`dropbox:state:${state}`) : null;
+  if (!redirectUri) return back('error', 'The approval link has expired. Start again from Settings.');
+  if (typeof req.query.code !== 'string') return back('error', String(req.query.error_description || req.query.error || 'Dropbox did not approve the connection.'));
+  try {
+    await dropbox.connect(req.query.code, redirectUri);
+  } catch (err) {
+    return back('error', err.message);
+  }
+  media.sync().catch((err) => console.error('[files]', err.message));
+  back('connected');
+}));
+
 // ── Everything below requires authentication ──────────────────────────────
 
 router.use(auth.authenticate);
@@ -110,10 +152,10 @@ router.post('/auth/logout', wrap(async (req, res) => {
   res.status(204).end();
 }));
 
-router.get('/auth/me', (req, res) => {
+router.get('/auth/me', wrap(async (req, res) => {
   const { id, username, role, external_id, max_stations } = req.user;
-  res.json({ id, username, role, external_id, max_stations, authenticated_via: req.user.via });
-});
+  res.json({ id, username, role, external_id, max_stations, storage: await media.usage(req.user), authenticated_via: req.user.via });
+}));
 
 // ── Stations ──────────────────────────────────────────────────────────────
 
@@ -157,6 +199,7 @@ async function createStation(req, fields) {
     }
   }
   const row = { user_id: req.user.id, ...fields };
+  await media.checkAssignment(row, row.user_id, null);
   const keys = Object.keys(row);
   try {
     const { rows } = await db.query(
@@ -173,6 +216,11 @@ async function createStation(req, fields) {
 
 async function updateStation(req, current, fields) {
   if (!Object.keys(fields).length) return current;
+  // Files belong to an account, so they do not follow a station to another one.
+  if (fields.user_id !== undefined && fields.user_id !== current.user_id) {
+    fields = { ident_file_id: null, fallback_file_id: null, ...fields };
+  }
+  await media.checkAssignment(fields, fields.user_id === undefined ? current.user_id : fields.user_id, current.slug);
   const set = assignments(fields);
   try {
     const { rows } = await db.query(
@@ -359,6 +407,116 @@ router.get('/overview', wrap(async (req, res) => {
   });
 }));
 
+// ── Uploaded audio: idents and fallback files ─────────────────────────────
+
+const fileId = (req) => v.intParam(req.params.id, { name: 'id', min: 1, max: 2147483647 });
+
+async function loadFile(req) {
+  const row = await media.find(fileId(req));
+  if (!row || (!isAdmin(req) && row.user_id !== req.user.id)) throw notFound('File');
+  return row;
+}
+
+// The account a file request is about: the caller's, or for an administrator the one named by user_id.
+async function fileOwner(req) {
+  if (req.query.user_id === undefined || Number(req.query.user_id) === req.user.id) return req.user;
+  if (!isAdmin(req)) throw forbidden('Only administrators can manage the files of other accounts.');
+  const id = v.intParam(req.query.user_id, { name: 'user_id', min: 1, max: 2147483647 });
+  const { rows } = await db.query('SELECT id, username, role, storage_quota_mb FROM users WHERE id = $1', [id]);
+  if (!rows[0]) throw invalid([{ field: 'user_id', message: 'does not match an existing user' }]);
+  return rows[0];
+}
+
+async function presentFiles(rows) {
+  if (!rows.length) return [];
+  const used = await db.query(
+    `SELECT slug, ident_file_id, fallback_file_id FROM stations WHERE ident_file_id = ANY($1) OR fallback_file_id = ANY($1) ORDER BY slug`,
+    [rows.map((row) => row.id)]
+  );
+  return rows.map((row) => media.present(
+    row,
+    used.rows.flatMap((s) => [
+      ...(s.ident_file_id === row.id ? [{ station: s.slug, as: 'ident' }] : []),
+      ...(s.fallback_file_id === row.id ? [{ station: s.slug, as: 'fallback' }] : []),
+    ])
+  ));
+}
+
+router.get('/files', wrap(async (req, res) => {
+  const everyone = isAdmin(req) && req.query.user_id === 'all';
+  const owner = everyone ? req.user : await fileOwner(req);
+  const { rows } = await db.query(
+    `SELECT ${media.COLUMNS} FROM media_files WHERE ($1::int IS NULL OR user_id = $1) ORDER BY name, id`,
+    [everyone ? null : owner.id]
+  );
+  res.json({
+    files: await presentFiles(rows),
+    usage: await media.usage(owner),
+    limits: { ident_max_seconds: await settings.get('ident_max_seconds') },
+  });
+}));
+
+// The file is the request body itself; its details travel in the query string.
+router.post('/files', wrap(async (req, res) => {
+  try {
+    const owner = await fileOwner(req);
+    const errors = [];
+    const original = String(req.query.filename || req.get('x-file-name') || '').replace(/[\u0000-\u001f\\/]/g, '').trim().slice(0, 255) || null;
+    const name = String(req.query.name || (original || '').replace(/\.[A-Za-z0-9]{1,5}$/, '')).replace(/[\u0000-\u001f]/g, ' ').trim();
+    if (!name || name.length > 100) errors.push({ field: 'name', message: 'must be 1-100 characters (pass ?name=, or ?filename= to use the file name)' });
+    const use = req.query.use === undefined || req.query.use === '' ? null : req.query.use;
+    if (use !== null && use !== 'ident' && use !== 'fallback') errors.push({ field: 'use', message: 'must be "ident" or "fallback"' });
+    let station = null;
+    if (req.query.station) {
+      station = await stations.findBySlug(String(req.query.station));
+      if (!station || station.user_id !== owner.id) errors.push({ field: 'station', message: "is not a station in this file's account" });
+      else if (!use) errors.push({ field: 'use', message: 'is required with "station": say whether the file is its "ident" or its "fallback"' });
+    }
+    if (errors.length) throw invalid(errors);
+
+    const row = await media.create(req, owner, { name, originalName: original, use, station });
+    if (!row.already_stored) audit(req, 'file.upload', `file:${row.id}`, { name: row.name, size_bytes: row.size_bytes, user_id: owner.id });
+    // assign=false only checks the file against the station; the caller sets it on the station itself.
+    if (station && req.query.assign !== 'false') await updateStation(req, station, { [`${use}_file_id`]: row.id });
+    res.status(row.already_stored ? 200 : 201).json({ ...(await presentFiles([row]))[0], already_stored: Boolean(row.already_stored), usage: await media.usage(owner) });
+  } catch (err) {
+    // The rest of the upload is not read, so this connection cannot be reused.
+    res.set('Connection', 'close');
+    res.once('finish', () => req.destroy());
+    throw err;
+  }
+}));
+
+router.get('/files/:id', wrap(async (req, res) => {
+  res.json((await presentFiles([await loadFile(req)]))[0]);
+}));
+
+router.get('/files/:id/content', wrap(async (req, res) => {
+  await media.send(res, await loadFile(req), { download: req.query.download !== undefined });
+}));
+
+router.patch('/files/:id', wrap(async (req, res) => {
+  const current = await loadFile(req);
+  const name = req.body && typeof req.body.name === 'string' ? req.body.name.replace(/[\u0000-\u001f]/g, ' ').trim() : '';
+  if (!name || name.length > 100) throw invalid([{ field: 'name', message: 'must be 1-100 characters' }]);
+  const { rows } = await db.query(`UPDATE media_files SET name = $1 WHERE id = $2 RETURNING ${media.COLUMNS}`, [name, current.id]);
+  await stations.republishUser(current.user_id);
+  audit(req, 'file.rename', `file:${current.id}`, { name });
+  res.json((await presentFiles(rows))[0]);
+}));
+
+router.delete('/files/:id', wrap(async (req, res) => {
+  const current = await loadFile(req);
+  const inUse = await media.stationsUsing(current.id);
+  if (inUse.length && req.query.force === undefined) {
+    throw new HttpError(409, 'file_in_use', `This file is used by ${inUse.join(', ')}. Choose another file for ${inUse.length === 1 ? 'that station' : 'those stations'} first, or repeat the request with ?force to remove it from them.`, { stations: inUse });
+  }
+  await media.remove(current);
+  await stations.republishUser(current.user_id);
+  audit(req, 'file.delete', `file:${current.id}`, { name: current.name, removed_from: inUse });
+  res.status(204).end();
+}));
+
 // ── API keys ──────────────────────────────────────────────────────────────
 
 router.get('/api-keys', wrap(async (req, res) => {
@@ -413,13 +571,14 @@ router.delete('/api-keys/:id', wrap(async (req, res) => {
 
 // ── Users (administrators only) ───────────────────────────────────────────
 
-const USER_COLUMNS = 'id, username, role, external_id, max_stations, is_active, created_at, updated_at';
+const USER_COLUMNS = 'id, username, role, external_id, max_stations, storage_quota_mb, is_active, created_at, updated_at';
 const users = express.Router();
 users.use(auth.requireAdmin);
 
 users.get('/', wrap(async (req, res) => {
   const { rows } = await db.query(
-    `SELECT ${USER_COLUMNS}, (SELECT COUNT(*)::int FROM stations s WHERE s.user_id = users.id) AS station_count
+    `SELECT ${USER_COLUMNS}, (SELECT COUNT(*)::int FROM stations s WHERE s.user_id = users.id) AS station_count,
+            (SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_files f WHERE f.user_id = users.id) AS storage_used_bytes
      FROM users WHERE ($1::text IS NULL OR external_id = $1) ORDER BY username`,
     [req.query.external_id ? String(req.query.external_id) : null]
   );
@@ -478,8 +637,10 @@ users.delete('/:id', wrap(async (req, res) => {
   const id = userId(req);
   if (id === req.user.id) throw conflict('self_lockout', 'You cannot delete the account you are signed in with.');
   const owned = await db.query('SELECT slug FROM stations WHERE user_id = $1', [id]);
+  const files = await db.query(`SELECT ${media.COLUMNS} FROM media_files WHERE user_id = $1`, [id]);
   const { rows } = await db.query('DELETE FROM users WHERE id = $1 RETURNING username', [id]);
   if (!rows[0]) throw notFound('User');
+  await media.discard(files.rows);
   await Promise.all(owned.rows.map((row) => stations.unpublish(row.slug)));
   audit(req, 'user.delete', rows[0].username, { stations_removed: owned.rows.map((row) => row.slug) });
   res.status(204).end();
@@ -622,6 +783,79 @@ router.delete('/cluster/join-tokens/:id', auth.requireAdmin, wrap(async (req, re
   if (!rowCount) throw notFound('Join token');
   audit(req, 'join_token.revoke', `token:${req.params.id}`);
   res.status(204).end();
+}));
+
+// ── Settings and file storage (administrators only) ───────────────────────
+
+const dropboxRedirect = (req) => `${stations.baseUrl(req)}/api/v1/storage/dropbox/callback`;
+
+async function presentSettings(req) {
+  const [all, state, stored] = await Promise.all([
+    settings.all(),
+    dropbox.state(),
+    db.query("SELECT storage, COUNT(*)::int AS files, COALESCE(SUM(size_bytes), 0)::bigint AS bytes FROM media_files GROUP BY storage"),
+  ]);
+  const count = (where) => stored.rows.find((row) => row.storage === where) || { files: 0, bytes: 0 };
+  return {
+    ident_max_seconds: all.ident_max_seconds,
+    default_storage_quota_mb: all.default_storage_quota_mb,
+    storage: {
+      backend: state.refreshToken ? 'dropbox' : 'local',
+      local: { files: count('local').files, bytes: count('local').bytes },
+      cache_mb: config.fileCacheMb,
+      dropbox: {
+        app_key: state.appKey || null,
+        // The secret is never returned.
+        app_secret_set: Boolean(state.appSecret),
+        connected: Boolean(state.refreshToken),
+        account: state.account,
+        files: count('dropbox').files,
+        bytes: count('dropbox').bytes,
+        // To be added to the app's "Redirect URIs" in the Dropbox developer console.
+        redirect_uri: dropboxRedirect(req),
+      },
+    },
+  };
+}
+
+router.get('/settings', auth.requireAdmin, wrap(async (req, res) => {
+  res.json(await presentSettings(req));
+}));
+
+router.put('/settings', auth.requireAdmin, wrap(async (req, res) => {
+  const fields = v.parseSettings(req.body);
+  const before = await dropbox.state();
+  const changesApp =
+    (fields.dropbox_app_key !== undefined && (fields.dropbox_app_key || '') !== before.appKey) ||
+    (fields.dropbox_app_secret !== undefined && (fields.dropbox_app_secret || '') !== before.appSecret);
+  if (changesApp && before.refreshToken) {
+    throw conflict('dropbox_connected', 'Disconnect Dropbox before changing its app key or secret.');
+  }
+  await settings.set(fields);
+  audit(req, 'settings.update', null, { ...fields, ...(fields.dropbox_app_secret ? { dropbox_app_secret: '(set)' } : {}) });
+  res.json(await presentSettings(req));
+}));
+
+// Starts the approval: the administrator opens the returned address and allows the app.
+router.post('/storage/dropbox/authorize', auth.requireAdmin, wrap(async (req, res) => {
+  const state = crypto.randomBytes(24).toString('hex');
+  const redirectUri = dropboxRedirect(req);
+  const url = await dropbox.authorizeUrl(redirectUri, state);
+  await redis.set(`dropbox:state:${state}`, redirectUri, { EX: 600 });
+  audit(req, 'dropbox.authorize');
+  res.json({ authorize_url: url, redirect_uri: redirectUri, expires_in: 600 });
+}));
+
+// Stops using Dropbox. Every file is first brought back to this server so
+// that none is lost; the copies in Dropbox are left where they are.
+router.delete('/storage/dropbox', auth.requireAdmin, wrap(async (req, res) => {
+  const result = await media.bringHome();
+  if (result.failed.length) {
+    throw new HttpError(409, 'files_not_retrieved', `Dropbox was not disconnected because ${result.failed.length} file(s) could not be copied back to this server: ${result.failed[0].reason}`, result);
+  }
+  await dropbox.disconnect();
+  audit(req, 'dropbox.disconnect', null, { files_returned: result.returned });
+  res.json(await presentSettings(req));
 }));
 
 // Which version is running and whether the repository has a newer one.

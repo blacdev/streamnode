@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use redis::{aio::ConnectionManager, AsyncCommands, RedisResult};
 
@@ -15,6 +15,24 @@ pub struct Station {
     /// 0 means unlimited.
     pub max_listeners: usize,
     pub active: bool,
+    /// How long a source may deliver no audio before the station moves on,
+    /// and how long a source must be healthy before it is returned to.
+    pub failover_delay: Duration,
+    /// Treat a source that sends digital silence as having no audio.
+    pub silence_detection: bool,
+    /// Played once when switching away from a failed source.
+    pub ident: Option<Media>,
+    /// Looped when neither stream has audio.
+    pub fallback: Option<Media>,
+}
+
+/// An uploaded audio file, fetched from the master when it is needed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Media {
+    pub id: String,
+    /// Changes when the file's content does.
+    pub version: String,
+    pub name: String,
 }
 
 impl Station {
@@ -26,6 +44,16 @@ impl Station {
     fn from_fields(slug: &str, mut fields: HashMap<String, String>) -> Option<Self> {
         let mut take = |key: &str| fields.remove(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let primary = take("primary")?;
+        let mut media = |prefix: &str| {
+            let id = take(&format!("{prefix}_id"))?;
+            Some(Media {
+                version: take(&format!("{prefix}_ver")).unwrap_or_default(),
+                name: take(&format!("{prefix}_name")).unwrap_or_else(|| id.clone()),
+                id,
+            })
+        };
+        let ident = media("ident");
+        let fallback = media("fallback");
         Some(Self {
             slug: slug.to_string(),
             name: take("name").unwrap_or_else(|| slug.to_string()),
@@ -35,6 +63,10 @@ impl Station {
             artwork_url: take("artwork_url"),
             max_listeners: take("max_listeners").and_then(|v| v.parse().ok()).unwrap_or(0),
             active: take("active").is_none_or(|v| v != "0"),
+            failover_delay: Duration::from_secs(take("failover_delay").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(1, 300)),
+            silence_detection: take("silence").is_none_or(|v| v != "0"),
+            ident,
+            fallback,
         })
     }
 }
@@ -71,6 +103,23 @@ mod tests {
     fn suspended_flag_is_read() {
         let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("active", "0")])).unwrap();
         assert!(!s.active);
+    }
+
+    #[test]
+    fn failover_settings_and_media() {
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b")])).unwrap();
+        assert_eq!(s.failover_delay, Duration::from_secs(6));
+        assert!(s.silence_detection);
+        assert_eq!((s.ident, s.fallback), (None, None));
+
+        let s = Station::from_fields(
+            "jazz",
+            fields(&[("primary", "http://a/b"), ("failover_delay", "12"), ("silence", "0"), ("fallback_id", "7"), ("fallback_ver", "abc"), ("fallback_name", "Night mix")]),
+        )
+        .unwrap();
+        assert_eq!(s.failover_delay, Duration::from_secs(12));
+        assert!(!s.silence_detection);
+        assert_eq!(s.fallback, Some(Media { id: "7".into(), version: "abc".into(), name: "Night mix".into() }));
     }
 
     #[test]
