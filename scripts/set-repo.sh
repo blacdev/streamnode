@@ -2,8 +2,8 @@
 # Run once before publishing: writes your repository's address into the
 # one-line installer and the documentation, replacing the OWNER/REPO placeholder.
 #
-#   scripts/set-repo.sh https://github.com/acme/radio-gateway
-#   scripts/set-repo.sh https://github.com/acme/radio-gateway main     # if the default branch is not "main"
+#   scripts/set-repo.sh https://github.com/acme/streamnode
+#   scripts/set-repo.sh https://github.com/acme/streamnode main     # if the default branch is not "main"
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

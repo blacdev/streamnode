@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the radio gateway on this server in one of three roles.
+# Installs StreamNode on this server in one of three roles.
 #
 #   both     everything on one server: use this when a single server is all you need
 #   master   HAProxy, dashboard/API and databases: the public entry point that
@@ -139,7 +139,7 @@ configure_images() {
   elif [ -z "$(get_env IMAGE_PREFIX)" ]; then set_env INSTALL_FROM source
   else ensure_env INSTALL_FROM images; fi
   # Built images need a name too.
-  [ -n "$(get_env IMAGE_PREFIX)" ] || set_env IMAGE_PREFIX radio-gateway
+  [ -n "$(get_env IMAGE_PREFIX)" ] || set_env IMAGE_PREFIX streamnode
 
   local repo; repo="$(version_info REPO)"
   if [ -z "$repo" ]; then

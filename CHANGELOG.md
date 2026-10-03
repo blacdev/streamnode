@@ -4,6 +4,30 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] - 2026-10-03
+
+### Changed
+
+- **The project is now called StreamNode** everywhere: the dashboard and API titles,
+  the documentation, the default installation directory (`/opt/streamnode`), the
+  Compose project (`streamnode`), the engine binary and its `User-Agent`
+  (`StreamNode/1.0`), and the installer's environment variables (`STREAMNODE_*`).
+- **Existing servers are moved to the new name by the update itself.** Their data
+  volumes (database, statistics, uploads, certificates, a slave's enrolment) are copied
+  from `radio-gateway_*` to `streamnode_*` with the services stopped, and the server
+  starts under the new name with everything in place. `/opt/radio-gateway` is moved to
+  `/opt/streamnode`, with a link left at the old path, and scheduled jobs follow it.
+  The old `RADIO_GATEWAY_*` variables are still accepted.
+- The old volumes are kept as a backup and take up the same space again until removed
+  with `scripts/migrate.sh drop-old-data`.
+- If the data cannot be moved (a full disk, say), nothing is lost: the copies are
+  discarded and the server carries on under its old internal name
+  (`COMPOSE_PROJECT_NAME=radio-gateway` in `.env`), saying how to try again.
+- A station source that only admits the old `User-Agent` (`RadioGateway/1.0`) needs
+  `UPSTREAM_USER_AGENT=RadioGateway/1.0` set, or its allow-list updated.
+- An optional edge server (`edge/`) is started by hand and is not migrated: before
+  updating one, run `docker compose -p radio-gateway-edge down` in its `edge/` directory.
+
 ## [2.8.0] - 2026-10-02
 
 ### Added

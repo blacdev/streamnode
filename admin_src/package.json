@@ -1,7 +1,7 @@
 {
   "name": "gateway_admin",
   "version": "1.0.0",
-  "description": "Management API, dashboard and metrics persistence for the radio gateway.",
+  "description": "Management API, dashboard and metrics persistence for StreamNode.",
   "main": "server.js",
   "private": true,
   "engines": {

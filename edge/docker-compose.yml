@@ -1,11 +1,11 @@
 # An edge server: its own HAProxy and audio engine behind the SAME domain as
 # the main gateway. Add this server's public address as another DNS A record
 # and listeners are shared between the servers. See docs/SCALING.md.
-name: radio-gateway-edge
+name: streamnode-edge
 
 services:
   audio_engine:
-    image: ${IMAGE_PREFIX:-radio-gateway}/engine:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     build: ../rust_src
     restart: always
     environment:

@@ -76,7 +76,7 @@ KEEP_DAYS=30 ./scripts/backup.sh    # and prunes dumps older than 30 days
 Schedule it and copy the dumps off the server:
 
 ```
-30 2 * * * KEEP_DAYS=30 /path/to/radio-gateway/scripts/backup.sh
+30 2 * * * KEEP_DAYS=30 /path/to/streamnode/scripts/backup.sh
 ```
 
 Also keep a copy of `.env` (credentials) and `certs/` somewhere safe.
@@ -86,9 +86,24 @@ Dropbox and need nothing more. Without it they exist only in the `media_files` v
 copy it as well:
 
 ```bash
-docker run --rm -v radio-gateway_media_files:/files:ro -v "$PWD/backups":/out alpine \
+docker run --rm -v streamnode_media_files:/files:ro -v "$PWD/backups":/out alpine \
   tar czf /out/media-files-$(date +%Y%m%d).tar.gz -C /files .
 ```
+
+### After the rename from radio-gateway
+
+A server installed while the project was called radio-gateway is moved to the new name
+by its next update: its data volumes are copied to `streamnode_*` names and the
+installation directory moves to `/opt/streamnode`. The old volumes are kept as a
+backup and take the same disk space again. When you have seen that stations, accounts,
+statistics and uploads are all in place, remove them:
+
+```bash
+./scripts/migrate.sh drop-old-data
+```
+
+If the update reported that the data was not moved, the server is still running under
+its old internal name and nothing needs doing; the message says how to try again.
 
 After restoring a dump without its files, stations whose ident or fallback file is
 missing simply play without it, and the file can be uploaded again.

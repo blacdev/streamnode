@@ -75,7 +75,7 @@ rest of this guide. It:
 2. installs `curl`, `tar` and `openssl` if missing, and offers to install Docker with
    Docker's official script if it is not there (it asks first);
 3. makes sure Docker and the Compose plugin are running;
-4. downloads the gateway's files to `/opt/radio-gateway`: the Compose file, the proxy
+4. downloads the gateway's files to `/opt/streamnode`: the Compose file, the proxy
    configuration and the operational scripts, about 100 KB in all. The source code is
    not placed on the server; the services arrive as prebuilt Docker images;
 5. starts `install.sh`, which asks for the role and everything else.
@@ -95,7 +95,7 @@ curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | ba
 
 | Option | Meaning |
 |---|---|
-| `--dir PATH` | Where to install. Default `/opt/radio-gateway` |
+| `--dir PATH` | Where to install. Default `/opt/streamnode` |
 | `--branch NAME` | Branch to install and to follow for updates. Default: the repository's default branch |
 | `--ref COMMIT` | Install exactly this commit |
 | `--repo URL` | Install from another GitHub repository (a fork) |
@@ -128,7 +128,7 @@ What is left on the server afterwards:
 | `.version` | Which version is installed and where it came from |
 
 The sections below describe what the installer does in each role. `./install.sh` in
-`/opt/radio-gateway` is that same installer.
+`/opt/streamnode` is that same installer.
 
 ## Access by IP address
 
@@ -175,8 +175,8 @@ router's) still has to allow them.
 ## Install on one server (both)
 
 ```bash
-git clone https://github.com/blacdev/streamnode.git radio-gateway
-cd radio-gateway
+git clone https://github.com/blacdev/streamnode.git streamnode
+cd streamnode
 ./install.sh --role both --domain stream.example.com
 ```
 
@@ -287,7 +287,7 @@ is stopped and listeners are not interrupted.
 Renewal is a daily cron entry, which the script prints for you:
 
 ```
-17 3 * * * /path/to/radio-gateway/scripts/letsencrypt.sh renew >> /path/to/radio-gateway/letsencrypt.log 2>&1
+17 3 * * * /path/to/streamnode/scripts/letsencrypt.sh renew >> /path/to/streamnode/letsencrypt.log 2>&1
 ```
 
 ### Your own certificate
@@ -474,7 +474,7 @@ Nothing has to be done by hand. Whichever way an older installation is brought u
 date, the installer converts it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --dir /opt/radio-gateway
+curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash -s -- --dir /opt/streamnode
 ```
 
 (or, in an installation that is a git clone, `git pull && ./install.sh`). It runs
@@ -502,7 +502,7 @@ has to join its master again. The installer says so and names the command.
 ./scripts/uninstall.sh
 ```
 
-Run it in the installation directory (`/opt/radio-gateway` after a one-line install).
+Run it in the installation directory (`/opt/streamnode` after a one-line install).
 It works on any version and any role, asks for confirmation, and then removes the
 gateway's containers, network and data volumes, and the old settings and certificate.
 
@@ -516,7 +516,7 @@ gateway's containers, network and data volumes, and the old settings and certifi
 For a completely clean reinstall:
 
 ```bash
-cd /opt/radio-gateway && ./scripts/backup.sh          # only if anything is worth keeping
+cd /opt/streamnode && ./scripts/backup.sh          # only if anything is worth keeping
 ./scripts/uninstall.sh --remove-code --remove-images
 curl -fsSL https://raw.githubusercontent.com/blacdev/streamnode/main/get.sh | bash
 ```

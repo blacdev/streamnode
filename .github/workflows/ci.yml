@@ -81,6 +81,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t radio-gateway-engine rust_src
-      - run: docker build -t radio-gateway-admin admin_src
-      - run: docker build -t radio-gateway-demo demo
+      - run: docker build -t streamnode-engine rust_src
+      - run: docker build -t streamnode-admin admin_src
+      - run: docker build -t streamnode-demo demo

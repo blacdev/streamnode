@@ -6,7 +6,7 @@
 #   edge/sync-cert.sh          copy now (run once before the first start)
 #
 # Run it daily from cron so renewals reach this server:
-#   43 3 * * * /path/to/radio-gateway/edge/sync-cert.sh >> /path/to/radio-gateway/edge/sync-cert.log 2>&1
+#   43 3 * * * /path/to/streamnode/edge/sync-cert.sh >> /path/to/streamnode/edge/sync-cert.log 2>&1
 #
 # Needs SSH key access from this server to the gateway (CERT_SOURCE in edge/.env).
 set -euo pipefail

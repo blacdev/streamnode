@@ -57,7 +57,7 @@ async function check() {
   if (!enabled()) return;
   try {
     const response = await fetch(`https://api.github.com/repos/${config.updateRepo}/commits/${encodeURIComponent(config.updateBranch)}`, {
-      headers: { Accept: 'application/vnd.github.sha', 'User-Agent': 'radio-gateway' },
+      headers: { Accept: 'application/vnd.github.sha', 'User-Agent': 'streamnode' },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) throw new Error(`GitHub answered HTTP ${response.status}`);
