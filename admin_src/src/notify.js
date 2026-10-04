@@ -37,16 +37,27 @@ const levelFor = (percent) => (percent === null ? null : LEVELS.find((level) => 
 function due(bill, now = new Date()) {
   const out = [];
   for (const s of bill.stations) {
-    const level = levelFor(s.usage.percent_of_limit);
+    // Each level is judged over the span its notice repeats in, so that a
+    // notice goes out for what happened in that span and not for something
+    // further back: reaching the limit once does not mean a notice every day.
+    const level = LEVELS.find((candidate) => {
+      const reached = { day: s.usage.peak_percent_today, week: s.usage.peak_percent_last_7_days, month: s.usage.peak_percent_this_month }[candidate.every];
+      return reached !== null && reached !== undefined && reached >= candidate.percent;
+    });
     if (level) {
-      const peak = s.usage.peak_listeners_this_month;
+      const [peak, span] = {
+        day: [s.usage.peak_listeners_today, 'today'],
+        week: [s.usage.peak_listeners_last_7_days, 'in the last seven days'],
+        month: [s.usage.peak_listeners_this_month, 'this month'],
+      }[level.every];
+      const full = s.usage.at_limit && s.usage.at_limit.minutes_today;
       out.push({
         station: s.station, kind: 'listeners', threshold: level.percent, period: period(level.every, now),
         subject: level.percent >= 100
           ? `${s.name} has reached its listener limit`
           : `${s.name} has reached ${level.percent}% of its listener limit`,
         text: [
-          `${s.name} (/${s.station}) has had up to ${peak} listeners at once this month. Its limit is ${s.plan.max_listeners}.`,
+          `${s.name} (/${s.station}) has had up to ${peak} listeners at once ${span}. Its limit is ${s.plan.max_listeners}.${level.percent >= 100 && full ? ` It has been full for about ${full} minute${full === 1 ? '' : 's'} today.` : ''} Right now it has ${s.usage.listeners_now}.`,
           level.percent >= 100
             ? 'Listeners beyond the limit are turned away until others leave. To allow more, ask for the limit to be raised.'
             : 'When the limit is reached, further listeners are turned away until others leave. To allow more, ask for the limit to be raised.',

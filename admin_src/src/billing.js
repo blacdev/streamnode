@@ -66,7 +66,10 @@ async function quote({ listeners, bitrate_kbps: bitrate = DEFAULT_BITRATE, stora
 
 const monthStart = () => `${new Date().toISOString().slice(0, 7)}-01`;
 
-// How near a station is to what it is allowed, worst first.
+// How a station stands right now, worst first. Being at the limit is a
+// matter of the listeners connected at this moment: a station that was full
+// half an hour ago and is half empty now is not "at its limit". What it has
+// reached before is kept beside it, as history.
 function standing(station, usage, daysLeft) {
   if (daysLeft !== null && daysLeft < 0) return 'expired';
   if (usage.percent_of_limit !== null && usage.percent_of_limit >= 100) return 'at_limit';
@@ -74,6 +77,8 @@ function standing(station, usage, daysLeft) {
   if (usage.percent_of_limit !== null && usage.percent_of_limit >= 75) return 'near_limit';
   return 'ok';
 }
+
+const percentOf = (listeners, limit) => (limit > 0 ? Math.round((listeners / limit) * 1000) / 10 : null);
 
 const daysUntil = (date) => (date ? Math.round((Date.parse(`${date}T23:59:59Z`) - Date.now()) / 86400000 - 0.5) : null);
 
@@ -86,20 +91,40 @@ async function forAccount(user) {
     rates(),
     costs.model(),
     db.query(`SELECT ${stations.COLUMNS} FROM stations WHERE user_id = $1 ORDER BY slug`, [user.id]),
+    // Days are UTC days, as everywhere in the statistics.
     db.query(
-      `SELECT s.id, COALESCE(MAX(d.peak_listeners), 0)::int AS peak, COALESCE(SUM(d.listener_seconds), 0)::bigint AS seconds, COALESCE(SUM(d.bytes), 0)::bigint AS bytes
-       FROM stations s LEFT JOIN station_stats_daily d ON d.station_id = s.id AND d.day >= $2::date
+      `SELECT s.id,
+              COALESCE(MAX(d.peak_listeners) FILTER (WHERE d.day >= $2::date), 0)::int AS peak,
+              COALESCE(MAX(d.peak_listeners) FILTER (WHERE d.day = (now() AT TIME ZONE 'UTC')::date), 0)::int AS peak_today,
+              COALESCE(MAX(d.peak_listeners) FILTER (WHERE d.day > (now() AT TIME ZONE 'UTC')::date - 7), 0)::int AS peak_week,
+              COALESCE(SUM(d.listener_seconds) FILTER (WHERE d.day >= $2::date), 0)::bigint AS seconds,
+              COALESCE(SUM(d.bytes) FILTER (WHERE d.day >= $2::date), 0)::bigint AS bytes
+       FROM stations s LEFT JOIN station_stats_daily d ON d.station_id = s.id AND d.day >= LEAST($2::date, (now() AT TIME ZONE 'UTC')::date - 7)
        WHERE s.user_id = $1 GROUP BY s.id`, [user.id, monthStart()]
     ),
   ]);
+  // How long each limited station has actually been full, from the minute-by-minute record.
+  const full = await db.query(
+    `SELECT m.station_id,
+            COUNT(*) FILTER (WHERE m.recorded_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::int AS minutes_today,
+            COUNT(*) FILTER (WHERE m.recorded_at >= now() - interval '7 days')::int AS minutes_week,
+            COUNT(*)::int AS minutes_month,
+            MAX(m.recorded_at) AS last_at
+     FROM station_stats_minute m JOIN stations s ON s.id = m.station_id
+     WHERE s.user_id = $1 AND s.max_listeners > 0 AND m.peak_listeners >= s.max_listeners AND m.recorded_at >= $2::date
+     GROUP BY m.station_id`, [user.id, monthStart()]
+  );
+  const fullBy = new Map(full.rows.map((row) => [row.station_id, row]));
   const usageBy = new Map(month.rows.map((row) => [row.id, row]));
   const live = await stations.liveFor(owned.rows.map((row) => row.slug));
   const configured = r.server_monthly_cost > 0;
 
   const list = owned.rows.map((row) => {
     const now = live.get(row.slug);
-    const used = usageBy.get(row.id) || { peak: 0, seconds: 0, bytes: 0 };
+    const used = usageBy.get(row.id) || { peak: 0, peak_today: 0, peak_week: 0, seconds: 0, bytes: 0 };
     const peak = Math.max(used.peak, now.listeners);
+    const atLimit = fullBy.get(row.id) || { minutes_today: 0, minutes_week: 0, minutes_month: 0, last_at: null };
+    const isFull = row.max_listeners > 0 && now.listeners >= row.max_listeners;
     const detected = (now.stream_format && now.stream_format.bitrate_kbps) || now.bitrate || null;
     const bitrate = row.billing_bitrate_kbps || detected || DEFAULT_BITRATE;
     // An unlimited station is charged for the most listeners it had this month.
@@ -109,8 +134,22 @@ async function forAccount(user) {
     const override = row.price_override === null ? null : Number(row.price_override);
     const usage = {
       listeners_now: now.listeners,
+      // Of the limit, at this moment. This, not a past peak, is what the status goes by.
+      percent_of_limit: percentOf(now.listeners, row.max_listeners),
+      peak_listeners_today: Math.max(used.peak_today, now.listeners),
+      peak_listeners_last_7_days: Math.max(used.peak_week, now.listeners),
       peak_listeners_this_month: peak,
-      percent_of_limit: row.max_listeners > 0 ? Math.round((peak / row.max_listeners) * 1000) / 10 : null,
+      peak_percent_today: percentOf(Math.max(used.peak_today, now.listeners), row.max_listeners),
+      peak_percent_last_7_days: percentOf(Math.max(used.peak_week, now.listeners), row.max_listeners),
+      peak_percent_this_month: percentOf(peak, row.max_listeners),
+      // How long the station has been full, counted in minutes in which it reached its limit.
+      at_limit: row.max_listeners > 0 ? {
+        now: isFull,
+        minutes_today: atLimit.minutes_today,
+        minutes_last_7_days: atLimit.minutes_week,
+        minutes_this_month: atLimit.minutes_month,
+        last_reached_at: isFull ? new Date().toISOString() : atLimit.last_at,
+      } : null,
       listener_hours_this_month: Math.round((used.seconds / 3600) * 100) / 100,
       gigabytes_this_month: Math.round((used.bytes / 1e9) * 1000) / 1000,
     };

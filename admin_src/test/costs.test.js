@@ -75,8 +75,18 @@ test('a station\'s standing', () => {
 
 test('notices are due at the right levels and repeat more often near the limit', () => {
   const now = new Date('2026-03-10T12:00:00Z');
-  const bill = (percent, daysLeft, storagePercent) => ({
-    stations: [{ station: 'jazz', name: 'Jazz FM', usage: { percent_of_limit: percent, peak_listeners_this_month: percent }, plan: { max_listeners: 100, days_left: daysLeft, subscription_ends_on: '2026-03-17' } }],
+  // `percent` is the most the station reached this month; `today` and `week` default to the same.
+  const bill = (percent, daysLeft, storagePercent, today = percent, week = percent) => ({
+    stations: [{
+      station: 'jazz', name: 'Jazz FM',
+      usage: {
+        listeners_now: 12, percent_of_limit: 12,
+        peak_listeners_today: today, peak_listeners_last_7_days: week, peak_listeners_this_month: percent,
+        peak_percent_today: today, peak_percent_last_7_days: week, peak_percent_this_month: percent,
+        at_limit: { now: false, minutes_today: today >= 100 ? 9 : 0, minutes_last_7_days: 9, minutes_this_month: 9, last_reached_at: null },
+      },
+      plan: { max_listeners: 100, days_left: daysLeft, subscription_ends_on: '2026-03-17' },
+    }],
     storage: { percent_used: storagePercent, used_bytes: 50 * 1024 ** 2, quota_bytes: 100 * 1024 ** 2 },
   });
   assert.deepStrictEqual(notify.due(bill(40, null, 10), now), []);
@@ -87,6 +97,14 @@ test('notices are due at the right levels and repeat more often near the limit',
   const full = notify.due(bill(120, 7, 92), now);
   assert.deepStrictEqual(full.map((n) => [n.kind, n.threshold]), [['listeners', 100], ['subscription', 7], ['storage', 90]]);
   assert.match(full[0].subject, /has reached its listener limit/);
+  assert.match(full[0].text, /full for about 9 minutes today/);
+  // Reaching the limit once does not go on producing notices. Full three weeks ago, quiet since:
+  // nothing daily or weekly is due, only the monthly one.
+  const earlier = notify.due(bill(100, null, null, 30, 40), now);
+  assert.deepStrictEqual(earlier.map((n) => [n.threshold, n.period]), [[50, '2026-03']]);
+  // Full two days ago, quiet today: the weekly notice, not the daily one.
+  const thisWeek = notify.due(bill(100, null, null, 30, 100), now);
+  assert.deepStrictEqual(thisWeek.map((n) => [n.threshold, n.period]), [[75, '2026-w09']]);
   // Six days left is not one of the days a subscription notice goes out.
   assert.strictEqual(notify.due(bill(10, 6, null), now).length, 0);
 });
