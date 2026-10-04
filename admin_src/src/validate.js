@@ -121,6 +121,15 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     if (typeof body.silence_detection !== 'boolean') fail('silence_detection', 'must be true or false');
     else out.silence_detection = body.silence_detection;
   }
+  if (has(body, 'noise_detection')) {
+    if (typeof body.noise_detection !== 'boolean') fail('noise_detection', 'must be true or false');
+    else out.noise_detection = body.noise_detection;
+  }
+  if (has(body, 'silence_threshold_db')) {
+    if (blank(body.silence_threshold_db)) out.silence_threshold_db = null;
+    else if (!Number.isInteger(body.silence_threshold_db) || body.silence_threshold_db < -90 || body.silence_threshold_db > -10) fail('silence_threshold_db', 'must be an integer from -90 to -10, or null for the server\'s setting');
+    else out.silence_threshold_db = body.silence_threshold_db;
+  }
   // Whether the files exist, belong to the account and fit the stream is checked by the caller.
   for (const field of ['ident_file_id', 'fallback_file_id']) {
     if (!has(body, field)) continue;

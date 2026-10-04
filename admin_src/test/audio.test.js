@@ -84,6 +84,10 @@ test('refuses what is not MP3 or AAC, with advice', async () => {
 
 test('station failover fields are validated', () => {
   const base = { name: 'Jazz', slug: 'jazz', primary_url: 'https://a.example.com/live' };
+  const tuned = v.parseStation({ ...base, noise_detection: false, silence_threshold_db: -40 });
+  assert.deepStrictEqual([tuned.noise_detection, tuned.silence_threshold_db], [false, -40]);
+  assert.strictEqual(v.parseStation({ ...base, silence_threshold_db: null }).silence_threshold_db, null);
+  assert.throws(() => v.parseStation({ ...base, silence_threshold_db: -5 }));
   const out = v.parseStation({ ...base, failover_delay_secs: 10, silence_detection: false, ident_file_id: 3, fallback_file_id: null });
   assert.deepStrictEqual(
     [out.failover_delay_secs, out.silence_detection, out.ident_file_id, out.fallback_file_id],

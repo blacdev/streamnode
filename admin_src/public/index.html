@@ -284,6 +284,9 @@
       <label>Seconds without audio before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
         <small>How long a stream may be down or silent before the station moves to the next source. When a stream is back the station returns to it at once.</small></label>
       <label class="check"><input type="checkbox" name="silence_detection" checked> Treat a stream that sends silence as having no audio</label>
+      <label class="check"><input type="checkbox" name="noise_detection" checked> Treat a stream that sends only hiss or other steady noise as having no audio, however loud</label>
+      <label>Silence level, in dB <input name="silence_threshold_db" type="number" min="-90" max="-10" placeholder="The server's setting (-55)">
+        <small>Anything quieter than this counts as silence. Nearer 0 treats more as silence; -70 lets quieter material count as audio.</small></label>
       <label>Ident <select name="ident_file_id"></select>
         <small>Played at every change: on leaving a failed stream and on returning to one that is back. Without an ident, MP3 stations fade out and in instead. Choose a file already in your storage, or upload one:</small>
         <input name="ident_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
