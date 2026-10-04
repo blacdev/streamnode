@@ -37,14 +37,16 @@ Listeners stay connected throughout, and players carry on without a reconnect.
 
 ### Returning to a live stream
 
-The delay is only for leaving a stream. Coming back is immediate: a stream that is
-down is tried again every 2 seconds, and once it has delivered one second of real
-audio the station returns to it. How the change sounds depends on the station:
+The delay is only for leaving a stream. Coming back needs no such wait, only proof
+that the stream is really back: a stream that is down is tried again every 2 seconds,
+and once it has delivered **five seconds** of real audio the station returns to it. A
+stream that bursts into life for a moment and drops again does not pull listeners
+back. How the change sounds depends on the station:
 
 | The station has | What listeners hear |
 |---|---|
 | An ident | The ident, then the live stream |
-| No ident, MP3 stream | What is playing fades out over half a second and the live stream fades in |
+| No ident, MP3 stream | What is playing fades out over a second and a half, and the live stream fades in over the same |
 | No ident, AAC stream | A direct cut to the live stream |
 | Nothing audible playing (silence) | The live stream starts at once, with no fade |
 

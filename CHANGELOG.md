@@ -48,6 +48,9 @@ All notable changes to this project are recorded here. The format follows
   instead of many small ones. Measured on the engine alone: 41% of a core per 1,000
   listeners before, 10% after.
 - File conversion is confined to one processor core at the lowest priority.
+- A returning stream must now deliver five seconds of real audio before the station
+  goes back to it (was one second), and fades last a second and a half each way (was
+  half a second).
 - **One ident per change of source.** When the primary fails and the backup cannot be
   reached, the station plays the ident once and goes straight to the fallback file,
   instead of an ident, a second wait and a second ident. When the primary and backup
