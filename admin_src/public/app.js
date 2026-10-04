@@ -185,6 +185,7 @@ async function refresh() {
 
 function statusOf(station) {
   if (!station.is_active) return ['off', 'Suspended'];
+  if (station.blocked === 'bandwidth') return ['off', 'Out of bandwidth'];
   if (station.live.source_offline) return ['off', 'Source offline'];
   if (!station.live.online) return ['', 'Standby'];
   if (station.live.source === 'fallback') return ['backup', 'On air (fallback audio)'];
@@ -276,9 +277,13 @@ async function openStationForm(station) {
     const { users } = await api('GET', '/users');
     form.elements.user_id.replaceChildren(...users.map((user) => h('option', { value: user.id }, user.username)));
     form.elements.user_id.value = station ? station.user_id : state.user.id;
-    for (const field of ['billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on']) {
+    for (const field of ['billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on', 'listener_ceiling', 'bandwidth_gb']) {
       form.elements[field].value = station ? station[field] ?? '' : field === 'discount_percent' ? 0 : '';
     }
+    form.elements.overage_mode.value = station ? station.overage_mode : 'capped';
+    form.elements.plan_type.value = station ? station.plan_type : 'listeners';
+    form.dataset.bitrate = (station && (station.billing_bitrate_kbps || (station.live.stream_format && station.live.stream_format.bitrate_kbps) || station.live.bitrate)) || '';
+    showPlan();
   }
   form.dataset.slug = station ? station.slug : '';
   $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : 'Add station';
@@ -291,6 +296,37 @@ async function openStationForm(station) {
     form.elements.silence_threshold_db.value = station.silence_threshold_db ?? '';
   }
   $('stationDialog').showModal();
+}
+
+// Shows the fields of the chosen kind of plan, and what the plan comes to.
+let planTimer;
+function showPlan() {
+  const form = $('stationForm').elements;
+  const byData = form.plan_type.value === 'bandwidth';
+  $('planListeners').hidden = byData;
+  $('planBandwidth').hidden = !byData;
+  clearTimeout(planTimer);
+  planTimer = setTimeout(async () => {
+    const bitrate = Number(form.billing_bitrate_kbps.value) || Number($('stationForm').dataset.bitrate) || 128;
+    const amount = byData ? Number(form.bandwidth_gb.value) : Number(form.max_listeners.value);
+    const note = $('planQuote');
+    if (!(amount > 0)) { note.hidden = true; return; }
+    try {
+      const q = await api('GET', `/billing/quote?${byData ? 'bandwidth_gb' : 'listeners'}=${amount}&bitrate_kbps=${bitrate}&discount_percent=${Number(form.discount_percent.value) || 0}`);
+      const fixed = form.price_override.value !== '' ? ` A fixed price of ${money(Number(form.price_override.value), q.currency)} is set instead.` : '';
+      const detected = $('stationForm').dataset.bitrate || form.billing_bitrate_kbps.value ? '' : ' (assumed until the station has played)';
+      note.textContent = !q.configured ? 'Prices are not set yet (Settings > Prices), so no amount can be shown.'
+        : byData
+          ? `${formatNumber(amount)} GB a month at ${bitrate} kbps${detected} comes to ${money(q.monthly_total, q.currency)} a month. That much data is about ${formatNumber(Math.round(amount * q.bandwidth_rate.listener_hours_per_gb))} hours of listening, or ${q.bandwidth_covers_listeners_all_month} listeners around the clock.${fixed}`
+          : `${formatNumber(amount)} listeners at ${bitrate} kbps${detected} comes to ${money(q.monthly_total, q.currency)} a month.${fixed}`;
+      note.hidden = false;
+    } catch {
+      note.hidden = true;
+    }
+  }, 250);
+}
+for (const field of ['plan_type', 'max_listeners', 'bandwidth_gb', 'billing_bitrate_kbps', 'discount_percent', 'price_override']) {
+  $('stationForm').elements[field].addEventListener('input', showPlan);
 }
 
 function showStationStorage() {
@@ -369,6 +405,10 @@ $('stationForm').addEventListener('submit', async (event) => {
     body.discount_percent = Number(form.elements.discount_percent.value) || 0;
     body.price_override = optional('price_override');
     body.subscription_ends_on = form.elements.subscription_ends_on.value || null;
+    body.overage_mode = form.elements.overage_mode.value;
+    body.plan_type = form.elements.plan_type.value;
+    body.bandwidth_gb = optional('bandwidth_gb');
+    body.listener_ceiling = optional('listener_ceiling');
   }
   const save = () => api(editing ? 'PATCH' : 'POST', editing ? `/stations/${editing}` : '/stations', body);
   try {
@@ -707,6 +747,10 @@ async function loadSettings() {
   const d = s.storage.dropbox;
   $('settingsForm').elements.ident_max_seconds.value = s.ident_max_seconds;
   $('settingsForm').elements.default_storage_quota_mb.value = s.default_storage_quota_mb;
+  const notices = $('noticesForm').elements;
+  notices.automatic.checked = s.notices.automatic;
+  notices.levels.value = s.notices.levels.join(', ');
+  notices.min_days_between.value = s.notices.min_days_between;
   const mailForm = $('smtpForm').elements;
   for (const field of ['host', 'port', 'security', 'user', 'from', 'copy_to']) mailForm[field].value = s.smtp[field] ?? '';
   mailForm.password.value = '';
@@ -754,6 +798,20 @@ $('dropboxDisconnect').addEventListener('click', async () => {
   await api('DELETE', '/storage/dropbox').then(() => { toast('Dropbox disconnected'); return loadSettings(); }).catch(fail);
 });
 
+$('noticesForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('noticesError').textContent = '';
+  const levels = form.levels.value.split(/[\s,]+/).filter(Boolean).map(Number);
+  try {
+    await api('PUT', '/settings', { notices: { automatic: form.automatic.checked, levels, min_days_between: Number(form.min_days_between.value) || 0 } });
+    toast(form.automatic.checked ? 'Notices saved' : 'Notices are sent only on request');
+    await loadSettings();
+  } catch (err) {
+    $('noticesError').textContent = err.message;
+  }
+});
+
 $('smtpForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target.elements;
@@ -785,22 +843,29 @@ $('smtpTest').addEventListener('click', async () => {
 
 const money = (amount, currency) => (amount === null || amount === undefined ? 'Not set' : `${currency} ${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
+const RATE_FIELDS = ['server_monthly_cost', 'server_vcpus', 'server_memory_gb', 'server_port_mbps', 'margin_percent', 'storage_price_per_gb',
+  'payg_block_listeners', 'payg_block_minutes', 'payg_price_per_block', 'payg_storage_price_per_gb', 'bandwidth_price_per_gb', 'payg_bandwidth_price_per_gb'];
+
 async function loadRates() {
   const r = await api('GET', '/billing/rates');
   const form = $('ratesForm').elements;
-  for (const field of ['currency', 'server_monthly_cost', 'server_vcpus', 'server_memory_gb', 'server_port_mbps', 'margin_percent', 'storage_price_per_gb']) form[field].value = r[field];
+  for (const field of RATE_FIELDS) form[field].value = r[field];
+  form.currency.value = r.currency;
   $('ratesTable').replaceChildren(
-    h('thead', {}, h('tr', {}, ['Stream bitrate', 'Listeners one such server carries', 'What stops it there', 'Price per listener per month', '100 listeners', '1,000 listeners'].map((t, i) => h('th', { class: i && i !== 2 ? 'num' : '' }, t)))),
+    h('thead', {}, h('tr', {}, ['Stream bitrate', 'Listeners one such server carries', 'What stops it there', 'Price per listener per month', '100 listeners', '1,000 listeners', 'Per GB (bandwidth plans)', 'Listening hours in 1 GB'].map((t, i) => h('th', { class: i && i !== 2 ? 'num' : '' }, t)))),
     h('tbody', {}, r.per_listener.map((row) => h('tr', {},
       h('td', {}, `${row.bitrate_kbps} kbps`),
       h('td', { class: 'num' }, formatNumber(row.listeners_per_server)),
       h('td', {}, row.limited_by),
       h('td', { class: 'num' }, r.configured ? `${r.currency} ${row.price_per_listener.toFixed(4)}` : 'Not set'),
       h('td', { class: 'num' }, r.configured ? money(row.price_per_listener * 100, r.currency) : ''),
-      h('td', { class: 'num' }, r.configured ? money(row.price_per_listener * 1000, r.currency) : ''))))
+      h('td', { class: 'num' }, r.configured ? money(row.price_per_listener * 1000, r.currency) : ''),
+      h('td', { class: 'num' }, r.configured || r.bandwidth_price_per_gb > 0 ? `${r.currency} ${row.bandwidth.price_per_gb.toFixed(5)}` : 'Not set'),
+      h('td', { class: 'num' }, row.bandwidth.listener_hours_per_gb))))
   );
   const m = r.cost_model;
-  $('ratesNote').textContent = `Worked out from what a listener costs a server: ${m.engine.percent_of_core_per_1000_listeners + m.proxy.percent_of_core_per_1000_listeners}% of a core per 1,000 listeners${m.engine.measured && m.proxy.measured ? ', as measured on this installation' : ' (starting figures, until this installation has carried enough listeners to measure)'}, with a quarter of each server kept in reserve.`;
+  const example = r.pay_as_you_go_example;
+  $('ratesNote').textContent = `Pay as you go: ${example.extra_listeners} listeners over the subscription for ${example.minutes} minutes comes to ${money(example.charge, r.currency)}. Subscription prices are worked out from what a listener costs a server: ${m.engine.percent_of_core_per_1000_listeners + m.proxy.percent_of_core_per_1000_listeners}% of a core per 1,000 listeners${m.engine.measured && m.proxy.measured ? ', as measured on this installation' : ' (starting figures, until this installation has carried enough listeners to measure)'}, with a quarter of each server kept in reserve.`;
 }
 
 $('ratesForm').addEventListener('submit', async (event) => {
@@ -808,7 +873,7 @@ $('ratesForm').addEventListener('submit', async (event) => {
   const form = event.target.elements;
   $('ratesError').textContent = '';
   const body = { currency: form.currency.value.trim() };
-  for (const field of ['server_monthly_cost', 'server_vcpus', 'server_memory_gb', 'server_port_mbps', 'margin_percent', 'storage_price_per_gb']) body[field] = Number(form[field].value);
+  for (const field of RATE_FIELDS) body[field] = Number(form[field].value);
   try {
     await api('PUT', '/billing/rates', body);
     toast('Prices saved');
@@ -820,7 +885,34 @@ $('ratesForm').addEventListener('submit', async (event) => {
 
 // ── Billing and limits ─────────────────────────────────────────────────────
 
-const STANDING = { ok: ['live', 'Within its limit'], near_limit: ['backup', 'Near its limit'], at_limit: ['off', 'At its limit'], expiring: ['backup', 'Subscription ending'], expired: ['off', 'Subscription ended'] };
+const STANDING = { out_of_bandwidth: ['off', 'Out of bandwidth'], pay_as_you_go: ['backup', 'On pay as you go'], ok: ['live', 'Within its plan'], near_limit: ['backup', 'Close to its plan\'s limit'], at_limit: ['off', 'At its limit'], expiring: ['backup', 'Subscription ending'], expired: ['off', 'Subscription ended'] };
+
+// A bandwidth plan: the month's data against what the plan covers.
+function dataUse(s, currency) {
+  const d = s.usage.bandwidth;
+  const lines = [
+    `${d.used_gb.toFixed(1)} of ${formatNumber(d.allowance_gb)} GB used this month (${d.percent_used}%)`,
+    h('span', { class: `meter${d.percent_used >= 75 ? ' warn' : ''}`, role: 'img', 'aria-label': `${d.percent_used}% of the month's data` }, h('i', { style: `width:${Math.min(100, d.percent_used)}%` })),
+    h('small', {}, `${formatNumber(s.usage.listeners_now)} listening now, ${s.plan.listener_ceiling ? `never more than ${formatNumber(s.plan.listener_ceiling)}` : 'no limit on listeners'}`),
+  ];
+  if (d.over_gb > 0) {
+    lines.push(h('small', {}, s.plan.overage_mode === 'pay_as_you_go'
+      ? `${d.over_gb.toFixed(1)} GB beyond the plan: ${money(s.pay_as_you_go_charge, currency)} so far`
+      : 'Used up: off the air until the new month'));
+  } else {
+    lines.push(h('small', {}, `${d.remaining_gb.toFixed(1)} GB left, about ${formatNumber(d.remaining_listener_hours)} hours of listening. At this pace: ${formatNumber(Math.round(d.projected_gb))} GB by the end of the month`));
+  }
+  return lines;
+}
+
+// What a station on pay as you go has had beyond its subscription, in words.
+function beyond(s, currency) {
+  const extra = s.usage.pay_as_you_go;
+  const ceiling = s.plan.listener_ceiling ? `, never more than ${formatNumber(s.plan.listener_ceiling)}` : '';
+  if (!extra.minutes_this_month && !extra.active_now) return `Pay as you go beyond ${formatNumber(s.plan.max_listeners)}${ceiling}: not used this month`;
+  const now = extra.active_now ? `${formatNumber(extra.extra_listeners_now)} over now. ` : '';
+  return `${now}Beyond its subscription for ${formatNumber(extra.minutes_this_month)} minute${extra.minutes_this_month === 1 ? '' : 's'} this month, by up to ${formatNumber(extra.most_extra_listeners)} listeners: ${money(s.pay_as_you_go_charge, currency)} so far${ceiling}`;
+}
 
 // How often a station has actually been full, in words.
 function fullness(at) {
@@ -842,7 +934,8 @@ async function loadBilling() {
   $('billingMonth').textContent = `${new Date(`${bill.month}-01T00:00:00Z`).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })} so far`;
   const storage = bill.storage;
   tiles($('billingTiles'), [
-    ['Per month', bill.monthly_total === null ? 'Not set' : money(bill.monthly_total, bill.currency)],
+    ['Subscriptions, per month', bill.monthly_total === null ? 'Not set' : money(bill.monthly_total, bill.currency)],
+    ['Pay as you go, so far this month', money(bill.pay_as_you_go_total, bill.currency)],
     ['Stations', bill.stations.length],
     ['Audio storage', storage.quota_bytes === null ? `${formatSize(storage.used_bytes)} used` : `${formatSize(storage.used_bytes)} of ${formatSize(storage.quota_bytes)}`],
     ['Storage per month', storage.monthly_price === null ? 'Not set' : money(storage.monthly_price, bill.currency)],
@@ -855,23 +948,26 @@ async function loadBilling() {
     return h('tr', {},
       h('td', {}, h('div', { class: 'station-name' }, s.name), h('code', {}, `/${s.station}`)),
       h('td', {}, h('span', { class: `status ${kind}` }, label)),
-      h('td', { class: 'wrap' }, limit
+      h('td', { class: 'wrap' }, s.usage.bandwidth ? dataUse(s, bill.currency) : limit
         ? [`${formatNumber(s.usage.listeners_now)} of ${formatNumber(limit)} now (${percent}%)`,
           h('span', { class: `meter${percent >= 75 ? ' warn' : ''}`, role: 'img', 'aria-label': `${percent}% of the limit` }, h('i', { style: `width:${Math.min(100, percent)}%` })),
           h('small', {}, `Most at once: ${formatNumber(s.usage.peak_listeners_today)} today, ${formatNumber(s.usage.peak_listeners_last_7_days)} in 7 days, ${formatNumber(s.usage.peak_listeners_this_month)} this month`),
-          h('small', {}, fullness(s.usage.at_limit))]
+          h('small', {}, s.plan.overage_mode === 'pay_as_you_go' ? beyond(s, bill.currency) : fullness(s.usage.at_limit))]
         : [`${formatNumber(s.usage.listeners_now)} now, no limit`, h('small', {}, `Most at once: ${formatNumber(s.usage.peak_listeners_today)} today, ${formatNumber(s.usage.peak_listeners_this_month)} this month`)]),
-      h('td', { class: 'num' }, `${s.plan.bitrate_kbps} kbps`, s.plan.bitrate_source === 'default' && h('small', {}, 'assumed until the station plays')),
+      h('td', { class: 'num' }, `${s.plan.bitrate_kbps} kbps`, s.plan.bitrate_source === 'default' && h('small', {}, 'assumed until the station plays'), h('small', {}, s.plan.type === 'bandwidth' ? 'By bandwidth' : 'By listeners')),
       h('td', { class: 'num' }, formatNumber(s.usage.listener_hours_this_month)),
       h('td', { class: 'num' }, `${s.usage.gigabytes_this_month.toFixed(2)} GB`),
       h('td', {}, ends ? [ends, h('small', {}, s.plan.days_left < 0 ? 'Ended' : s.plan.days_left === 0 ? 'Ends today' : `${s.plan.days_left} days left`)] : h('span', { class: 'muted' }, 'No end date')),
       h('td', { class: 'num' }, s.monthly_price === null ? 'Not set' : money(s.monthly_price, bill.currency),
+        s.pay_as_you_go_charge > 0 && h('small', {}, `+ ${money(s.pay_as_you_go_charge, bill.currency)} pay as you go`),
         s.plan.price_override !== null ? h('small', {}, 'Fixed price') : s.plan.discount_percent > 0 && h('small', {}, `${s.plan.discount_percent}% discount`))
     );
   }));
   const notes = [];
   if (!bill.prices_set) notes.push('Prices have not been set, so only usage and limits are shown.');
   else notes.push(`A station is charged for the listeners it is allowed, at its stream's bitrate${bill.stations.some((s) => !s.plan.max_listeners) ? '; one with no limit is charged for the most listeners it had at once this month' : ''}.`);
+  if (bill.stations.some((s) => s.plan.overage_mode === 'pay_as_you_go') || storage.pay_as_you_go) notes.push('Where pay as you go applies, what is used beyond the subscription is let through and charged; the amount so far is shown with it.');
+  if (storage.pay_as_you_go && storage.over_quota_bytes > 0) notes.push(`Storage is ${formatSize(storage.over_quota_bytes)} beyond its quota: ${money(storage.pay_as_you_go_charge, bill.currency)} a month at present.`);
   if (bill.discount_percent > 0) notes.push(`A discount of ${bill.discount_percent}% is taken off the account's total.`);
   notes.push('Listener limits, bitrates, prices and subscription dates are set by the administrator.');
   $('billingNote').textContent = notes.join(' ');
@@ -880,6 +976,13 @@ async function loadBilling() {
 }
 
 $('billingAccount').addEventListener('change', () => loadBilling().catch(fail));
+
+$('billingSummary').addEventListener('click', async () => {
+  const bill = state.bill;
+  if (!bill.email) return toast(`${bill.username} has no email address. Add one below first.`);
+  if (!confirm(`Email ${bill.username} (${bill.email}) a summary of where their stations stand now?`)) return;
+  await api('POST', '/notifications/send', { user_id: bill.user_id }).then(() => toast(`Summary sent to ${bill.email}`)).catch(fail);
+});
 
 $('emailForm').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -952,6 +1055,7 @@ async function loadUsers() {
     h('td', { class: 'row-actions' }, user.id !== state.user.id && [
       user.role !== 'admin' && h('button', { onclick: () => changeStationLimit(user) }, 'Station limit'),
       user.role !== 'admin' && h('button', { onclick: () => changeStorageQuota(user) }, 'Storage'),
+      user.role !== 'admin' && h('button', { onclick: () => changeStorageOverage(user) }, user.storage_overage ? 'Storage: pay as you go' : 'Storage: capped'),
       h('button', { onclick: () => changeEmail(user) }, 'Email'),
       user.role !== 'admin' && h('button', { onclick: () => changeDiscount(user) }, 'Discount'),
       h('button', { onclick: () => api('PATCH', `/users/${user.id}`, { is_active: !user.is_active }).then(loadUsers).catch(fail) }, user.is_active ? 'Disable' : 'Enable'),
@@ -1004,6 +1108,18 @@ async function changeDiscount(user) {
   const discount = Number(answer);
   if (!(discount >= 0 && discount <= 100)) return toast('Enter a number from 0 to 100.');
   await api('PATCH', `/users/${user.id}`, { discount_percent: discount }).then(loadUsers).catch(fail);
+}
+
+async function changeStorageOverage(user) {
+  if (user.storage_overage) {
+    if (!confirm(`${user.username} may store audio beyond the quota and is charged for it. Cap it at the quota again? Files already beyond it stay; new uploads are refused until there is room.`)) return;
+    return api('PATCH', `/users/${user.id}`, { storage_overage: false }).then(loadUsers).catch(fail);
+  }
+  const answer = prompt(`Let ${user.username} store audio beyond the quota and be charged for the extra?\n\nEnter the most storage the account may ever use, in MB, or leave empty for no ceiling.`, user.storage_ceiling_mb ?? '');
+  if (answer === null) return;
+  const ceiling = answer.trim() === '' ? null : Number(answer);
+  if (ceiling !== null && (!Number.isInteger(ceiling) || ceiling < 1)) return toast('Enter a whole number of MB, or leave it empty.');
+  await api('PATCH', `/users/${user.id}`, { storage_overage: true, storage_ceiling_mb: ceiling }).then(loadUsers).catch(fail);
 }
 
 async function changeStorageQuota(user) {

@@ -157,8 +157,10 @@ An account's bill:
 }
 ```
 
-`status` is `ok`, `near_limit`, `at_limit`, `expiring` (7 days or fewer left) or
-`expired`.
+`status` is `ok`, `near_limit`, `pay_as_you_go` (beyond its subscription and being
+charged), `at_limit`, `out_of_bandwidth`, `expiring` (7 days or fewer left) or
+`expired`. For a bandwidth plan, `near_limit` means three quarters of the month's data
+is used.
 
 **`near_limit` and `at_limit` describe this moment**: the listeners connected now are
 at 75% of the limit or more, or at the limit. A station that was full half an hour ago
@@ -188,6 +190,147 @@ stations with its limit, how close it has come this month, its subscription date
 price, their storage, and the account's total. They see nothing about servers or
 costs, and nothing of other accounts.
 
+## Two kinds of plan
+
+Each station is on one of two kinds of plan, chosen by the administrator
+(`plan_type`):
+
+| | By listeners | By bandwidth |
+|---|---|---|
+| What is paid for | A number of listeners at once (`max_listeners`) | An amount of data each month (`bandwidth_gb`) |
+| Limit on listeners | That number | None (an optional `listener_ceiling` for safety) |
+| What uses it up | Nothing: it is a level, reached or not at any moment | Every listener, for as long as they listen. It runs out faster the more listen |
+| When it is reached | Capped, or pay as you go per extra listener | Capped (off the air until the new month), or pay as you go per extra GB |
+| Suits | A steady audience of a known size | An audience that comes and goes, or peaks you do not want to turn away |
+
+A bandwidth plan's allowance **starts again on the first of each month** (UTC). Earlier
+months are not lost: `GET /billing/history` returns every month on record for each
+station (data sent, most listeners at once, listening hours).
+
+**The amount is shown before it is set.** In the station's form, the plan's price
+appears as its numbers are entered, at the station's detected bitrate; for a bandwidth
+plan it also says what that much data means in listening. `GET /billing/quote` does the
+same in the API:
+
+```bash
+curl "$API/billing/quote?listeners=200&bitrate_kbps=128" -H "X-API-Key: $KEY"
+curl "$API/billing/quote?bandwidth_gb=500&bitrate_kbps=128" -H "X-API-Key: $KEY"
+```
+
+At 128 kbps a gigabyte is about 17 hours of listening, and one listener who never
+leaves receives about 42 GB in a month. A plan for 500 GB is therefore about 8,700
+hours of listening, or 12 listeners around the clock.
+
+**The price of a gigabyte** is under Settings > Prices: `bandwidth_price_per_gb` for
+data inside the plan and `payg_bandwidth_price_per_gb` for data beyond it. Left at 0,
+the first is worked out from the same costs as a listener's price, so that a listener
+who never leaves costs the same on either kind of plan, and the second equals the first.
+
+### One stream, several stations
+
+Stations are separate even when they relay the same stream. The same stream address can
+be set up as several stations, each with its own address for listeners and its own
+plan: one by listeners for the website, one by bandwidth for a mobile app, and so on.
+Each is counted, limited and charged on its own.
+
+That is also why uploaded audio belongs to the account and not to a station: one ident
+or fallback file serves every station of the account, and the storage quota is shared
+between them.
+
+### When a bandwidth plan runs out
+
+- **Capped:** the station goes off the air (listeners get the same answer as for a
+  suspended station) and comes back by itself when the new month begins, or within a
+  minute of the plan being enlarged. Its status is `out_of_bandwidth`.
+- **Pay as you go:** it stays on the air and each further gigabyte is charged.
+
+A bandwidth station's bill:
+
+```json
+{
+  "station": "jazz-web", "status": "pay_as_you_go",
+  "plan": { "type": "bandwidth", "bandwidth_gb": 500, "price_per_gb": 0.02, "pay_as_you_go_price_per_gb": 0.05,
+            "overage_mode": "pay_as_you_go", "listener_ceiling": 1000 },
+  "usage": { "listeners_now": 84,
+             "bandwidth": { "allowance_gb": 500, "used_gb": 560, "remaining_gb": 0, "over_gb": 60, "percent_used": 112,
+                            "projected_gb": 1680, "remaining_listener_hours": 0 } },
+  "monthly_price": 10.0,
+  "pay_as_you_go_charge": 3.0
+}
+```
+
+`projected_gb` is what the month would come to at its pace so far, and
+`remaining_listener_hours` what is left of the plan in listening at the station's
+bitrate. Usage is counted from the daily statistics, so it trails the present by up to
+a minute.
+
+## Subscription first, then pay as you go
+
+What a station pays for a month is its **subscription**: a fixed price for the
+listeners it is allowed. What happens when it needs more than that is set per station
+by the administrator:
+
+| `overage_mode` | Beyond the subscription's listeners |
+|---|---|
+| `capped` (the default) | Further listeners are turned away until others leave. The bill never changes |
+| `pay_as_you_go` | Further listeners are let in, and charged for as long as they are there |
+
+The pay-as-you-go rate is set once, under Settings > Prices (`PUT /billing/rates`):
+
+```
+for every  payg_block_listeners  listeners over the subscription   (10)
+for every  payg_block_minutes    minutes                           (1)
+charge     payg_price_per_block                                    (0.05)
+```
+
+A part of a lot counts as a whole lot: with lots of 10, 11 extra listeners are two
+lots. So a station with a subscription for 100 listeners that has 300 for five
+minutes is 200 over: 20 lots, for 5 minutes, at 0.05, is **5.00**. The Prices page
+shows this example worked out with your own figures.
+
+Each minute is charged on the most listeners the station had in it, taken from the
+minute-by-minute statistics, so the charge can be traced line by line.
+
+`listener_ceiling` is the most listeners a station on pay as you go may ever have at
+once. It keeps a bill from running away and a server from being swamped; above it,
+listeners are turned away as with a capped station. Empty means no ceiling.
+
+**Storage** works the same way, per account (`PATCH /users/{id}`): with
+`storage_overage` on, uploads beyond the quota are accepted, up to
+`storage_ceiling_mb` if set, and what is stored beyond the quota is charged at
+`payg_storage_price_per_gb` per month. Off, as by default, uploads beyond the quota
+are refused.
+
+A bill then has both parts:
+
+```json
+"stations": [{
+  "station": "powerbeats", "status": "pay_as_you_go",
+  "plan": { "max_listeners": 100, "overage_mode": "pay_as_you_go", "listener_ceiling": 300 },
+  "usage": { "listeners_now": 140,
+             "pay_as_you_go": { "active_now": true, "extra_listeners_now": 40, "minutes_this_month": 8,
+                                "most_extra_listeners": 200, "block_minutes": 103, "last_at": "2026-10-04T14:26:00.000Z" } },
+  "monthly_price": 1.64,
+  "pay_as_you_go_charge": 5.15
+}],
+"monthly_total": 3.28,
+"pay_as_you_go_total": 5.15,
+"total_so_far": 8.43
+```
+
+`monthly_total` is the subscriptions; `pay_as_you_go_total` is what has been used
+beyond them so far this month; `total_so_far` is both. The Billing tab shows the same,
+with the running extra beside each station.
+
+Things to know:
+
+- **The charge is worked out from the station's present subscription.** If its number
+  of listeners is changed in mid-month, the month so far is recalculated against the
+  new number.
+- **Changing a station from capped to pay as you go** takes effect within seconds.
+- **Minute records are kept for 90 days** (`STATS_MINUTE_RETENTION_DAYS`); read a
+  month's charges before they are that old.
+
 ## Notices by email
 
 Optional, in two parts: a mail server, entered by the administrator, and an address
@@ -209,7 +352,8 @@ What is sent, checked every 10 minutes:
 | A station's listeners, against its limit | The most at once this month reached 50% | once a month |
 | | The most at once in the last 7 days reached 75% | once a week |
 | | The most at once today reached 90%, or the limit | once a day |
-| The account's audio storage, against its quota | 50%, 75%, 90%, full | the same |
+| A bandwidth plan's data, against the month's allowance | Each level reached, and when it is used up | once a month each |
+| The account's audio storage, against its quota | 50%, 75%, 90%, full | as for listeners |
 | A station's subscription | 30, 14, 7, 3, 2 and 1 days before it ends, on the last day, and the day after | once each |
 
 Each notice is about its own span, so reaching the limit once does not go on producing
@@ -217,8 +361,41 @@ a notice every day: the daily one is sent only on a day the station got that far
 The message says how many listeners there were, how long the station was full that
 day, and how many are connected at the time of writing.
 
-`GET /notifications` lists what has been sent, and `POST /notifications/run` sends
-what is due without waiting.
+A station on **pay as you go** is not told it has "reached its limit". On a day it goes
+beyond its subscription, its owner is told that once, with what the extra has come to
+so far. An account whose storage is beyond its quota on pay as you go is told weekly.
+
+### How much mail
+
+The administrator decides, under Settings > Notices (`PUT /settings` with a `notices`
+object):
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `automatic` | Whether notices go out by themselves. Off, nothing is sent unless asked for | on |
+| `levels` | The percentages of the limit at which a notice is sent | 50, 75, 90, 100 |
+| `min_days_between` | The fewest days between two notices about the same thing (a station's listeners, its pay as you go, the account's storage). Reminders that a subscription is ending are not held back | 1 |
+
+With `min_days_between` at 7, an account hears about a station's listeners at most once
+a week, however close to the limit it runs.
+
+### Sending on request
+
+```bash
+# A summary of where an account's stations stand now, to its owner.
+curl -X POST $API/notifications/send -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"station": "powerbeats"}'        # or {"user_id": 4}
+
+# The notices that are due, now. With automatic notices off, this is how they are sent.
+curl -X POST $API/notifications/run -H "X-API-Key: $KEY"
+```
+
+The summary lists each station with its listeners now and its highest this month, any
+pay as you go so far, its subscription date and price, the account's storage, and the
+month's total. It is sent whatever the automatic notices are set to; the Billing tab
+has a button for it.
+
+`GET /notifications` lists what has been sent.
 
 ## Limits of all this
 
@@ -230,6 +407,6 @@ what is due without waiting.
 - **Port speed is what you enter**, not what is detected.
 - **Capacity assumes one bitrate at a time.** With stations at different bitrates,
   work with the one most of your listeners use, or the highest to be safe.
-- **A listener limit is enforced**: listeners beyond it are turned away. A
-  subscription date is not: it produces notices, and what follows is your decision
+- **A listener limit is enforced** on a capped station: listeners beyond it are turned
+  away. On pay as you go it is the ceiling that is enforced. A subscription date is not: it produces notices, and what follows is your decision
   (suspend the station from the dashboard or the API).

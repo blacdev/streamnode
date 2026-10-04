@@ -131,3 +131,89 @@ test('billing fields and the calculator\'s input are validated', () => {
   assert.strictEqual(v.parseSettings({ smtp: { host: 'smtp.example.com', port: 587, security: 'starttls', from: 'StreamNode <noreply@example.com>' } }).smtp.from, 'StreamNode <noreply@example.com>');
   assert.throws(() => v.parseSettings({ smtp: { security: 'ssl' } }));
 });
+
+test('pay as you go is charged by lots of extra listeners per minute', () => {
+  const rates = { ...billing.DEFAULT_RATES, payg_block_listeners: 10, payg_block_minutes: 1, payg_price_per_block: 0.05 };
+  // 200 listeners over for 5 minutes: 20 lots a minute, 100 lot-minutes.
+  assert.strictEqual(billing.overageCharge(rates, Math.ceil(200 / 10) * 5), 5);
+  // The same lots charged per 5 minutes rather than per minute cost a fifth.
+  assert.strictEqual(billing.overageCharge({ ...rates, payg_block_minutes: 5 }, 100), 1);
+  // On pay as you go a station past its number is being charged, not stopped, until it meets its ceiling.
+  const usage = (now, full) => ({ percent_of_limit: now, pay_as_you_go: { active_now: now > 100 }, at_limit: { now: full } });
+  assert.strictEqual(billing.standing({}, usage(140, false), null), 'pay_as_you_go');
+  assert.strictEqual(billing.standing({}, usage(200, true), null), 'at_limit');
+  assert.strictEqual(billing.standing({}, usage(80, false), null), 'near_limit');
+});
+
+test('notices can be thinned out, and say when a station goes onto pay as you go', () => {
+  assert.deepStrictEqual(notify.levelsFrom([100, 60]), [{ percent: 100, every: 'day' }, { percent: 60, every: 'month' }]);
+  const now = new Date('2026-03-10T12:00:00Z');
+  const station = (extra) => ({
+    station: 'jazz', name: 'Jazz FM', pay_as_you_go_charge: 3.7,
+    usage: {
+      listeners_now: 140, percent_of_limit: 140, peak_listeners_today: 160, peak_listeners_last_7_days: 160, peak_listeners_this_month: 160,
+      peak_percent_today: 160, peak_percent_last_7_days: 160, peak_percent_this_month: 160, at_limit: { now: false, minutes_today: 0 },
+      pay_as_you_go: extra,
+    },
+    plan: { max_listeners: 100, listener_ceiling: 300, days_left: null, subscription_ends_on: null },
+  });
+  const storage = { percent_used: 10, used_bytes: 1, quota_bytes: 10, pay_as_you_go: false, over_quota_bytes: 0 };
+  const on = notify.due({ currency: 'USD', stations: [station({ active_now: true, minutes_this_month: 37, most_extra_listeners: 60, last_at: null })], storage }, now);
+  // One notice, about pay as you go: not a "reached its limit", and nothing more about approaching it.
+  assert.deepStrictEqual(on.map((n) => [n.kind, n.threshold]), [['pay_as_you_go', 0]]);
+  // Before it gets there, a station on pay as you go is told it is approaching its number like any other.
+  const near = station(null); near.usage = { ...near.usage, pay_as_you_go: { active_now: false, minutes_this_month: 0, most_extra_listeners: 0, last_at: null }, peak_percent_today: 92, peak_listeners_today: 92 };
+  assert.deepStrictEqual(notify.due({ currency: 'USD', stations: [near], storage }, now).map((n) => [n.kind, n.threshold]), [['listeners', 90]]);
+  assert.match(on[0].text, /USD 3\.70/);
+  assert.match(on[0].text, /No more than 300 listeners/);
+  // With only the 100% level kept, a pay-as-you-go station gets just the one notice.
+  const thin = notify.due({ currency: 'USD', stations: [station({ active_now: true, minutes_this_month: 37, most_extra_listeners: 60, last_at: null })], storage }, now, notify.levelsFrom([100]));
+  assert.deepStrictEqual(thin.map((n) => n.kind), ['pay_as_you_go']);
+  // Storage beyond its quota on pay as you go is said once a week, in place of "storage is full".
+  const over = notify.due({ currency: 'USD', stations: [], storage: { percent_used: 130, used_bytes: 13 * 1024 ** 2, quota_bytes: 10 * 1024 ** 2, pay_as_you_go: true, over_quota_bytes: 3 * 1024 ** 2, pay_as_you_go_charge: 0.5 } }, now);
+  assert.deepStrictEqual(over.map((n) => [n.kind, n.period]), [['pay_as_you_go', '2026-w09']]);
+  assert.deepStrictEqual(v.parseSettings({ notices: { automatic: false, levels: [100, 75, 75], min_days_between: 7 } }).notices, { automatic: false, levels: [75, 100], min_days_between: 7 });
+  assert.throws(() => v.parseSettings({ notices: { levels: [150] } }));
+  const admin = v.parseStation({ name: 'J', slug: 'j', primary_url: 'https://a.example.com/x', overage_mode: 'pay_as_you_go', listener_ceiling: 800 }, { isAdmin: true });
+  assert.deepStrictEqual([admin.overage_mode, admin.listener_ceiling], ['pay_as_you_go', 800]);
+  assert.throws(() => v.parseStation({ name: 'J', slug: 'j', primary_url: 'https://a.example.com/x', overage_mode: 'pay_as_you_go' }));
+});
+
+test('a bandwidth plan is priced by the gigabyte, in step with the price of a listener', () => {
+  const rates = { ...billing.DEFAULT_RATES, server_monthly_cost: 60, margin_percent: 50 };
+  const listener = billing.listenerRate(rates, M, 128);
+  const data = billing.bandwidthRate(rates, M, 128);
+  // One listener who never leaves receives about 42 GB a month at 128 kbps, and costs the same either way.
+  assert.ok(Math.abs(data.price_per_gb * 42.048 - listener.price_per_listener) < 1e-4);
+  assert.strictEqual(data.listener_hours_per_gb, 17.36);
+  assert.strictEqual(data.pay_as_you_go_price_per_gb, data.price_per_gb);
+  // The administrator's own prices replace the worked-out ones.
+  const set = billing.bandwidthRate({ ...rates, bandwidth_price_per_gb: 0.02, payg_bandwidth_price_per_gb: 0.05 }, M, 128);
+  assert.deepStrictEqual([set.price_per_gb, set.pay_as_you_go_price_per_gb, set.source], [0.02, 0.05, 'set']);
+
+  // How such a station stands: by its data, not its listeners.
+  const usage = (percent, over) => ({ bandwidth: { percent_used: percent, over_gb: over }, at_limit: null });
+  assert.strictEqual(billing.standing({ overage_mode: 'capped' }, usage(40, 0), null), 'ok');
+  assert.strictEqual(billing.standing({ overage_mode: 'capped' }, usage(80, 0), null), 'near_limit');
+  assert.strictEqual(billing.standing({ overage_mode: 'pay_as_you_go' }, usage(120, 40), null), 'pay_as_you_go');
+  assert.strictEqual(billing.standing({ overage_mode: 'capped', blocked: 'bandwidth' }, usage(100, 0), null), 'out_of_bandwidth');
+
+  const admin = v.parseStation({ name: 'J', slug: 'j', primary_url: 'https://a.example.com/x', plan_type: 'bandwidth', bandwidth_gb: 500 }, { isAdmin: true });
+  assert.deepStrictEqual([admin.plan_type, admin.bandwidth_gb], ['bandwidth', 500]);
+  assert.throws(() => v.parseStation({ name: 'J', slug: 'j', primary_url: 'https://a.example.com/x', plan_type: 'bandwidth' }));
+});
+
+test('a bandwidth plan sends each of its notices once in a month', () => {
+  const now = new Date('2026-03-10T12:00:00Z');
+  const station = (data, mode = 'capped', blocked = null) => ({
+    station: 'mobile', name: 'Jazz Mobile', blocked, pay_as_you_go_charge: 1.25,
+    usage: { listeners_now: 30, bandwidth: { allowance_gb: 500, remaining_listener_hours: 1700, projected_gb: 900, ...data }, pay_as_you_go: null, at_limit: null },
+    plan: { type: 'bandwidth', overage_mode: mode, days_left: null, subscription_ends_on: null },
+  });
+  const storage = { percent_used: 10, used_bytes: 1, quota_bytes: 10, pay_as_you_go: false, over_quota_bytes: 0 };
+  const due = (s) => notify.due({ currency: 'USD', stations: [s], storage }, now).map((n) => [n.kind, n.threshold, n.period]);
+  assert.deepStrictEqual(due(station({ used_gb: 100, remaining_gb: 400, over_gb: 0, percent_used: 20 })), []);
+  assert.deepStrictEqual(due(station({ used_gb: 400, remaining_gb: 100, over_gb: 0, percent_used: 80 })), [['bandwidth', 75, '2026-03']]);
+  assert.deepStrictEqual(due(station({ used_gb: 500, remaining_gb: 0, over_gb: 0, percent_used: 100 }, 'capped', 'bandwidth')), [['bandwidth', 100, '2026-03']]);
+  assert.deepStrictEqual(due(station({ used_gb: 560, remaining_gb: 0, over_gb: 60, percent_used: 112 }, 'pay_as_you_go')), [['pay_as_you_go', 0, '2026-03']]);
+});
