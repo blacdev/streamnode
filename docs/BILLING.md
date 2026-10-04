@@ -142,9 +142,13 @@ An account's bill:
     "plan": { "max_listeners": 500, "listeners_billed": 500, "bitrate_kbps": 128, "bitrate_source": "detected",
               "price_per_listener": 0.0164, "discount_percent": 10, "price_override": null,
               "subscription_ends_on": "2026-12-31", "days_left": 88 },
-    "usage": { "listeners_now": 212, "peak_listeners_this_month": 431, "percent_of_limit": 86.2,
+    "usage": { "listeners_now": 212, "percent_of_limit": 42.4,
+               "peak_listeners_today": 431, "peak_listeners_last_7_days": 500, "peak_listeners_this_month": 500,
+               "peak_percent_today": 86.2, "peak_percent_last_7_days": 100, "peak_percent_this_month": 100,
+               "at_limit": { "now": false, "minutes_today": 0, "minutes_last_7_days": 17, "minutes_this_month": 17,
+                             "last_reached_at": "2026-10-02T19:41:00.000Z" },
                "listener_hours_this_month": 18250.5, "gigabytes_this_month": 1051.2 },
-    "status": "near_limit",
+    "status": "ok",
     "monthly_price": 7.38
   }],
   "storage": { "used_bytes": 734003200, "quota_bytes": 2147483648, "free_bytes": 1413480448, "percent_used": 34.2, "monthly_price": 1.0 },
@@ -153,8 +157,26 @@ An account's bill:
 }
 ```
 
-`status` is `ok`, `near_limit` (75% of the listener limit or more this month),
-`at_limit`, `expiring` (7 days or fewer left) or `expired`.
+`status` is `ok`, `near_limit`, `at_limit`, `expiring` (7 days or fewer left) or
+`expired`.
+
+**`near_limit` and `at_limit` describe this moment**: the listeners connected now are
+at 75% of the limit or more, or at the limit. A station that was full half an hour ago
+and is half empty now is `ok`. Being full is a passing state: the limit turns
+listeners away only while it is reached, and frees up as soon as others leave.
+
+What the station has reached before is kept beside the status, in `usage`:
+
+| Field | Meaning |
+|---|---|
+| `listeners_now`, `percent_of_limit` | Connected at this moment, and as a share of the limit |
+| `peak_listeners_today`, `_last_7_days`, `_this_month` | The most at once in each span (UTC days), with `peak_percent_...` as a share of the limit |
+| `at_limit.now` | Whether it is full right now |
+| `at_limit.minutes_today`, `_last_7_days`, `_this_month` | How long it has actually been full: the minutes in which it reached its limit |
+| `at_limit.last_reached_at` | When it was last full |
+
+A station that is full for a few minutes a week has room; one that is full for hours a
+day needs a higher limit. That is what the minutes are for.
 
 The amounts are a statement of what the plan costs per month. The gateway does not
 take payment or issue invoices: a billing system reads these figures, and the usage
@@ -184,11 +206,16 @@ What is sent, checked every 10 minutes:
 
 | About | When | Repeats at most |
 |---|---|---|
-| A station's listeners, against its limit (the most at once this month) | From 50% | once a month |
-| | From 75% | once a week |
-| | From 90%, and at the limit | once a day |
+| A station's listeners, against its limit | The most at once this month reached 50% | once a month |
+| | The most at once in the last 7 days reached 75% | once a week |
+| | The most at once today reached 90%, or the limit | once a day |
 | The account's audio storage, against its quota | 50%, 75%, 90%, full | the same |
 | A station's subscription | 30, 14, 7, 3, 2 and 1 days before it ends, on the last day, and the day after | once each |
+
+Each notice is about its own span, so reaching the limit once does not go on producing
+a notice every day: the daily one is sent only on a day the station got that far again.
+The message says how many listeners there were, how long the station was full that
+day, and how many are connected at the time of writing.
 
 `GET /notifications` lists what has been sent, and `POST /notifications/run` sends
 what is due without waiting.

@@ -457,8 +457,21 @@ module.exports = {
         properties: {
           station: { type: 'string' }, name: { type: 'string' }, is_active: { type: 'boolean' },
           plan: { type: 'object', properties: { max_listeners: { type: 'integer' }, listeners_billed: { type: 'integer' }, bitrate_kbps: { type: 'integer' }, bitrate_source: { type: 'string', enum: ['set', 'detected', 'default'] }, price_per_listener: { type: 'number' }, discount_percent: { type: 'number' }, price_override: { type: 'number', nullable: true }, subscription_ends_on: { type: 'string', format: 'date', nullable: true }, days_left: { type: 'integer', nullable: true } } },
-          usage: { type: 'object', properties: { listeners_now: { type: 'integer' }, peak_listeners_this_month: { type: 'integer' }, percent_of_limit: { type: 'number', nullable: true }, listener_hours_this_month: { type: 'number' }, gigabytes_this_month: { type: 'number' } } },
-          status: { type: 'string', enum: ['ok', 'near_limit', 'at_limit', 'expiring', 'expired'] },
+          usage: {
+            type: 'object',
+            properties: {
+              listeners_now: { type: 'integer' },
+              percent_of_limit: { type: 'number', nullable: true, description: 'Listeners connected now, as a share of the limit. null for a station with no limit.' },
+              peak_listeners_today: { type: 'integer' }, peak_listeners_last_7_days: { type: 'integer' }, peak_listeners_this_month: { type: 'integer' },
+              peak_percent_today: { type: 'number', nullable: true }, peak_percent_last_7_days: { type: 'number', nullable: true }, peak_percent_this_month: { type: 'number', nullable: true },
+              at_limit: {
+                type: 'object', nullable: true, description: 'How long the station has actually been full: minutes in which it reached its limit. null for a station with no limit.',
+                properties: { now: { type: 'boolean' }, minutes_today: { type: 'integer' }, minutes_last_7_days: { type: 'integer' }, minutes_this_month: { type: 'integer' }, last_reached_at: { type: 'string', format: 'date-time', nullable: true } },
+              },
+              listener_hours_this_month: { type: 'number' }, gigabytes_this_month: { type: 'number' },
+            },
+          },
+          status: { type: 'string', enum: ['ok', 'near_limit', 'at_limit', 'expiring', 'expired'], description: '`near_limit` and `at_limit` describe the listeners connected at this moment, not a past peak; `usage.at_limit` has the history.' },
           monthly_price: { type: 'number', nullable: true, description: 'null while prices are not set.' },
         },
       },

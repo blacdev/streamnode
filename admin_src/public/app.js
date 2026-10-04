@@ -822,6 +822,15 @@ $('ratesForm').addEventListener('submit', async (event) => {
 
 const STANDING = { ok: ['live', 'Within its limit'], near_limit: ['backup', 'Near its limit'], at_limit: ['off', 'At its limit'], expiring: ['backup', 'Subscription ending'], expired: ['off', 'Subscription ended'] };
 
+// How often a station has actually been full, in words.
+function fullness(at) {
+  if (!at) return '';
+  if (!at.minutes_this_month && !at.now) return 'Has not reached its limit this month';
+  const minutes = (n) => (n >= 120 ? `${(n / 60).toFixed(1)} hours` : `${n} minute${n === 1 ? '' : 's'}`);
+  const last = at.now ? 'now' : `last ${formatDate(at.last_reached_at)}`;
+  return `Full for ${minutes(at.minutes_today)} today, ${minutes(at.minutes_last_7_days)} in 7 days, ${minutes(at.minutes_this_month)} this month (${last})`;
+}
+
 async function loadBilling() {
   if (isAdmin() && !$('billingAccount').options.length) {
     const { users } = await api('GET', '/users');
@@ -846,9 +855,12 @@ async function loadBilling() {
     return h('tr', {},
       h('td', {}, h('div', { class: 'station-name' }, s.name), h('code', {}, `/${s.station}`)),
       h('td', {}, h('span', { class: `status ${kind}` }, label)),
-      h('td', {}, limit
-        ? [`${formatNumber(s.usage.peak_listeners_this_month)} of ${formatNumber(limit)} (${percent}%)`, h('span', { class: `meter${percent >= 75 ? ' warn' : ''}`, role: 'img', 'aria-label': `${percent}% of the limit` }, h('i', { style: `width:${Math.min(100, percent)}%` })), h('small', {}, `${formatNumber(s.usage.listeners_now)} listening now`)]
-        : [`${formatNumber(s.usage.peak_listeners_this_month)}, no limit`, h('small', {}, `${formatNumber(s.usage.listeners_now)} listening now`)]),
+      h('td', { class: 'wrap' }, limit
+        ? [`${formatNumber(s.usage.listeners_now)} of ${formatNumber(limit)} now (${percent}%)`,
+          h('span', { class: `meter${percent >= 75 ? ' warn' : ''}`, role: 'img', 'aria-label': `${percent}% of the limit` }, h('i', { style: `width:${Math.min(100, percent)}%` })),
+          h('small', {}, `Most at once: ${formatNumber(s.usage.peak_listeners_today)} today, ${formatNumber(s.usage.peak_listeners_last_7_days)} in 7 days, ${formatNumber(s.usage.peak_listeners_this_month)} this month`),
+          h('small', {}, fullness(s.usage.at_limit))]
+        : [`${formatNumber(s.usage.listeners_now)} now, no limit`, h('small', {}, `Most at once: ${formatNumber(s.usage.peak_listeners_today)} today, ${formatNumber(s.usage.peak_listeners_this_month)} this month`)]),
       h('td', { class: 'num' }, `${s.plan.bitrate_kbps} kbps`, s.plan.bitrate_source === 'default' && h('small', {}, 'assumed until the station plays')),
       h('td', { class: 'num' }, formatNumber(s.usage.listener_hours_this_month)),
       h('td', { class: 'num' }, `${s.usage.gigabytes_this_month.toFixed(2)} GB`),

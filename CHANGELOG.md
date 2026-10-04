@@ -15,8 +15,18 @@ All notable changes to this project are recorded here. The format follows
   none of which was mistaken for noise. Per station (`noise_detection`, on by default).
 - **Silence level per station** (`silence_threshold_db`), overriding the server's.
 
+- **How long a station has been full.** `usage.at_limit` gives the minutes in which a
+  limited station reached its limit today, in the last 7 days and this month, and when
+  it last did; with the most listeners at once for each span. On the Billing tab too.
+
 ### Changed
 
+- **A station's standing is about now.** `near_limit` and `at_limit` reflect the
+  listeners connected at this moment, not the highest count of the month, so a station
+  that was briefly full no longer shows as "at its limit" for the rest of the month.
+- **Limit notices are about their own span.** The daily notice (90%, 100%) goes out
+  only on a day the station got that far, the weekly (75%) only if it did in the last
+  seven days. Reaching the limit once no longer produces a notice every day.
 - Listening to a stream now costs about 0.3% of a core per station (0.1% with noise
   detection off), up from 0.07%.
 - Changing a station's silence or noise settings reconnects its streams.
