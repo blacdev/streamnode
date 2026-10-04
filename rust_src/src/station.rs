@@ -20,6 +20,10 @@ pub struct Station {
     pub failover_delay: Duration,
     /// Treat a source that sends digital silence as having no audio.
     pub silence_detection: bool,
+    /// Treat a source that sends nothing but steady noise (hiss) as having no audio, however loud.
+    pub noise_detection: bool,
+    /// How quiet counts as silent for this station, in dB; `None` for the server's setting.
+    pub silence_threshold_db: Option<f32>,
     /// Played once when switching away from a failed source.
     pub ident: Option<Media>,
     /// Looped when neither stream has audio.
@@ -65,6 +69,8 @@ impl Station {
             active: take("active").is_none_or(|v| v != "0"),
             failover_delay: Duration::from_secs(take("failover_delay").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(1, 300)),
             silence_detection: take("silence").is_none_or(|v| v != "0"),
+            noise_detection: take("noise").is_none_or(|v| v != "0"),
+            silence_threshold_db: take("silence_db").and_then(|v| v.parse::<f32>().ok()).map(|db| db.clamp(-90.0, -10.0)),
             ident,
             fallback,
         })
@@ -109,7 +115,8 @@ mod tests {
     fn failover_settings_and_media() {
         let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b")])).unwrap();
         assert_eq!(s.failover_delay, Duration::from_secs(6));
-        assert!(s.silence_detection);
+        assert!(s.silence_detection && s.noise_detection);
+        assert_eq!(s.silence_threshold_db, None);
         assert_eq!((s.ident, s.fallback), (None, None));
 
         let s = Station::from_fields(

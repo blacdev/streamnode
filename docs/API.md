@@ -99,6 +99,8 @@ curl -X PUT $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: appl
 | `external_id` | No | Administrators only. Your identifier for the station |
 | `failover_delay_secs` | No | Seconds without audio before moving to the next source. 1 to 300, default 6. Returning to a stream that is back is immediate |
 | `silence_detection` | No | `true` (default) treats a stream that sends only silence as having no audio |
+| `noise_detection` | No | `true` (default) treats a stream that sends nothing but hiss or other steady noise, however loud, as having no audio |
+| `silence_threshold_db` | No | How quiet counts as silent for this station, -90 to -10. `null` (default) uses the server's setting, -55 |
 | `ident_file_id` | No | An [uploaded file](#audio-files) played once at every change of source: on leaving a failed stream and on returning to one that is back. `null` clears |
 | `fallback_file_id` | No | An uploaded file looped while neither stream has audio. `null` clears |
 | `user_id` | No | Administrators only. Owning account; defaults to the caller |

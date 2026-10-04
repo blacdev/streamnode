@@ -69,20 +69,42 @@ before: listeners are released after a few failed attempts and the dashboard sho
 
 - the stream cannot be reached, ends, or stops sending data; or
 - the stream keeps sending but carries **silence** (for example the studio feed into
-  the encoder was unplugged).
+  the encoder was unplugged); or
+- the stream keeps sending but carries **nothing but hiss or other steady noise**,
+  however loud.
 
-Silence is found by listening. Twice a second the gateway decodes a few frames of the
-stream (about a twentieth of a second of audio) and measures how loud they are;
-anything quieter than **-55 dB** below full level counts as silence. That covers true
-digital silence and also what an encoder sends when nothing is plugged in: the faint
-hiss of an open input. What is decoded is only measured and then discarded. Listeners
-always receive the stream's own bytes, untouched.
+Both are found by listening. Twice a second the gateway decodes a few frames of the
+stream (about a tenth of a second of audio). What is decoded is only measured and then
+discarded: listeners always receive the stream's own bytes, untouched.
 
-Because only a small sample is decoded, this costs little: under a thousandth of one
-processor core per station on air. The level is set for the whole server with
-`SILENCE_THRESHOLD_DB`; a station that plays very quiet material (below -55 dB for
-longer than its failover delay) can have silence detection switched off, as can a
-station that broadcasts silence on purpose.
+**Silence** is a matter of level: anything quieter than **-55 dB** below full level
+counts as silence. That covers true digital silence and the faint hiss of an open
+input.
+
+**Noise** is not a matter of level, because loud hiss is as loud as quiet music. Two
+things give it away together: it has no pitch (its energy is spread evenly over all
+frequencies, where music and voices have distinct tones), and it never changes (its
+spectrum keeps the same shape from one moment to the next). Programme can be either
+for an instant, a cymbal crash or a held note, but not both for seconds on end. A
+stream that is both for four seconds running is treated as having no audio. Hiss that
+dips or fades and comes back, as a looping noise track does, is still recognised.
+
+Per station, in its edit form or with the API:
+
+| Setting | Field | Default |
+|---|---|---|
+| Treat silence as no audio | `silence_detection` | on |
+| Treat hiss and steady noise as no audio | `noise_detection` | on |
+| Silence level | `silence_threshold_db` | the server's `SILENCE_THRESHOLD_DB`, -55 |
+
+Switch noise detection off for a station that broadcasts noise-like sound on purpose
+for seconds at a time: rain or sea ambience, long applause, static as an effect. Raise
+the silence level (towards 0) only as a last resort for a station whose "silence" is
+louder than -55 dB: quiet programme below the new level is then silence too.
+
+Listening this way costs about 0.3% of one processor core per station on air (0.1%
+with noise detection off). Changing any of these settings reconnects the station's
+streams, so that they are judged on the new terms.
 
 ### The failover delay
 
@@ -274,8 +296,11 @@ back, nothing is changed. The copies in Dropbox are left there.
 
 - Fades are a fade-out followed by a fade-in, not an overlap of the two, and are
   available on MP3 streams only.
-- Silence detection samples the stream twice a second rather than listening to all of
-  it, and judges by peak level only. Sound quieter than the threshold is silence to it.
+- Silence and noise detection sample the stream twice a second rather than listening
+  to all of it. Silence is judged by peak level: sound quieter than the threshold is
+  silence to it. Noise is judged by pitch and steadiness: deep rumble or hum with a
+  clear tone to it is not recognised as noise, and a station whose programme really is
+  steady pitchless sound needs noise detection switched off.
 - The ident is one per station and is used for every change, in both directions.
 - The ident is heard once per change. When the primary fails and the backup cannot be
   reached either, the station goes from one ident straight to the fallback file; if the

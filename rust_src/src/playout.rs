@@ -136,25 +136,55 @@ impl LiveSource {
     }
 }
 
+/// What a station asks to be listened for.
+#[derive(Clone, Copy)]
+struct Listening {
+    silence: bool,
+    noise: bool,
+    threshold_db: f32,
+}
+
+impl Listening {
+    fn of(station: &Station, cfg: &crate::config::Config) -> Self {
+        Self {
+            silence: station.silence_detection,
+            noise: station.noise_detection,
+            threshold_db: station.silence_threshold_db.unwrap_or(cfg.silence_threshold_db),
+        }
+    }
+}
+
+enum Heard {
+    Sound,
+    Silence,
+    /// Loud, but nothing but steady noise, and it has been for the last few seconds.
+    Noise,
+    /// These frames were not among the few that are listened to.
+    Unknown,
+}
+
+/// How long noise has been going on by the time it is recognised as noise.
+const NOISE_WINDOW: Duration = Duration::from_secs(4);
+
 impl LiveSource {
-    /// Whether what just arrived is audio, for the dead-air check: `Some(true)`
-    /// when sound was heard, `Some(false)` when silence was, and `None` when
-    /// these frames were not among the few that are listened to.
-    fn heard(&mut self, frames: &[Frame], raw: &[Bytes], detect_silence: bool, threshold_db: f32) -> Option<bool> {
+    /// Whether what just arrived is audio, for the dead-air check.
+    fn heard(&mut self, frames: &[Frame], raw: &[Bytes], listening: Listening) -> Heard {
         if !raw.is_empty() {
-            return Some(true);
+            return Heard::Sound;
         }
-        let first = frames.first()?;
-        if !detect_silence {
-            return Some(true);
+        let Some(first) = frames.first() else { return Heard::Unknown };
+        if !listening.silence {
+            return Heard::Sound;
         }
-        let detector = self.detector.get_or_insert_with(|| Detector::new(first.format.codec, first.format.sample_rate, threshold_db));
+        let detector = self.detector.get_or_insert_with(|| Detector::new(first.format.codec, first.format.sample_rate, listening.threshold_db, listening.noise));
         match detector.feed(frames) {
-            Verdict::Loud => Some(true),
-            Verdict::Quiet => Some(false),
-            Verdict::Pending => None,
+            Verdict::Loud => Heard::Sound,
+            Verdict::Quiet => Heard::Silence,
+            Verdict::Noise => Heard::Noise,
+            Verdict::Pending => Heard::Unknown,
             // Without a decoder, the frames' own marking of digital silence is what there is.
-            Verdict::Unavailable => Some(frames.iter().any(|frame| !frame.silent)),
+            Verdict::Unavailable if frames.iter().any(|frame| !frame.silent) => Heard::Sound,
+            Verdict::Unavailable => Heard::Silence,
         }
     }
 
@@ -170,7 +200,7 @@ impl LiveSource {
 
 /// Watches a source in the background and hands it over as soon as it is
 /// delivering real audio again, so the relay can cut to it without a gap.
-fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, detect_silence: bool) -> mpsc::Receiver<LiveSource> {
+fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, listening: Listening) -> mpsc::Receiver<LiveSource> {
     let (tx, rx) = mpsc::channel(1);
     tokio::spawn(async move {
         let hold = RETURN_CONFIRM;
@@ -197,8 +227,8 @@ fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, detect
                     if frames.is_empty() && raw.is_empty() {
                         continue;
                     }
-                    match live.heard(&frames, &raw, detect_silence, hub.cfg.silence_threshold_db) {
-                        Some(true) => {
+                    match live.heard(&frames, &raw, listening) {
+                        Heard::Sound => {
                             if good_since.get_or_insert_with(Instant::now).elapsed() >= hold {
                                 // What was just read is the first thing listeners hear of it.
                                 live.pending = std::mem::take(&mut frames);
@@ -207,8 +237,8 @@ fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, detect
                                 return;
                             }
                         }
-                        Some(false) => good_since = None,
-                        None => {}
+                        Heard::Silence | Heard::Noise => good_since = None,
+                        Heard::Unknown => {}
                     }
                 }
             }
@@ -517,7 +547,7 @@ impl RelayTask {
 
     /// Starts or stops the background watchers according to what is playing.
     fn watch(&mut self, playing: Source) {
-        let detect = self.station.silence_detection;
+        let detect = Listening::of(&self.station, &self.hub.cfg);
         if playing == Source::Primary {
             self.primary_watch = None;
             self.backup_watch = None;
@@ -668,6 +698,7 @@ impl RelayTask {
         let mut ticks = 0u32;
         let mut last_sound = Instant::now();
         let mut last_data = Instant::now();
+        let mut noise = false;
         let (mut frames, mut raw) = (Vec::new(), Vec::new());
         let info = self.relay.current_info();
 
@@ -680,14 +711,23 @@ impl RelayTask {
                         }
                         if !frames.is_empty() || !raw.is_empty() {
                             last_data = Instant::now();
-                            match live.heard(&frames, &raw, self.station.silence_detection, self.hub.cfg.silence_threshold_db) {
-                                Some(true) => {
+                            match live.heard(&frames, &raw, Listening::of(&self.station, &self.hub.cfg)) {
+                                Heard::Sound => {
                                     last_sound = last_data;
                                     self.quiet = false;
+                                    noise = false;
                                     self.relay.touch_audio();
                                 }
-                                Some(false) => self.quiet = true,
-                                None => {}
+                                Heard::Silence => self.quiet = true,
+                                Heard::Noise => {
+                                    // It took this long to be sure, so that is how long there has been nothing to hear.
+                                    if let Some(began) = last_data.checked_sub(NOISE_WINDOW) {
+                                        last_sound = last_sound.min(began);
+                                    }
+                                    self.quiet = true;
+                                    noise = true;
+                                }
+                                Heard::Unknown => {}
                             }
                             let fresh = live.newly_decoded();
                             self.decoded = fresh.or(self.decoded);
@@ -729,7 +769,13 @@ impl RelayTask {
 
                 _ = tick.tick() => {
                     if last_sound.elapsed() >= delay {
-                        let why = if last_data.elapsed() >= delay { "the source stopped sending" } else { "the source is sending silence" };
+                        let why = if last_data.elapsed() >= delay {
+                            "the source stopped sending"
+                        } else if noise {
+                            "the source is sending only noise"
+                        } else {
+                            "the source is sending silence"
+                        };
                         self.last_error = format!("{}: {why}", source.as_str());
                         return Outcome::Dead(source, why);
                     }
@@ -1023,7 +1069,13 @@ impl RelayTask {
             let mut redis = self.hub.redis.clone();
             match Station::load(&mut redis, &self.relay.slug).await {
                 Ok(Some(fresh)) if fresh.active => {
-                    let rewired = fresh.primary != self.station.primary || fresh.backup != self.station.backup;
+                    // New sources, or a new idea of what counts as audio on them: either way the
+                    // streams are connected to afresh, so that they are listened to on the new terms.
+                    let rewired = fresh.primary != self.station.primary
+                        || fresh.backup != self.station.backup
+                        || fresh.silence_detection != self.station.silence_detection
+                        || fresh.noise_detection != self.station.noise_detection
+                        || fresh.silence_threshold_db != self.station.silence_threshold_db;
                     self.station = fresh;
                     self.load_ident();
                     if rewired {

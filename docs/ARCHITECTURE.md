@@ -83,10 +83,20 @@ relayed as opaque bytes.
 Whether a stream is silent is found by decoding a sample of it (`detector.rs`, using
 FFmpeg's MP3 and AAC decoders through the `ffmpeg-next` crate). Twice a second the
 decoder is reset and given a short run of consecutive frames: enough lead-in for the
-MP3 bit reservoir and the codecs' frame overlap, then two frames whose peak level is
-measured against `SILENCE_THRESHOLD_DB`. The other nine tenths of the stream are never
-decoded, which keeps the cost near 0.07% of a core per station. The decoded audio is
-discarded; it also tells the engine whether an AAC stream is HE-AAC. If a stream
+MP3 bit reservoir and the codecs' frame overlap, then about a tenth of a second whose
+peak level is measured against the silence threshold. Most of the stream is never
+decoded. The decoded audio is discarded; it also tells the engine whether an AAC
+stream is HE-AAC.
+
+The same samples show whether a loud stream is only noise. Each measurement takes two
+2048-point spectra and keeps two figures: spectral flatness between 200 Hz and 8 kHz
+(0 for a tone, towards 1 for white noise) and the share of the energy in each of five
+bands. Eight measurements in a row (four seconds) that are all flat (0.1 or more) and
+in which no band's share moves by more than 6 dB are noise. In recordings, noise
+stayed within 4 dB and the steadiest pitchless music moved by 11 dB. The time it took
+to be sure is counted as time without audio, so the failover delay still runs from
+when the noise began. Cost: about 0.3% of a core per station with noise detection, 0.1%
+without. If a stream
 cannot be decoded, the frames' own marking of digital silence is used instead.
 
 Only those two decoders are compiled, from FFmpeg's source, and linked into the engine

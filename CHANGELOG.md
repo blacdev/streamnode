@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-10-04
+
+### Added
+
+- **Hiss and steady noise count as no audio, however loud.** A stream that is
+  pitchless and unchanging for four seconds is recognised as noise: the engine looks at
+  the spectrum of the samples it already decodes. Tuned on a recording of a station
+  that was looping loud hiss, and checked against music, jazz, classical and speech,
+  none of which was mistaken for noise. Per station (`noise_detection`, on by default).
+- **Silence level per station** (`silence_threshold_db`), overriding the server's.
+
+### Changed
+
+- Listening to a stream now costs about 0.3% of a core per station (0.1% with noise
+  detection off), up from 0.07%.
+- Changing a station's silence or noise settings reconnects its streams.
+
 ## [2.10.0] - 2026-10-04
 
 ### Added

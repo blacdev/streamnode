@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -31,6 +31,9 @@ function profile(row, media) {
     ...out,
     failover_delay: String(row.failover_delay_secs),
     silence: row.silence_detection ? '1' : '0',
+    noise: row.noise_detection ? '1' : '0',
+    // Empty leaves the engine on its own setting.
+    silence_db: row.silence_threshold_db === null ? '' : String(row.silence_threshold_db),
     name: row.name,
     primary: row.primary_url,
     backup: row.backup_url || '',
@@ -174,6 +177,8 @@ function present(row, live, req) {
     is_active: row.is_active,
     failover_delay_secs: row.failover_delay_secs,
     silence_detection: row.silence_detection,
+    noise_detection: row.noise_detection,
+    silence_threshold_db: row.silence_threshold_db,
     ident_file_id: row.ident_file_id,
     fallback_file_id: row.fallback_file_id,
     billing_bitrate_kbps: row.billing_bitrate_kbps,

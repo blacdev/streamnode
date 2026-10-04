@@ -287,6 +287,8 @@ async function openStationForm(station) {
   if (station) {
     for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id']) form.elements[field].value = station[field] ?? '';
     form.elements.silence_detection.checked = station.silence_detection;
+    form.elements.noise_detection.checked = station.noise_detection;
+    form.elements.silence_threshold_db.value = station.silence_threshold_db ?? '';
   }
   $('stationDialog').showModal();
 }
@@ -350,6 +352,8 @@ $('stationForm').addEventListener('submit', async (event) => {
   }
   body.failover_delay_secs = Number(form.elements.failover_delay_secs.value);
   body.silence_detection = form.elements.silence_detection.checked;
+  body.noise_detection = form.elements.noise_detection.checked;
+  body.silence_threshold_db = form.elements.silence_threshold_db.value === '' ? null : Number(form.elements.silence_threshold_db.value);
   body.ident_file_id = Number(form.elements.ident_file_id.value) || null;
   body.fallback_file_id = Number(form.elements.fallback_file_id.value) || null;
   if (isAdmin()) {
