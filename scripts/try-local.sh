@@ -192,7 +192,7 @@ Things to try:
   2. Failover: while it plays, run   scripts/try-local.sh primary-down
      After 6 seconds (the station's failover delay) the tone changes (backup
      stream) and the station shows "On air (backup)".
-     Run   scripts/try-local.sh primary-up   and it returns within about 3 seconds,
+     Run   scripts/try-local.sh primary-up   and it returns after about 6 seconds,
      fading out the backup and fading the primary in.
      Silence counts too:   scripts/try-local.sh primary-silent
   2b. Ident and fallback audio: on the dashboard, Stations > Demo Station > Edit.
@@ -201,7 +201,7 @@ Things to try:
        scripts/try-local.sh primary-down    -> 6 s, the ident, then the backup
        scripts/try-local.sh backup-down     -> 6 s, the ident, then the fallback file
                                                ("On air (fallback audio)")
-       scripts/try-local.sh primary-up      -> within about 3 s: the ident, then the live stream
+       scripts/try-local.sh primary-up      -> after about 6 s: the ident, then the live stream
      The other demo-samples files are in other formats: each is turned down with
      the reason and an offer to convert it. Tick "Convert uploads..." and upload
      one again: it is converted to the stream's format and loudness.

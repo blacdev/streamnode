@@ -98,7 +98,7 @@ FFmpeg installed.
 | Primary fails on connect | Backup is tried immediately |
 | The playing stream drops, stalls or goes silent | It is retried for the station's failover delay (6 s by default). If it returns, nothing else happens |
 | Still no audio after the delay | The ident plays, then the next source: the backup stream, else the fallback file, looped and paced in real time |
-| Running on the backup or the fallback file | Streams that are down are probed in the background every 2 s; one that has delivered a second of real audio is returned to at once: the ident first if the station has one, otherwise (MP3) a fade out and in made by lowering each frame's `global_gain`, with no decoding |
+| Running on the backup or the fallback file | Streams that are down are probed in the background every 2 s; one that has delivered five seconds of real audio is returned to: the ident first if the station has one, otherwise (MP3) a 1.5 s fade out and a 1.5 s fade in made by lowering each frame's `global_gain`, with no decoding |
 | Any join into an MP3 stream | Frames whose data begins before the join (the bit reservoir) are sent with empty side information, so players decode silence for about 26 ms each instead of noise |
 | Nothing left to play | Sources are retried with backoff; after `STATION_FAIL_ROUNDS` the station is marked silent on that server and its listeners released |
 | Both down, new listener | Hears the fallback file if there is one; otherwise receives `502` after the first failed round, or `504` if the attempt outlasts `READY_TIMEOUT_SECS` |

@@ -10,7 +10,8 @@
 //! changed): the source is gone, sends nothing, or sends digital silence. A
 //! source that drops is retried for that long before it is given up on. The
 //! delay applies to leaving a source only: a source that is back is returned to
-//! as soon as it has delivered a second of real audio.
+//! once it has delivered five seconds of real audio, so that a stream which
+//! only bursts into life for a moment does not pull listeners back.
 //!
 //! Nothing is decoded or re-encoded. Every switch happens between whole audio
 //! frames, which is why idents and fallback files must be in the same format
@@ -41,10 +42,10 @@ use crate::{
 };
 
 /// How much of a file is read ahead of what has been played.
-const FILE_LEAD: Duration = Duration::from_secs(1);
+const FILE_LEAD: Duration = Duration::from_secs(2);
 /// How long a stream that was down must deliver real audio before the station
 /// returns to it: long enough to know it is really back, short enough to be at once.
-const RETURN_CONFIRM: Duration = Duration::from_secs(1);
+const RETURN_CONFIRM: Duration = Duration::from_secs(5);
 /// How often a stream that is down is tried again while something else plays.
 /// This much audio without one recognisable frame means the stream is not
 /// what its label says. A real stream never goes a tenth as long without one.
@@ -56,9 +57,13 @@ const BACKUP_CHECK: Duration = Duration::from_secs(3);
 const LEVEL_STEP_DB: f32 = 0.5;
 const LEVEL_EVERY: Duration = Duration::from_secs(30);
 const RECHECK: Duration = Duration::from_secs(2);
-/// A fade lasts this many half-frames (granules), each 1.5 dB apart: about half
-/// a second at 44.1 kHz, down to or up from 60 dB below full level.
-const FADE_GRANULES: u32 = 40;
+/// How long a fade out, and a fade in, lasts.
+const FADE: Duration = Duration::from_millis(1500);
+/// How far down a fade goes, in the 1.5 dB steps an MP3 frame states its level
+/// in: 42 dB, below which programme audio is as good as inaudible. Going
+/// further would spend the last part of the fade on silence, and make it
+/// sound shorter than it is.
+const FADE_STEPS: u64 = 28;
 /// Idents are short; anything larger is not loaded.
 const MAX_IDENT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -286,7 +291,7 @@ pub struct RelayTask {
     /// Makes the first frames after each cut decodable.
     entry: Entry,
     /// A fade in progress: whether it is rising, and how many granules it has covered.
-    fade: Option<(bool, u32)>,
+    fade: Option<(bool, u64)>,
     /// The last thing sent to listeners was silence.
     out_silent: bool,
     /// The bitrate of the stream's first frame, to notice a variable bitrate.
@@ -542,15 +547,18 @@ impl RelayTask {
                 continue;
             }
             let faded = self.fade.and_then(|(rising, covered)| {
-                // MPEG-1 frames hold two granules, MPEG-2 and 2.5 frames one.
+                // `covered` is how much of the fade has been played, in microseconds.
+                // MPEG-1 frames hold two granules, MPEG-2 and 2.5 frames one; each has its own level.
                 let granules = if frame.data.len() >= 2 && (frame.data[1] >> 3) & 3 == 3 { 2 } else { 1 };
-                let level = |granule: u32| {
-                    let at = (covered + granule).min(FADE_GRANULES);
-                    (if rising { FADE_GRANULES - at } else { at + 1 }).min(FADE_GRANULES) as u8
+                let whole = FADE.as_micros() as u64;
+                let level = |granule: u64| {
+                    let at = (covered + frame.duration_us * granule / granules).min(whole);
+                    let down = (at * FADE_STEPS + whole / 2) / whole;
+                    (if rising { FADE_STEPS - down } else { down }) as u8
                 };
-                let covered = covered + granules;
+                let covered = covered + frame.duration_us;
                 // A fade out holds its lowest level until the cut; a fade in ends at full level.
-                self.fade = (!rising || covered < FADE_GRANULES).then_some((rising, covered));
+                self.fade = (!rising || covered < whole).then_some((rising, covered));
                 attenuate(frame, [level(0), level(1)])
             });
             match faded {
@@ -745,10 +753,10 @@ impl RelayTask {
                 better = recv(&mut self.primary_watch), if source != Source::Primary => {
                     tracing::info!(station = %self.relay.slug, "primary stream is back: returning to it");
                     if self.fades() {
-                        // Fade this stream out over its next half second, then bring the primary in.
+                        // Fade this stream out over the next second and a half, then bring the primary in.
                         self.fade = Some((false, 0));
-                        let until = Instant::now() + Duration::from_millis(900);
-                        while self.fade.is_some_and(|(_, covered)| covered < FADE_GRANULES) {
+                        let until = Instant::now() + FADE + Duration::from_millis(700);
+                        while self.fade.is_some_and(|(_, covered)| covered < FADE.as_micros() as u64) {
                             frames.clear();
                             raw.clear();
                             match timeout_at(until, live.next(&mut frames, &mut raw)).await {
@@ -977,8 +985,10 @@ impl RelayTask {
                 } => {
                     tracing::info!(station = %self.relay.slug, source = better.source.as_str(), "a live stream is back: leaving the fallback file");
                     if self.fades() {
-                        // Fade the file out over its next half second, then bring the stream in.
-                        let tail: Vec<Frame> = queue.drain(..queue.len().min(FADE_GRANULES as usize / 2)).collect();
+                        // Fade the file out over its next second and a half, then bring the stream in.
+                        let mut length = 0;
+                        let frames = queue.iter().take_while(|frame| { let more = length < FADE.as_micros() as u64; length += frame.duration_us; more }).count();
+                        let tail: Vec<Frame> = queue.drain(..frames).collect();
                         self.fade = Some((false, 0));
                         self.publish_frames(&tail);
                         self.fade = Some((true, 0));
