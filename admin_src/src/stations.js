@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -39,9 +39,21 @@ function profile(row, media) {
     backup: row.backup_url || '',
     metadata_url: row.metadata_url || '',
     artwork_url: row.artwork_url || '',
-    max_listeners: String(row.max_listeners),
-    active: row.is_active ? '1' : '0',
+    // What the engines enforce. With pay as you go, listeners beyond the subscription's
+    // number are let in, up to the ceiling if there is one (0 is no limit at all).
+    max_listeners: String(enforcedListeners(row)),
+    // A capped bandwidth plan that has used its month's allowance is off the air, like a suspended station.
+    active: row.is_active && !row.blocked ? '1' : '0',
   };
+}
+
+// How many listeners the engines let in at once. A bandwidth plan has no such
+// number, and pay as you go lets listeners in beyond the subscription's; both
+// stop only at the ceiling, if one is set (0 is no limit at all).
+function enforcedListeners(row) {
+  if (row.plan_type === 'bandwidth') return row.listener_ceiling || 0;
+  if (row.overage_mode === 'pay_as_you_go' && row.max_listeners > 0) return row.listener_ceiling || 0;
+  return row.max_listeners;
 }
 
 // The engine routes from Redis only, so every change is mirrored there.
@@ -185,6 +197,12 @@ function present(row, live, req) {
     discount_percent: Number(row.discount_percent),
     price_override: row.price_override === null ? null : Number(row.price_override),
     subscription_ends_on: row.subscription_ends_on,
+    overage_mode: row.overage_mode,
+    listener_ceiling: row.listener_ceiling,
+    plan_type: row.plan_type,
+    bandwidth_gb: row.bandwidth_gb === null ? null : Number(row.bandwidth_gb),
+    // Why the station is off the air although it is not suspended: 'bandwidth' when its month's allowance is used up.
+    blocked: row.blocked,
     stream_url: stream,
     playlist_urls: { m3u: `${stream}.m3u`, pls: `${stream}.pls` },
     live: live || { ...OFFLINE },

@@ -89,6 +89,7 @@
       <section id="tab-billing" hidden>
         <div class="bar"><h2>Billing and limits</h2>
           <span id="billingMonth" class="muted"></span>
+          <button id="billingSummary" data-admin>Email a summary</button>
           <select id="billingAccount" data-admin aria-label="Account"></select>
         </div>
         <div id="billingTiles" class="tiles"></div>
@@ -129,11 +130,36 @@
             <label>Its network port, in Mbit/s <input name="server_port_mbps" type="number" min="1" class="short" required></label>
             <label>Margin on top of cost, in percent <input name="margin_percent" type="number" min="0" step="0.1" class="short" required></label>
             <label>Storage, per GB per month <input name="storage_price_per_gb" type="number" min="0" step="0.01" class="short" required></label>
+            <h3>Pay as you go</h3>
+            <p class="muted">For stations and accounts set to pay as you go: what is used beyond the subscription is let through and charged, instead of being refused.</p>
+            <label>For every this many listeners over the subscription <input name="payg_block_listeners" type="number" min="1" class="short" required>
+              <small>A part of that many counts as a whole: with 10, 11 extra listeners are two lots.</small></label>
+            <label>for every this many minutes <input name="payg_block_minutes" type="number" min="1" class="short" required></label>
+            <label>charge <input name="payg_price_per_block" type="number" min="0" step="0.0001" class="short" required></label>
+            <label>Storage beyond the quota, per GB per month <input name="payg_storage_price_per_gb" type="number" min="0" step="0.01" class="short" required></label>
+            <h3>Bandwidth plans</h3>
+            <label>Per GB of a plan's monthly data <input name="bandwidth_price_per_gb" type="number" min="0" step="0.0001" class="short" required>
+              <small>0 works it out from the costs above, so that a listener who never leaves costs the same on either kind of plan.</small></label>
+            <label>Per GB beyond the plan, on pay as you go <input name="payg_bandwidth_price_per_gb" type="number" min="0" step="0.0001" class="short" required>
+              <small>0 charges the same as inside the plan.</small></label>
             <p id="ratesError" class="error" role="alert"></p>
             <div class="actions left"><button class="primary">Save</button></div>
           </form>
           <div class="tablewrap"><table id="ratesTable"></table></div>
           <p id="ratesNote" class="muted"></p>
+        </div>
+        <div class="card wide-card">
+          <h3>Notices</h3>
+          <form id="noticesForm">
+            <label class="check"><input type="checkbox" name="automatic"> Send notices by themselves</label>
+            <p class="muted">Switched off, nothing is sent unless it is asked for: with <em>Email a summary</em> on the Billing tab, or through the API.</p>
+            <label>Levels at which a notice is sent, in percent of the limit <input name="levels" placeholder="50, 75, 90, 100">
+              <small>From 90% a notice may repeat daily, from 75% weekly, below that monthly.</small></label>
+            <label>Fewest days between two notices about the same thing <input name="min_days_between" type="number" min="0" max="365" class="short">
+              <small>For example 7: an account hears about a station's listeners at most once a week, however close to the limit it is. Reminders that a subscription is ending are not held back.</small></label>
+            <p id="noticesError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button></div>
+          </form>
         </div>
         <div class="card wide-card">
           <h3>Email</h3>
@@ -300,8 +326,24 @@
         <legend>Set by the administrator</legend>
         <label>Account <select name="user_id"></select>
           <small>Moving a station to another account clears its ident and fallback audio, which belong to an account.</small></label>
-        <label>Listener limit <input name="max_listeners" type="number" min="0" value="0">
+        <label>Plan
+          <select name="plan_type">
+            <option value="listeners">By listeners: pays for a number of listeners at once</option>
+            <option value="bandwidth">By bandwidth: pays for data each month, with no limit on listeners</option>
+          </select>
+          <small>The same stream can be set up as several stations, each on its own plan.</small></label>
+        <label id="planListeners">Listeners the plan covers <input name="max_listeners" type="number" min="0" value="0">
           <small>0 for unlimited; the station is then charged for the most listeners it had in the month.</small></label>
+        <label id="planBandwidth">Data the plan covers each month, in GB <input name="bandwidth_gb" type="number" min="0.01" step="0.01">
+          <small>Starts again on the first of each month. How long it lasts depends on how many listen and for how long.</small></label>
+        <label>When the plan is used up
+          <select name="overage_mode">
+            <option value="capped">Capped: no more until there is room (listeners) or the new month (bandwidth)</option>
+            <option value="pay_as_you_go">Pay as you go: it carries on, and the extra is charged</option>
+          </select></label>
+        <label>Never more listeners at once than <input name="listener_ceiling" type="number" min="1" placeholder="No ceiling">
+          <small>For pay as you go and for bandwidth plans, which have no listener limit of their own. Leave empty for no ceiling.</small></label>
+        <p id="planQuote" class="notice prose" hidden></p>
         <label>Bitrate to charge at, in kbps <input name="billing_bitrate_kbps" type="number" min="8" max="2000" placeholder="The stream's own">
           <small>Leave empty to use the bitrate detected on the stream.</small></label>
         <label>Discount, in percent <input name="discount_percent" type="number" min="0" max="100" step="0.1" value="0"></label>

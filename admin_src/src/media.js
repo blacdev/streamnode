@@ -57,14 +57,28 @@ async function quotaBytes(user) {
   return mb * MB;
 }
 
+// The most an account may store. Normally its quota; with pay as you go for
+// storage, its ceiling instead, or no limit when there is none.
+async function capBytes(user) {
+  const quota = await quotaBytes(user);
+  if (quota === null) return null;
+  const { rows } = await db.query('SELECT storage_overage, storage_ceiling_mb FROM users WHERE id = $1', [user.id]);
+  if (!rows[0] || !rows[0].storage_overage) return quota;
+  return rows[0].storage_ceiling_mb === null ? null : Math.max(quota, rows[0].storage_ceiling_mb * MB);
+}
+
 async function usedBytes(userId, client = db) {
   const { rows } = await client.query('SELECT COALESCE(SUM(size_bytes), 0)::bigint AS used FROM media_files WHERE user_id = $1', [userId]);
   return rows[0].used;
 }
 
 async function usage(user) {
-  const [quota, used] = await Promise.all([quotaBytes(user), usedBytes(user.id)]);
-  return { used_bytes: used, quota_bytes: quota, free_bytes: quota === null ? null : Math.max(0, quota - used) };
+  const [quota, cap, used] = await Promise.all([quotaBytes(user), capBytes(user), usedBytes(user.id)]);
+  if (cap !== quota) {
+    // Pay as you go: there is room beyond the quota, and what is used beyond it is charged.
+    return { used_bytes: used, quota_bytes: quota, free_bytes: cap === null ? null : Math.max(0, cap - used), limit_bytes: cap, over_quota_bytes: Math.max(0, used - quota), pay_as_you_go: true };
+  }
+  return { used_bytes: used, quota_bytes: quota, free_bytes: quota === null ? null : Math.max(0, quota - used), limit_bytes: quota, over_quota_bytes: 0, pay_as_you_go: false };
 }
 
 function overQuota(fileBytes, used, quota) {
@@ -150,7 +164,7 @@ async function receive(req, limit, onTooLarge) {
  * the file is also checked for that use on that station before it is kept.
  */
 async function create(req, owner, { name, originalName, use, station, consent = false }) {
-  const quota = await quotaBytes(owner);
+  const quota = await capBytes(owner);
   const used = await usedBytes(owner.id);
   const declared = parseInt(req.get('content-length'), 10);
   const disk = await fs.promises.statfs(config.filesDir).catch(() => null);
@@ -365,7 +379,7 @@ async function finish(id) {
   const dropOriginal = Boolean(original && elsewhere.rowCount === 0);
 
   const { rows: [owner] } = await db.query('SELECT id, role, storage_quota_mb FROM users WHERE id = $1', [row.user_id]);
-  const quota = await quotaBytes(owner);
+  const quota = await capBytes(owner);
   const used = (await usedBytes(row.user_id)) - row.size_bytes - (dropOriginal ? original.size_bytes : 0);
   if (quota !== null && used + bytes > quota) {
     return fail(`the converted file (${size(bytes)}) does not fit in the account's remaining storage`);
@@ -588,6 +602,6 @@ async function checkAssignment(fields, ownerId, slug) {
 }
 
 module.exports = {
-  COLUMNS, init, create, convertExisting, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
+  COLUMNS, init, create, convertExisting, capBytes, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
   stationsUsing, bringHome, present, size,
 };

@@ -14,6 +14,7 @@ const updates = require('./src/updates');
 const media = require('./src/media');
 const capacity = require('./src/capacity');
 const notify = require('./src/notify');
+const billing = require('./src/billing');
 const routes = require('./src/routes');
 const openapi = require('./src/openapi');
 const { errorHandler } = require('./src/errors');
@@ -92,6 +93,9 @@ async function main() {
   // What a listener costs is learned from the running servers, a little at a time.
   every(30 * 1000, 'costs', capacity.sample);
   every(10 * 60 * 1000, 'notices', notify.run);
+  // Bandwidth plans that have used their month are taken off the air, and put back when the month turns.
+  await billing.enforce().catch((err) => console.error('[billing]', err.message));
+  every(60 * 1000, 'bandwidth', billing.enforce);
   media.sync().catch((err) => console.error('[files]', err.message));
   every(config.stationSyncMs, 'files', media.sync);
   if (updates.enabled()) {

@@ -70,7 +70,7 @@ function checkSlug(value) {
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const blank = (v) => v === null || v === undefined || v === '';
 
-const ADMIN_ONLY = ['user_id', 'max_listeners', 'external_id', 'is_active', 'billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on'];
+const ADMIN_ONLY = ['user_id', 'max_listeners', 'external_id', 'is_active', 'billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on', 'overage_mode', 'listener_ceiling', 'plan_type', 'bandwidth_gb'];
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 const isPercent = (value) => typeof value === 'number' && value >= 0 && value <= 100;
 
@@ -175,6 +175,24 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
       else if (typeof body.price_override !== 'number' || body.price_override < 0 || body.price_override > 1e9) fail('price_override', 'must be a number of 0 or more, or null for the calculated price');
       else out.price_override = body.price_override;
     }
+    if (has(body, 'plan_type')) {
+      if (body.plan_type !== 'listeners' && body.plan_type !== 'bandwidth') fail('plan_type', 'must be "listeners" or "bandwidth"');
+      else out.plan_type = body.plan_type;
+    }
+    if (has(body, 'bandwidth_gb')) {
+      if (blank(body.bandwidth_gb)) out.bandwidth_gb = null;
+      else if (typeof body.bandwidth_gb !== 'number' || !(body.bandwidth_gb > 0) || body.bandwidth_gb > 1e9) fail('bandwidth_gb', 'must be a number of gigabytes above 0, or null');
+      else out.bandwidth_gb = body.bandwidth_gb;
+    }
+    if (has(body, 'overage_mode')) {
+      if (body.overage_mode !== 'capped' && body.overage_mode !== 'pay_as_you_go') fail('overage_mode', 'must be "capped" or "pay_as_you_go"');
+      else out.overage_mode = body.overage_mode;
+    }
+    if (has(body, 'listener_ceiling')) {
+      if (blank(body.listener_ceiling)) out.listener_ceiling = null;
+      else if (!Number.isInteger(body.listener_ceiling) || body.listener_ceiling < 1 || body.listener_ceiling > 10000000) fail('listener_ceiling', 'must be an integer from 1 to 10000000, or null for no ceiling');
+      else out.listener_ceiling = body.listener_ceiling;
+    }
     if (has(body, 'subscription_ends_on')) {
       if (blank(body.subscription_ends_on)) out.subscription_ends_on = null;
       else if (typeof body.subscription_ends_on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.subscription_ends_on) || Number.isNaN(Date.parse(`${body.subscription_ends_on}T00:00:00Z`))) fail('subscription_ends_on', 'must be a date in YYYY-MM-DD form, or null for no end');
@@ -237,6 +255,15 @@ function parseUser(body, { partial = false } = {}) {
     if (!isPercent(body.discount_percent)) fail('discount_percent', 'must be a number from 0 to 100');
     else out.discount_percent = body.discount_percent;
   }
+  if (has(body, 'storage_overage')) {
+    if (typeof body.storage_overage !== 'boolean') fail('storage_overage', 'must be true or false');
+    else out.storage_overage = body.storage_overage;
+  }
+  if (has(body, 'storage_ceiling_mb')) {
+    if (blank(body.storage_ceiling_mb)) out.storage_ceiling_mb = null;
+    else if (!Number.isInteger(body.storage_ceiling_mb) || body.storage_ceiling_mb < 1 || body.storage_ceiling_mb > 10000000) fail('storage_ceiling_mb', 'must be an integer from 1 to 10000000 (megabytes), or null for no ceiling');
+    else out.storage_ceiling_mb = body.storage_ceiling_mb;
+  }
   if (has(body, 'storage_quota_mb')) {
     // null returns the account to the gateway's default quota.
     if (body.storage_quota_mb === null) out.storage_quota_mb = null;
@@ -269,6 +296,28 @@ function parseSettings(body) {
     if (!has(body, field)) continue;
     if (!Number.isInteger(body[field]) || body[field] < min || body[field] > max) fail(field, `must be an integer from ${min} to ${max}`);
     else out[field] = body[field];
+  }
+  // How often, and whether, notices go out by themselves.
+  if (has(body, 'notices')) {
+    const notices = body.notices;
+    const part = {};
+    if (!notices || typeof notices !== 'object' || Array.isArray(notices)) fail('notices', 'must be an object');
+    else {
+      if (has(notices, 'automatic')) {
+        if (typeof notices.automatic !== 'boolean') fail('notices.automatic', 'must be true or false');
+        else part.automatic = notices.automatic;
+      }
+      if (has(notices, 'levels')) {
+        const ok = Array.isArray(notices.levels) && notices.levels.length <= 10 && notices.levels.every((level) => Number.isInteger(level) && level >= 1 && level <= 100);
+        if (!ok) fail('notices.levels', 'must be a list of up to 10 whole percentages from 1 to 100, such as [50, 75, 90, 100]');
+        else part.levels = [...new Set(notices.levels)].sort((a, b) => a - b);
+      }
+      if (has(notices, 'min_days_between')) {
+        if (!Number.isInteger(notices.min_days_between) || notices.min_days_between < 0 || notices.min_days_between > 365) fail('notices.min_days_between', 'must be an integer from 0 to 365');
+        else part.min_days_between = notices.min_days_between;
+      }
+      out.notices = part;
+    }
   }
   if (has(body, 'smtp')) {
     const smtp = body.smtp;
@@ -332,6 +381,12 @@ function parseRates(body) {
   number('server_port_mbps', 1, 400000, true);
   number('margin_percent', 0, 10000);
   number('storage_price_per_gb', 0, 1e6);
+  number('payg_block_listeners', 1, 100000, true);
+  number('payg_block_minutes', 1, 1440, true);
+  number('payg_price_per_block', 0, 1e6);
+  number('payg_storage_price_per_gb', 0, 1e6);
+  number('bandwidth_price_per_gb', 0, 1e6);
+  number('payg_bandwidth_price_per_gb', 0, 1e6);
   if (errors.length) throw invalid(errors);
   return out;
 }

@@ -58,6 +58,13 @@ function assignments(fields, startAt = 1) {
   };
 }
 
+// A plan by bandwidth needs to say how much.
+function checkPlan(station) {
+  if (station.plan_type === 'bandwidth' && !(Number(station.bandwidth_gb) > 0)) {
+    throw invalid([{ field: 'bandwidth_gb', message: 'is required for a plan by bandwidth: the data it covers each month, in GB' }]);
+  }
+}
+
 function translateStationError(err) {
   if (err.code === UNIQUE_VIOLATION) return conflict('slug_taken', 'A station with this slug already exists.');
   if (err.code === FK_VIOLATION) return invalid([{ field: 'user_id', message: 'does not match an existing user' }]);
@@ -213,6 +220,7 @@ async function createStation(req, fields) {
     }
   }
   const row = { user_id: req.user.id, ...fields };
+  checkPlan(row);
   await media.checkAssignment(row, row.user_id, null);
   const keys = Object.keys(row);
   try {
@@ -234,6 +242,7 @@ async function updateStation(req, current, fields) {
   if (fields.user_id !== undefined && fields.user_id !== current.user_id) {
     fields = { ident_file_id: null, fallback_file_id: null, ...fields };
   }
+  checkPlan({ ...current, ...fields });
   await media.checkAssignment(fields, fields.user_id === undefined ? current.user_id : fields.user_id, current.slug);
   const set = assignments(fields);
   try {
@@ -583,13 +592,23 @@ router.get('/billing/quote', wrap(async (req, res) => {
     return n;
   };
   const listeners = number('listeners', 0, 1e9);
-  if (listeners === undefined) throw invalid([{ field: 'listeners', message: 'is required' }]);
+  const bandwidth = number('bandwidth_gb', 0, 1e9);
+  if (listeners === undefined && bandwidth === undefined) throw invalid([{ field: 'listeners', message: 'give listeners (a plan by listeners) or bandwidth_gb (a plan by bandwidth)' }]);
   res.json(await billing.quote({
-    listeners,
+    listeners: listeners || 0,
+    bandwidth_gb: bandwidth || 0,
     bitrate_kbps: number('bitrate_kbps', 8, 2000, 128),
     storage_mb: number('storage_mb', 0, 1e9, 0),
     discount_percent: isAdmin(req) ? number('discount_percent', 0, 100, 0) : 0,
   }));
+}));
+
+// Month by month, what each of an account's stations sent and how many listened.
+router.get('/billing/history', wrap(async (req, res) => {
+  const months = v.intParam(req.query.months, { name: 'months', min: 1, max: 120, fallback: 12 });
+  let userId = req.user.id;
+  if (isAdmin(req) && req.query.user_id !== undefined) userId = v.intParam(req.query.user_id, { name: 'user_id', min: 1, max: 2147483647 });
+  res.json({ user_id: userId, months: await billing.history(userId, months) });
 }));
 
 // The rates prices are worked out from: what a server costs, its size, the margin, and storage.
@@ -666,7 +685,7 @@ router.delete('/api-keys/:id', wrap(async (req, res) => {
 
 // ── Users (administrators only) ───────────────────────────────────────────
 
-const USER_COLUMNS = 'id, username, role, external_id, max_stations, storage_quota_mb, email, discount_percent, is_active, created_at, updated_at';
+const USER_COLUMNS = 'id, username, role, external_id, max_stations, storage_quota_mb, storage_overage, storage_ceiling_mb, email, discount_percent, is_active, created_at, updated_at';
 const users = express.Router();
 users.use(auth.requireAdmin);
 
@@ -899,6 +918,8 @@ async function presentSettings(req) {
     master_vcpus: all.master_vcpus || null,
     master_memory_gb: all.master_memory_gb || null,
     smtp: await mail.describe(),
+    // Whether notices go out by themselves, at which levels, and how far apart.
+    notices: await notify.preferences(),
     storage: {
       backend: state.refreshToken ? 'dropbox' : 'local',
       local: { files: count('local').files, bytes: count('local').bytes },
@@ -933,6 +954,7 @@ router.put('/settings', auth.requireAdmin, wrap(async (req, res) => {
   }
   // Only the supplied parts of the mail settings change; the password stays unless a new one is given.
   if (fields.smtp) fields.smtp = { ...(await mail.smtp()), ...fields.smtp };
+  if (fields.notices) fields.notices = { ...(await notify.preferences()), ...fields.notices };
   await settings.set(fields);
   audit(req, 'settings.update', null, {
     ...fields,
@@ -952,8 +974,26 @@ router.post('/settings/email/test', auth.requireAdmin, wrap(async (req, res) => 
 }));
 
 // Sends any notices that are due now, instead of waiting for the next round.
+// This is also how notices are sent while the automatic ones are switched off.
 router.post('/notifications/run', auth.requireAdmin, wrap(async (req, res) => {
-  res.json(await notify.run());
+  res.json(await notify.run({ force: true }));
+}));
+
+// Sends one account a summary of where its stations stand, on request.
+router.post('/notifications/send', auth.requireAdmin, wrap(async (req, res) => {
+  const body = req.body || {};
+  let id = body.user_id;
+  if (id === undefined && typeof body.station === 'string') {
+    const row = await stations.findBySlug(body.station);
+    if (!row) throw notFound('Station');
+    id = row.user_id;
+  }
+  if (!Number.isInteger(id)) throw invalid([{ field: 'user_id', message: 'give a user_id, or a station slug' }]);
+  const result = await notify.sendSummary(id);
+  if (!result) throw notFound('User');
+  if (!result.sent) throw conflict('no_email_address', result.reason);
+  audit(req, 'notifications.send', `user:${id}`);
+  res.json(result);
 }));
 
 router.get('/notifications', auth.requireAdmin, wrap(async (req, res) => {

@@ -15,6 +15,28 @@ All notable changes to this project are recorded here. The format follows
   none of which was mistaken for noise. Per station (`noise_detection`, on by default).
 - **Silence level per station** (`silence_threshold_db`), overriding the server's.
 
+- **Plans by bandwidth.** A station can pay for an amount of data each month
+  (`plan_type: bandwidth`, `bandwidth_gb`) instead of a number of listeners, with no
+  limit on listeners. The allowance starts again each calendar month; used up, the
+  station goes off the air until then (capped) or carries on and is charged per
+  gigabyte (pay as you go). Prices per gigabyte in the rates. The same stream can be
+  several stations on different plans.
+- The plan's price is shown in the station form as its numbers are entered;
+  `GET /billing/quote` takes `bandwidth_gb`. `GET /billing/history` gives every month
+  on record per station.
+- **Subscription first, then pay as you go.** Per station (`overage_mode`): capped, as
+  before, or pay as you go, where listeners beyond the subscription's number are let in
+  and charged: for every so many extra listeners, for every so many minutes, a set
+  amount (`payg_block_listeners`, `payg_block_minutes`, `payg_price_per_block`), worked
+  out from the minute-by-minute statistics. `listener_ceiling` is the most a station on
+  pay as you go may ever have. The bill shows subscriptions, pay as you go so far and
+  the total.
+- **Storage on pay as you go**, per account (`storage_overage`, `storage_ceiling_mb`,
+  `payg_storage_price_per_gb`): uploads beyond the quota are accepted and charged.
+- **Notices are the administrator's to tune**: whether they go out by themselves, at
+  which levels, and the fewest days between two about the same thing
+  (`notices` in the settings). `POST /notifications/send` emails an account a summary
+  on request.
 - **How long a station has been full.** `usage.at_limit` gives the minutes in which a
   limited station reached its limit today, in the last 7 days and this month, and when
   it last did; with the most listeners at once for each span. On the Billing tab too.
