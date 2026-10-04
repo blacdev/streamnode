@@ -11,6 +11,11 @@ raises a notice when capacity is running low. The same information comes from
 `GET /api/v1/capacity`, including an `add_server_recommended` flag
 (see the [API guide](API.md#capacity-is-another-server-needed)).
 
+To see what a particular server would change before adding it, use the calculator on
+the Servers tab (`POST /capacity/estimate`): it says how much capacity the server adds,
+how today's listeners would be spread, and what happens to the master's traffic. See
+[Costs, capacity, billing and limits](BILLING.md).
+
 ## How it works
 
 ```

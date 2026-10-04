@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, ident_file_id, fallback_file_id, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -12,7 +12,8 @@ const profileKey = (slug) => `station:${slug}`;
 async function mediaFor(rows) {
   const ids = [...new Set(rows.flatMap((row) => [row.ident_file_id, row.fallback_file_id]).filter(Boolean))];
   if (!ids.length) return new Map();
-  const found = await db.query('SELECT id, name, sha256 FROM media_files WHERE id = ANY($1)', [ids]);
+  // A file that is still being converted, or could not be, is not offered to the engines.
+  const found = await db.query("SELECT id, name, sha256 FROM media_files WHERE id = ANY($1) AND status = 'ready'", [ids]);
   return new Map(found.rows.map((file) => [file.id, file]));
 }
 
@@ -175,6 +176,10 @@ function present(row, live, req) {
     silence_detection: row.silence_detection,
     ident_file_id: row.ident_file_id,
     fallback_file_id: row.fallback_file_id,
+    billing_bitrate_kbps: row.billing_bitrate_kbps,
+    discount_percent: Number(row.discount_percent),
+    price_override: row.price_override === null ? null : Number(row.price_override),
+    subscription_ends_on: row.subscription_ends_on,
     stream_url: stream,
     playlist_urls: { m3u: `${stream}.m3u`, pls: `${stream}.pls` },
     live: live || { ...OFFLINE },

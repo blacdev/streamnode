@@ -8,6 +8,8 @@ COPY . .
 # with the repository to tell when an update is available.
 ARG GIT_SHA=""
 ENV GATEWAY_VERSION=$GIT_SHA
+# For converting uploaded files to a station's format (never used on live streams).
+RUN apk add --no-cache ffmpeg
 # Uploaded audio; a volume mounted here keeps this ownership.
 RUN mkdir -p /files && chown node:node /files
 USER node

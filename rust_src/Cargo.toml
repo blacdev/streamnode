@@ -16,6 +16,13 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tok
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Decoding, for silence detection only: just the audio decoders are used.
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format"] }
+
+[features]
+# Link FFmpeg into the binary (the Docker image, built with build-ffmpeg.sh)
+# rather than using the system's shared libraries.
+static-ffmpeg = ["ffmpeg-next/static"]
 
 [profile.release]
 lto = "thin"

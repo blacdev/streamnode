@@ -49,6 +49,10 @@ pub struct Config {
     pub user_agent: String,
     /// Failed source rounds after which a station is given up on here: its
     /// listeners are released and its relay stopped.
+    /// How long audio is gathered before it is passed to listeners.
+    pub publish_interval_ms: u64,
+    /// Audio quieter than this, in dB relative to full scale, counts as silence.
+    pub silence_threshold_db: f32,
     pub station_fail_rounds: u32,
     /// How long this engine then refuses the station before trying its sources again.
     pub station_retry: Duration,
@@ -114,6 +118,8 @@ impl Config {
             burst_bytes: var("BURST_BYTES", 65_536usize),
             allow_private_sources: var("ALLOW_PRIVATE_SOURCES", false),
             user_agent: var("UPSTREAM_USER_AGENT", "StreamNode/1.0".to_string()),
+            publish_interval_ms: var("PUBLISH_INTERVAL_MS", 400u64).clamp(0, 2000),
+            silence_threshold_db: var("SILENCE_THRESHOLD_DB", -55f32).clamp(-90.0, -10.0),
             station_fail_rounds: var("STATION_FAIL_ROUNDS", 3u32).max(1),
             station_retry: secs("STATION_RETRY_SECS", 30),
             control_dir: opt("CONTROL_DIR"),

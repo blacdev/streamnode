@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const { wrap, unauthorized, forbidden, HttpError } = require('./errors');
 const security = require('./security');
 
-const USER_COLUMNS = 'u.id, u.username, u.role, u.external_id, u.max_stations, u.storage_quota_mb, u.is_active';
+const USER_COLUMNS = 'u.id, u.username, u.role, u.external_id, u.max_stations, u.storage_quota_mb, u.email, u.discount_percent, u.is_active';
 const LOGIN_WINDOW_SECS = 15 * 60;
 const LOGIN_MAX_ATTEMPTS = 10;
 
@@ -63,7 +63,7 @@ async function login(req, username, password) {
   }
 
   const { rows } = await db.query(
-    'SELECT id, username, role, external_id, max_stations, storage_quota_mb, is_active, password_hash FROM users WHERE username = $1',
+    'SELECT id, username, role, external_id, max_stations, storage_quota_mb, email, discount_percent, is_active, password_hash FROM users WHERE username = $1',
     [username]
   );
   const user = rows[0];

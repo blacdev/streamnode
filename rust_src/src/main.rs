@@ -4,6 +4,7 @@ mod health;
 mod hub;
 mod icy;
 mod listener;
+mod detector;
 mod frames;
 mod nowplaying;
 mod playout;
@@ -88,6 +89,7 @@ async fn main() {
     let bind = cfg.bind.clone();
     // A master reached without certificate verification is fetched from the same way.
     let insecure = cluster.redis_url.ends_with("#insecure") || cfg.allow_insecure_tls;
+    hub::PUBLISH_INTERVAL_MS.store(cfg.publish_interval_ms, std::sync::atomic::Ordering::Relaxed);
     let hub = Hub::new(cfg, redis, cluster.master_url.clone(), cluster.engine_secret.clone(), insecure);
 
     tokio::spawn(stats::run(hub.clone()));

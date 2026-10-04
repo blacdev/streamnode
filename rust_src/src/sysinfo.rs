@@ -17,12 +17,18 @@ pub struct Snapshot {
     pub disk_free: u64,
     /// Bytes per second leaving this engine's network interfaces.
     pub network_out_bps: u64,
+    /// What this engine process itself uses: processor time as a percentage
+    /// of one core (so it can exceed 100), and resident memory in bytes. With
+    /// the listener count, this gives the cost of one listener on this server.
+    pub engine_cpu_percent: f64,
+    pub engine_memory: u64,
 }
 
 pub struct Sampler {
     disk_path: String,
     cpu: Option<(u64, u64)>,
     net: Option<(u64, Instant)>,
+    process: Option<(u64, Instant)>,
 }
 
 /// `(busy, total)` jiffies from the aggregate `cpu` line of /proc/stat.
@@ -54,6 +60,14 @@ fn parse_net_tx(dev: &str) -> u64 {
         .sum()
 }
 
+/// Processor time this process has used, in clock ticks: user plus system
+/// time, the 14th and 15th fields of /proc/self/stat. The second field is the
+/// program's name in brackets and may itself contain spaces.
+fn parse_process_ticks(stat: &str) -> Option<u64> {
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace().skip(11);
+    Some(fields.next()?.parse::<u64>().ok()? + fields.next()?.parse::<u64>().ok()?)
+}
+
 fn disk(path: &str) -> (u64, u64) {
     let Ok(path) = CString::new(path) else { return (0, 0) };
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -68,7 +82,7 @@ fn disk(path: &str) -> (u64, u64) {
 
 impl Sampler {
     pub fn new(disk_path: String) -> Self {
-        Self { disk_path, cpu: None, net: None }
+        Self { disk_path, cpu: None, net: None, process: None }
     }
 
     pub fn sample(&mut self) -> Snapshot {
@@ -104,6 +118,21 @@ impl Sampler {
             }
         }
         self.net = Some((tx, now));
+
+        if let Some(ticks) = parse_process_ticks(&read("/proc/self/stat")) {
+            if let Some((prev_ticks, at)) = self.process {
+                let secs = now.duration_since(at).as_secs_f64();
+                // SAFETY: sysconf only reads a system constant.
+                let per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f64;
+                if secs > 0.0 {
+                    snapshot.engine_cpu_percent = ticks.saturating_sub(prev_ticks) as f64 / per_second / secs * 100.0;
+                }
+            }
+            self.process = Some((ticks, now));
+        }
+        // SAFETY: as above.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
+        snapshot.engine_memory = read("/proc/self/statm").split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) * page;
         snapshot
     }
 }
@@ -117,6 +146,27 @@ mod tests {
         let stat = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\n";
         assert_eq!(parse_cpu(stat), Some((150, 1000)));
         assert_eq!(parse_cpu("intr 1 2 3"), None);
+    }
+
+    #[test]
+    fn process_time_is_read_past_a_name_with_spaces() {
+        let stat = "4242 (stream node) S 1 4242 4242 0 -1 4194304 500 0 0 0 1234 766 0 0 20 0 9 0 100 1000 200";
+        assert_eq!(parse_process_ticks(stat), Some(2000));
+        assert_eq!(parse_process_ticks("garbage"), None);
+    }
+
+    #[test]
+    fn the_engine_measures_itself() {
+        let mut sampler = Sampler::new("/".into());
+        sampler.sample();
+        let mut spin = 0u64;
+        for i in 0..20_000_000u64 {
+            spin = spin.wrapping_add(i * i);
+        }
+        assert!(spin > 0);
+        let second = sampler.sample();
+        assert!(second.engine_memory > 1024 * 1024, "resident memory is at least a megabyte");
+        assert!(second.engine_cpu_percent >= 0.0);
     }
 
     #[test]

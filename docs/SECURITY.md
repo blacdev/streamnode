@@ -135,8 +135,26 @@ What follows from this:
   names and song titles from untrusted sources cannot inject markup. A
   Content-Security-Policy restricts scripts to the gateway's own origin.
 - JSON request bodies are limited to 64 KB. Uploaded audio is limited by the account's
-  storage quota, checked before and while the file is received, and is never executed
-  or decoded: only its frame headers are read.
+  storage quota, checked before and while the file is received. A file in the stream's
+  format is never decoded: only its frame headers are read.
+- A file its owner asks to have converted is read by the `ffmpeg` program in the admin
+  container. It is given local files only (no network or other protocols), accepts
+  only a short list of audio containers, is stopped if it runs too long, and runs as
+  the container's unprivileged user. It is, all the same, a large decoder reading
+  files supplied by tenants, next to the service that holds the database credentials:
+  keep the gateway updated.
+- The engine decodes a sample of each station's stream to measure its level, which
+  means running a decoder on data supplied by stations. To keep that surface small,
+  only FFmpeg's MP3 and AAC decoders are compiled in, with no demuxers, network code or
+  other formats, and the engine runs as an unprivileged user in an image with no shell.
+  Keep the gateway updated so that decoder fixes reach it.
+- The mail server's password is stored in the database (`settings` table) and is never
+  returned by the API. Notices go only to the address on the account concerned, and to
+  the copy address if the administrator set one.
+- What a station is allowed and charged (listener limit, bitrate, discount, price,
+  subscription date, owning account) can be changed only by an administrator. Station
+  owners see their own stations' figures and nothing about servers, costs or other
+  accounts.
 - Uploaded files are visible only to their account and to administrators. Streaming
   servers fetch them from `/api/v1/internal/files/{id}` with the engine secret.
 - The Dropbox app secret and refresh token are stored in the database (`settings`

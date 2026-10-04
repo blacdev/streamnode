@@ -70,7 +70,9 @@ function checkSlug(value) {
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const blank = (v) => v === null || v === undefined || v === '';
 
-const ADMIN_ONLY = ['user_id', 'max_listeners', 'external_id', 'is_active'];
+const ADMIN_ONLY = ['user_id', 'max_listeners', 'external_id', 'is_active', 'billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on'];
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+const isPercent = (value) => typeof value === 'number' && value >= 0 && value <= 100;
 
 /**
  * Validates a station payload and returns only the fields that were supplied.
@@ -149,10 +151,37 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
       if (typeof body.is_active !== 'boolean') fail('is_active', 'must be true or false');
       else out.is_active = body.is_active;
     }
+    // What the station is charged for.
+    if (has(body, 'billing_bitrate_kbps')) {
+      if (blank(body.billing_bitrate_kbps)) out.billing_bitrate_kbps = null;
+      else if (!Number.isInteger(body.billing_bitrate_kbps) || body.billing_bitrate_kbps < 8 || body.billing_bitrate_kbps > 2000) fail('billing_bitrate_kbps', 'must be an integer from 8 to 2000, or null to use the stream\'s own bitrate');
+      else out.billing_bitrate_kbps = body.billing_bitrate_kbps;
+    }
+    if (has(body, 'discount_percent')) {
+      if (!isPercent(body.discount_percent)) fail('discount_percent', 'must be a number from 0 to 100');
+      else out.discount_percent = body.discount_percent;
+    }
+    if (has(body, 'price_override')) {
+      if (blank(body.price_override)) out.price_override = null;
+      else if (typeof body.price_override !== 'number' || body.price_override < 0 || body.price_override > 1e9) fail('price_override', 'must be a number of 0 or more, or null for the calculated price');
+      else out.price_override = body.price_override;
+    }
+    if (has(body, 'subscription_ends_on')) {
+      if (blank(body.subscription_ends_on)) out.subscription_ends_on = null;
+      else if (typeof body.subscription_ends_on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.subscription_ends_on) || Number.isNaN(Date.parse(`${body.subscription_ends_on}T00:00:00Z`))) fail('subscription_ends_on', 'must be a date in YYYY-MM-DD form, or null for no end');
+      else out.subscription_ends_on = body.subscription_ends_on;
+    }
   }
 
   if (errors.length) throw invalid(errors);
   return out;
+}
+
+// Empty clears the address; otherwise it has to look like one.
+function checkEmail(value) {
+  if (blank(value)) return null;
+  if (typeof value !== 'string' || value.length > 254 || !EMAIL_RE.test(value.trim())) return 'must be an email address, or empty';
+  return null;
 }
 
 function parseUser(body, { partial = false } = {}) {
@@ -190,6 +219,15 @@ function parseUser(body, { partial = false } = {}) {
     if (typeof body.is_active !== 'boolean') fail('is_active', 'must be true or false');
     else out.is_active = body.is_active;
   }
+  if (has(body, 'email')) {
+    const problem = checkEmail(body.email);
+    if (problem) fail('email', problem);
+    else out.email = blank(body.email) ? null : body.email.trim();
+  }
+  if (has(body, 'discount_percent')) {
+    if (!isPercent(body.discount_percent)) fail('discount_percent', 'must be a number from 0 to 100');
+    else out.discount_percent = body.discount_percent;
+  }
   if (has(body, 'storage_quota_mb')) {
     // null returns the account to the gateway's default quota.
     if (body.storage_quota_mb === null) out.storage_quota_mb = null;
@@ -217,11 +255,99 @@ function parseSettings(body) {
       fail('default_storage_quota_mb', 'must be an integer from 0 to 10000000 (megabytes)');
     } else out.default_storage_quota_mb = body.default_storage_quota_mb;
   }
+  // The machine the master runs on, when no engine beside it reports its size.
+  for (const [field, min, max] of [['master_port_mbps', 1, 400000], ['master_vcpus', 1, 1024], ['master_memory_gb', 1, 16384]]) {
+    if (!has(body, field)) continue;
+    if (!Number.isInteger(body[field]) || body[field] < min || body[field] > max) fail(field, `must be an integer from ${min} to ${max}`);
+    else out[field] = body[field];
+  }
+  if (has(body, 'smtp')) {
+    const smtp = body.smtp;
+    const part = {};
+    if (!smtp || typeof smtp !== 'object' || Array.isArray(smtp)) fail('smtp', 'must be an object');
+    else {
+      for (const field of ['host', 'user', 'password']) {
+        if (!has(smtp, field)) continue;
+        if (blank(smtp[field])) part[field] = '';
+        else if (typeof smtp[field] !== 'string' || smtp[field].length > 255 || /[\r\n]/.test(smtp[field])) fail(`smtp.${field}`, 'must be text of at most 255 characters');
+        else part[field] = field === 'password' ? smtp[field] : smtp[field].trim();
+      }
+      if (has(smtp, 'port')) {
+        if (!Number.isInteger(smtp.port) || smtp.port < 1 || smtp.port > 65535) fail('smtp.port', 'must be an integer from 1 to 65535');
+        else part.port = smtp.port;
+      }
+      if (has(smtp, 'security')) {
+        if (!['starttls', 'tls', 'none'].includes(smtp.security)) fail('smtp.security', 'must be "starttls", "tls" or "none"');
+        else part.security = smtp.security;
+      }
+      for (const field of ['from', 'copy_to']) {
+        if (!has(smtp, field)) continue;
+        // The sender may be written as: Name <address>.
+        const address = typeof smtp[field] === 'string' ? (/<([^>]+)>\s*$/.exec(smtp[field]) || [null, smtp[field]])[1] : smtp[field];
+        const problem = checkEmail(address) || (typeof smtp[field] === 'string' && /[\r\n]/.test(smtp[field]) ? 'must be one line' : null);
+        if (problem) fail(`smtp.${field}`, problem);
+        else part[field] = blank(smtp[field]) ? '' : smtp[field].trim();
+      }
+      out.smtp = part;
+    }
+  }
   for (const field of ['dropbox_app_key', 'dropbox_app_secret']) {
     if (!has(body, field)) continue;
     if (blank(body[field])) out[field] = null;
     else if (typeof body[field] !== 'string' || !/^[A-Za-z0-9_-]{6,100}$/.test(body[field].trim())) fail(field, 'does not look like a Dropbox app key or secret');
     else out[field] = body[field].trim();
+  }
+  if (errors.length) throw invalid(errors);
+  return out;
+}
+
+// The rate card prices are worked out from.
+function parseRates(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', message: 'must be a JSON object' }]);
+  const errors = [];
+  const out = {};
+  const number = (field, min, max, whole = false) => {
+    if (!has(body, field)) return;
+    const value = body[field];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (whole && !Number.isInteger(value))) {
+      errors.push({ field, message: `must be ${whole ? 'an integer' : 'a number'} from ${min} to ${max}` });
+    } else out[field] = value;
+  };
+  if (has(body, 'currency')) {
+    if (typeof body.currency !== 'string' || !/^[A-Za-z]{3}$/.test(body.currency)) errors.push({ field: 'currency', message: 'must be a three-letter currency code such as USD' });
+    else out.currency = body.currency.toUpperCase();
+  }
+  number('server_monthly_cost', 0, 1e9);
+  number('server_vcpus', 1, 1024, true);
+  number('server_memory_gb', 1, 16384, true);
+  number('server_port_mbps', 1, 400000, true);
+  number('margin_percent', 0, 10000);
+  number('storage_price_per_gb', 0, 1e6);
+  if (errors.length) throw invalid(errors);
+  return out;
+}
+
+// The server someone is thinking of adding.
+function parseCandidate(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid([{ field: 'body', message: 'must be a JSON object' }]);
+  const errors = [];
+  const out = { mode: 'proxied' };
+  const number = (field, min, max, required) => {
+    if (!has(body, field)) {
+      if (required) errors.push({ field, message: 'is required' });
+      return;
+    }
+    if (typeof body[field] !== 'number' || !Number.isFinite(body[field]) || body[field] < min || body[field] > max) errors.push({ field, message: `must be a number from ${min} to ${max}` });
+    else out[field] = body[field];
+  };
+  number('vcpus', 1, 1024, true);
+  number('memory_gb', 0.5, 16384, true);
+  number('port_mbps', 1, 400000, true);
+  number('bitrate_kbps', 8, 2000, false);
+  number('listeners', 0, 1e9, false);
+  if (has(body, 'mode')) {
+    if (body.mode !== 'proxied' && body.mode !== 'direct') errors.push({ field: 'mode', message: 'must be "proxied" (a slave behind the master) or "direct" (an edge server with its own DNS record)' });
+    else out.mode = body.mode;
   }
   if (errors.length) throw invalid(errors);
   return out;
@@ -261,6 +387,10 @@ function parseNode(body, { partial = false, builtin = false } = {}) {
       else out.port = body.port;
     }
   }
+  if (has(body, 'port_mbps')) {
+    if (!Number.isInteger(body.port_mbps) || body.port_mbps < 1 || body.port_mbps > 400000) fail('port_mbps', 'must be the speed of the server\'s network port in Mbit/s, from 1 to 400000');
+    else out.port_mbps = body.port_mbps;
+  }
   if (has(body, 'weight')) {
     if (!Number.isInteger(body.weight) || body.weight < 1 || body.weight > 256) fail('weight', 'must be an integer from 1 to 256');
     else out.weight = body.weight;
@@ -296,4 +426,4 @@ function dateParam(value, name, fallback) {
   return value;
 }
 
-module.exports = { parseStation, parseUser, parseSettings, parseNode, checkSlug, checkUrl, isPrivateHost, intParam, timeParam, dateParam, RESERVED_SLUGS };
+module.exports = { parseStation, parseUser, parseSettings, parseRates, parseCandidate, checkEmail, parseNode, checkSlug, checkUrl, isPrivateHost, intParam, timeParam, dateParam, RESERVED_SLUGS };

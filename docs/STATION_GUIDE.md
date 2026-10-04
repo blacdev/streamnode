@@ -47,16 +47,17 @@ gateway can add to it.
 |---|---|---|---|---|
 | **MP3** (Icecast, SHOUTcast or a hosted provider; any bitrate, constant or variable) | Yes | Yes | Yes | Yes |
 | **AAC** (AAC-LC as ADTS, content type `audio/aac`) | Yes | Yes | No: direct cuts | Yes |
-| **HE-AAC / AAC+ / aacPlus** (`audio/aacp`, common at 32 to 64 kbps) | Yes | No | No: direct cuts | Yes |
+| **HE-AAC / AAC+ / aacPlus** (`audio/aacp`, common at 32 to 64 kbps) | Yes | Yes | No: direct cuts | Yes |
 | **Other audio** (Ogg Vorbis, Opus, FLAC, MPEG Layer II, AAC in LATM form) | Yes, exactly as it arrives | No | No | No |
 | HLS (`.m3u8`), DASH, web pages with a player, streams that need a login | **No** | | | |
 
-- **Silence detection** means a stream that stays connected but carries only silence
-  is treated as down. Every relayed type is still treated as down when it stops
-  sending or disconnects.
-- **HE-AAC** frames stay full even when they carry silence, so silence cannot be
-  recognised without decoding. The gateway takes an AAC stream to be HE-AAC when it is
-  announced as `audio/aacp` or its frame headers state 24 kHz or less.
+- **Silence detection** means a stream that stays connected but carries only silence,
+  or only the hiss of an open input, is treated as down. The gateway listens to a
+  small sample of the stream twice a second to tell. Every relayed type is still
+  treated as down when it stops sending or disconnects.
+- **HE-AAC** is recognised by listening to the stream; until a station has been on
+  air, an AAC stream is taken to be HE-AAC when it is announced as `audio/aacp` or its
+  frame headers state 24 kHz or less.
 - A stream whose content does not match its label, or that changes format while
   playing, is treated as "other audio" from that moment.
 

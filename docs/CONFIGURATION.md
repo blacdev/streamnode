@@ -121,6 +121,7 @@ variables below may be added to a slave's `.env` to override the defaults there.
 | `IDLE_GRACE_SECS` | `10` | How long the gateway stays connected to a source after its last listener leaves |
 | `STALL_TIMEOUT_SECS` | `10` | How long a source may take to start sending after it accepts a connection. Once a station is playing, the station's own failover delay (6 seconds by default) decides when a stream without audio is given up on |
 | `PRIMARY_RETRY_SECS` | `30` | No longer slows the return to a stream: while a station plays its backup or fallback file, a stream that is down is tried again every 2 seconds (or this often, if lower) |
+| `SILENCE_THRESHOLD_DB` | `-55` | How quiet a stream must be to count as silent, in dB below full level (from `-90` to `-10`). The default treats digital silence and the hiss of an open input as silence. Set per server; slave nodes have their own `.env` |
 | `METADATA_POLL_SECS` | `10` | How often a station's title and artwork URL is fetched while it has listeners |
 | `STATION_FAIL_ROUNDS` | `3` | Failed attempts on a station's sources (primary and backup together count as one) after which a server gives up on that station, releasing its listeners and resources |
 | `STATION_RETRY_SECS` | `30` | How long the server then refuses that station before trying its sources again |
@@ -132,6 +133,7 @@ The following are read by the engine but not listed in `.env.example`; add them 
 | Variable | Default | Description |
 |---|---|---|
 | `CONNECT_TIMEOUT_SECS` | `5` | TCP/TLS connect timeout to a source |
+| `PUBLISH_INTERVAL_MS` | `400` | How long audio is gathered before it is sent on to listeners. Sending a few larger pieces a second rather than many small ones is what keeps the processor cost per listener low; at 400 it is about a quarter of what `0` costs. Listeners hear the stream this much later, which players' own buffers dwarf. From `0` to `2000` |
 | `READY_TIMEOUT_SECS` | `15` | How long a new listener waits for a source before receiving an error |
 | `CONFIG_REFRESH_SECS` | `5` | How quickly a running relay notices edits, suspension or deletion |
 | `STATS_FLUSH_SECS` | `2` | How often counters and live state are written to Redis |

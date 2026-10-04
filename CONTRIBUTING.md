@@ -18,6 +18,17 @@ cd rust_src && cargo test
 cd admin_src && npm ci && npm test
 ```
 
+The engine uses FFmpeg's MP3 and AAC decoders. For development it links to the
+FFmpeg libraries installed on your system, which needs their development files,
+`pkg-config` and `clang` (Debian/Ubuntu: `libavcodec-dev libavformat-dev libavutil-dev
+pkg-config clang libclang-dev`). The Docker image and CI instead build just those two
+decoders and link them into the binary:
+
+```bash
+cd rust_src && ./build-ffmpeg.sh "$HOME/ffmpeg"
+FFMPEG_DIR="$HOME/ffmpeg" cargo test --features static-ffmpeg
+```
+
 The same checks, plus configuration validation and image builds, run in CI on every
 push and pull request (`.github/workflows/ci.yml`).
 

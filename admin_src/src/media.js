@@ -16,6 +16,7 @@ const config = require('./config');
 const db = require('./db');
 const { redis } = require('./cache');
 const audio = require('./audio');
+const convert = require('./convert');
 const dropbox = require('./dropbox');
 const settings = require('./settings');
 const stations = require('./stations');
@@ -23,11 +24,13 @@ const { HttpError, invalid } = require('./errors');
 
 const MB = 1024 * 1024;
 const COLUMNS =
-  'id, user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate, duration_seconds, audio_offset, audio_bytes, sha256, storage, storage_path, created_at';
+  'id, user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate, duration_seconds, audio_offset, audio_bytes, sha256, storage, storage_path, created_at, status, status_detail, converted, gain_db, target_level_db, replaces_id, for_station_id';
 // Disk space that uploads never eat into.
 const DISK_RESERVE = 512 * MB;
 
 const localPath = (id) => path.join(config.filesDir, String(id));
+// What was uploaded, kept only until its conversion is done.
+const sourcePath = (id) => path.join(config.filesDir, `src-${id}`);
 const tmpDir = () => path.join(config.filesDir, 'tmp');
 const refuse = (status, code, message, details) => new HttpError(status, code, message, details);
 
@@ -40,6 +43,9 @@ function size(bytes) {
 async function init() {
   await fs.promises.rm(tmpDir(), { recursive: true, force: true });
   await fs.promises.mkdir(tmpDir(), { recursive: true });
+  // Conversions that were under way when the service stopped are taken up again.
+  const { rows } = await db.query("SELECT id FROM media_files WHERE status = 'converting' ORDER BY id");
+  for (const row of rows) enqueue(row.id);
 }
 
 // ── Quotas ──────────────────────────────────────────────────────────────────
@@ -87,14 +93,28 @@ function problemFor(file, use, format, identMaxSeconds) {
   if (use === 'ident' && Number(file.duration_seconds) > identMaxSeconds) {
     return `"${file.name}" is ${Number(file.duration_seconds).toFixed(1)} seconds long and an ident may be at most ${identMaxSeconds} seconds. Shorten it and upload it again.`;
   }
+  if (file.status === 'failed') {
+    return `"${file.name}" could not be converted (${file.status_detail || 'unknown reason'}), so it cannot be used. Delete it and upload it again.`;
+  }
   if (!format) return null;
   if (!format.codec) {
     return `"${file.name}" cannot be used on this station: its stream is ${format.content_type || 'in a format'} that the gateway relays as it is, and idents and fallback audio work only on MP3 and AAC streams.`;
   }
   const problems = audio.mismatches(file, format);
   if (!problems.length) return null;
-  return `"${file.name}" cannot be played on this station because ${problems.join(', and ')}. The gateway does not convert audio, so the file has to match the stream exactly: export it as ${audio.target(format)} and upload it again.`;
+  return `"${file.name}" cannot be played on this station as it is, because ${problems.join(', and ')}. ${canConvert(format) ? offer(format) : `Export it as ${audio.target(format)} and upload it again.`}`;
 }
+
+// Whether the gateway can make audio in this stream's format. HE-AAC it cannot:
+// no encoder for it may be distributed with the gateway.
+const canConvert = (format) => Boolean(format && format.codec && format.type !== 'he-aac');
+
+// What is said when a file is not in the stream's format and converting it has not been agreed to.
+const offer = (format) =>
+  `It is best to upload a file that is already ${audio.target(format)}: such a file is used exactly as it is. Or the gateway can convert this one: it is re-encoded to the stream's format, its loudness is matched to the stream, and the converted file takes the place of this one. Converting needs your agreement.`;
+
+// Whether a file's format differs from a stream's in a way that needs converting.
+const differs = (file, format) => Boolean(format && format.codec && audio.mismatches(file, format).length);
 
 // ── Uploads ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +149,7 @@ async function receive(req, limit, onTooLarge) {
  * `use` ('ident' | 'fallback') and `station` (a row) are optional: with them
  * the file is also checked for that use on that station before it is kept.
  */
-async function create(req, owner, { name, originalName, use, station }) {
+async function create(req, owner, { name, originalName, use, station, consent = false }) {
   const quota = await quotaBytes(owner);
   const used = await usedBytes(owner.id);
   const declared = parseInt(req.get('content-length'), 10);
@@ -147,17 +167,52 @@ async function create(req, owner, { name, originalName, use, station }) {
 
   let stored = false;
   try {
-    let info;
+    // MP3 and AAC are read directly. Anything else can only be used by converting it.
+    let info = null;
+    let unreadable = null;
     try {
       info = await audio.analyse(received.tmp);
     } catch (err) {
-      if (err instanceof audio.AudioError) throw refuse(422, 'file_not_usable', err.message);
-      throw err;
+      if (!(err instanceof audio.AudioError)) throw err;
+      unreadable = err.message;
     }
-    const file = { name, ...info };
+    const format = station ? await streamFormat(station.slug) : null;
+    const identMax = await settings.get('ident_max_seconds');
+
+    if (!info || differs(info, format)) {
+      if (!canConvert(format)) {
+        // No station to convert it for, or a stream whose format cannot be produced here.
+        if (info) throw refuse(422, 'file_not_usable', problemFor({ name, ...info }, use || 'fallback', format, identMax));
+        throw refuse(422, 'file_not_usable', station
+          ? unreadable
+          : `${unreadable} Other formats can be converted when the file is uploaded for a particular station, once that station has been on air.`);
+      }
+      if (!consent) {
+        const what = info ? `"${name}" is ${audio.describe(info)} and this station's stream is ${format.summary}.` : `"${name}" is not in this station's format (${format.summary}).`;
+        throw refuse(422, 'conversion_needed', `${what} ${offer(format)} Tick the box to agree and upload it again (API: convert=true).`, { can_convert: true, target: audio.target(format) });
+      }
+      if (!(await convert.available())) throw refuse(501, 'conversion_unavailable', 'This server cannot convert audio (ffmpeg is not installed). Upload the file in the stream\'s format.');
+      let probed;
+      try {
+        probed = await convert.probe(received.tmp);
+      } catch (err) {
+        if (err instanceof convert.ConvertError) throw refuse(422, 'file_not_usable', err.message);
+        throw err;
+      }
+      if (use === 'ident' && probed.duration_seconds > identMax) {
+        throw refuse(422, 'file_not_usable', `"${name}" is ${probed.duration_seconds.toFixed(1)} seconds long and an ident may be at most ${identMax} seconds. Shorten it and upload it again.`);
+      }
+      const row = await insertConverting(owner, quota, {
+        name, originalName, size: received.bytes, sha256: received.sha256, duration: probed.duration_seconds || 0, format, station,
+      });
+      await fs.promises.rename(received.tmp, sourcePath(row.id));
+      stored = true;
+      enqueue(row.id);
+      return row;
+    }
+
     if (use) {
-      const format = station ? await streamFormat(station.slug) : null;
-      const problem = problemFor(file, use, format, await settings.get('ident_max_seconds'));
+      const problem = problemFor({ name, ...info }, use, format, identMax);
       if (problem) throw refuse(422, 'file_not_usable', problem);
     }
 
@@ -198,6 +253,140 @@ async function create(req, owner, { name, originalName, use, station }) {
   }
 }
 
+// ── Conversion ──────────────────────────────────────────────────────────────
+
+// Records a file whose audio is still to be converted. It is described as what
+// it will become, so that it can be chosen for its station straight away.
+async function insertConverting(owner, quota, { name, originalName, size: bytes, sha256, duration, format, station, replaces = null }) {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [owner.id]);
+    const now = await usedBytes(owner.id, client);
+    if (quota !== null && now + bytes > quota) throw overQuota(bytes, now, quota);
+    const { rows } = await client.query(
+      `INSERT INTO media_files (user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate,
+                                duration_seconds, audio_offset, audio_bytes, sha256, status, converted, target_level_db, replaces_id, for_station_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, $11, 'converting', true, $12, $13, $14) RETURNING ${COLUMNS}`,
+      [owner.id, name, originalName, bytes, format.codec, format.sample_rate, format.channels,
+        format.bitrate_kbps || (format.codec === 'mp3' ? 128 : 96), format.codec === 'mp3', duration, sha256,
+        Number.isFinite(format.level_db) ? format.level_db : null, replaces, station ? station.id : null]
+    );
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Converts a file that is already in the library for a station whose stream
+ * it does not match. The original stays as it is until the conversion has
+ * succeeded; then the converted file takes its place on that station, and the
+ * original is removed if no other station uses it.
+ */
+async function convertExisting(file, owner, station, use) {
+  const format = await streamFormat(station.slug);
+  if (file.status !== 'ready') throw refuse(409, 'file_not_ready', 'This file is still being converted, or its conversion failed.');
+  if (!differs(file, format)) throw refuse(409, 'conversion_not_needed', 'This file is already in the station\'s format.');
+  if (!canConvert(format)) throw refuse(422, 'file_not_usable', problemFor(file, use, format, Infinity));
+  if (!(await convert.available())) throw refuse(501, 'conversion_unavailable', 'This server cannot convert audio (ffmpeg is not installed).');
+  const identMax = await settings.get('ident_max_seconds');
+  if (use === 'ident' && Number(file.duration_seconds) > identMax) throw refuse(422, 'file_not_usable', problemFor(file, use, null, identMax));
+  const source = await ensureLocal(file);
+  // It takes no space of its own while it is converted: the original is counted, and usually makes way for it.
+  const row = await insertConverting(owner, null, {
+    name: file.name, originalName: file.original_name, size: 0, sha256: file.sha256, duration: Number(file.duration_seconds), format, station, replaces: file.id,
+  });
+  await fs.promises.copyFile(source, sourcePath(row.id));
+  enqueue(row.id);
+  return row;
+}
+
+const waiting = [];
+let working = false;
+
+// Conversions run one at a time, so that they never take more than one processor core.
+function enqueue(id) {
+  waiting.push(id);
+  if (working) return;
+  working = true;
+  (async () => {
+    while (waiting.length) {
+      const next = waiting.shift();
+      await finish(next).catch((err) => console.error(`[files] conversion of file ${next} failed:`, err.message));
+    }
+    working = false;
+  })();
+}
+
+async function finish(id) {
+  const row = await find(id);
+  if (!row || row.status !== 'converting') return;
+  const source = sourcePath(id);
+  const output = path.join(tmpDir(), `converted-${id}`);
+  const fail = async (detail) => {
+    await db.query("UPDATE media_files SET status = 'failed', status_detail = $1, size_bytes = 0 WHERE id = $2", [String(detail).slice(0, 300), id]);
+    await fs.promises.rm(source, { force: true });
+    await fs.promises.rm(output, { force: true });
+    await stations.republishUser(row.user_id);
+  };
+  try {
+    await fs.promises.access(source);
+  } catch {
+    return fail('the upload was lost before it could be converted');
+  }
+  const target = { codec: row.codec, sample_rate: row.sample_rate, channels: row.channels, bitrate_kbps: row.bitrate_kbps };
+  let info;
+  let gain;
+  try {
+    const before = await convert.level(source, target);
+    gain = convert.gainFor(before.mean_db, row.target_level_db === null ? NaN : Number(row.target_level_db));
+    await convert.convert(source, output, target, gain);
+    info = await audio.analyse(output);
+  } catch (err) {
+    if (err instanceof convert.ConvertError || err instanceof audio.AudioError) return fail(err.message);
+    throw err;
+  }
+  const bytes = (await fs.promises.stat(output)).size;
+  const sha256 = await new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    fs.createReadStream(output).on('data', (chunk) => hash.update(chunk)).on('end', () => resolve(hash.digest('hex'))).on('error', reject);
+  });
+
+  // Does the file it was made from now make way for it? Only if no other station uses that file.
+  const original = row.replaces_id ? await find(row.replaces_id) : null;
+  const elsewhere = original ? await db.query(
+    'SELECT 1 FROM stations WHERE (ident_file_id = $1 OR fallback_file_id = $1) AND id IS DISTINCT FROM $2 LIMIT 1', [original.id, row.for_station_id]
+  ) : null;
+  const dropOriginal = Boolean(original && elsewhere.rowCount === 0);
+
+  const { rows: [owner] } = await db.query('SELECT id, role, storage_quota_mb FROM users WHERE id = $1', [row.user_id]);
+  const quota = await quotaBytes(owner);
+  const used = (await usedBytes(row.user_id)) - row.size_bytes - (dropOriginal ? original.size_bytes : 0);
+  if (quota !== null && used + bytes > quota) {
+    return fail(`the converted file (${size(bytes)}) does not fit in the account's remaining storage`);
+  }
+  await fs.promises.rename(output, localPath(id));
+  if (original && row.for_station_id) {
+    for (const column of ['ident_file_id', 'fallback_file_id']) {
+      await db.query(`UPDATE stations SET ${column} = $1, updated_at = now() WHERE id = $2 AND ${column} = $3`, [id, row.for_station_id, original.id]);
+    }
+  }
+  await db.query(
+    `UPDATE media_files SET status = 'ready', status_detail = NULL, size_bytes = $1, codec = $2, sample_rate = $3, channels = $4, bitrate_kbps = $5,
+            constant_bitrate = $6, duration_seconds = $7, audio_offset = $8, audio_bytes = $9, sha256 = $10, gain_db = $11 WHERE id = $12`,
+    [bytes, info.codec, info.sample_rate, info.channels, info.bitrate_kbps, info.constant_bitrate, info.duration_seconds, info.audio_offset, info.audio_bytes, sha256, gain, id]
+  );
+  await fs.promises.rm(source, { force: true });
+  if (dropOriginal) await remove(original);
+  await stations.republishUser(row.user_id);
+  sync().catch((err) => console.error('[files]', err.message));
+}
+
 // ── Reading ─────────────────────────────────────────────────────────────────
 
 const fetching = new Map();
@@ -228,6 +417,9 @@ async function find(id) {
 
 // Sends the file. `audioOnly` leaves out tags, which is what an engine splices into a stream.
 async function send(res, row, { audioOnly = false, download = false } = {}) {
+  if (row.status !== 'ready') {
+    throw refuse(409, 'file_not_ready', row.status === 'converting' ? 'This file is still being converted.' : 'This file could not be converted and has no audio.');
+  }
   const file = await ensureLocal(row);
   const start = audioOnly ? row.audio_offset : 0;
   const length = audioOnly ? row.audio_bytes : row.size_bytes;
@@ -253,6 +445,7 @@ async function stationsUsing(id) {
 async function discard(rows) {
   for (const row of rows) {
     await fs.promises.rm(localPath(row.id), { force: true });
+    await fs.promises.rm(sourcePath(row.id), { force: true });
     if (row.storage === 'dropbox' && row.storage_path) {
       await dropbox.remove(row.storage_path).catch((err) => console.error(`[files] could not delete ${row.storage_path} from Dropbox: ${err.message}`));
     }
@@ -274,7 +467,7 @@ async function sync() {
   syncing = true;
   try {
     if (await dropbox.connected()) {
-      const { rows } = await db.query(`SELECT ${COLUMNS} FROM media_files WHERE storage = 'local' ORDER BY id`);
+      const { rows } = await db.query(`SELECT ${COLUMNS} FROM media_files WHERE storage = 'local' AND status = 'ready' ORDER BY id`);
       for (const row of rows) {
         const remote = `/${row.user_id}/${row.id}-${(row.original_name || row.name).replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)}`;
         try {
@@ -309,6 +502,8 @@ async function trim() {
     const stat = await fs.promises.stat(file).catch(() => null);
     if (!stat) continue;
     const row = known.get(entry.name);
+    // An upload waiting to be converted belongs to its row.
+    if (entry.name.startsWith('src-') && known.has(entry.name.slice(4))) continue;
     if (!row) {
       // Not a file the library knows (its row was deleted, or a download that never finished).
       if (Date.now() - stat.mtimeMs > 3600 * 1000) await fs.promises.rm(file, { force: true });
@@ -359,6 +554,10 @@ function present(row, usedBy) {
     constant_bitrate: row.constant_bitrate,
     duration_seconds: Number(row.duration_seconds),
     stored_in: row.storage,
+    status: row.status,
+    status_detail: row.status_detail,
+    converted: row.converted,
+    gain_db: row.gain_db === null ? null : Number(row.gain_db),
     used_by: usedBy || [],
     created_at: row.created_at,
   };
@@ -382,12 +581,13 @@ async function checkAssignment(fields, ownerId, slug) {
       continue;
     }
     const problem = problemFor(file, use, format, identMax);
-    if (problem) errors.push({ field, message: problem });
+    // Saying that it can be converted lets the caller offer that, with the file to convert.
+    if (problem) errors.push({ field, message: problem, ...(file.status === 'ready' && differs(file, format) && canConvert(format) ? { can_convert: true, file_id: file.id } : {}) });
   }
   if (errors.length) throw invalid(errors);
 }
 
 module.exports = {
-  COLUMNS, init, create, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
+  COLUMNS, init, create, convertExisting, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
   stationsUsing, bringHome, present, size,
 };

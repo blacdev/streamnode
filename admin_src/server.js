@@ -12,6 +12,8 @@ const haproxy = require('./src/haproxy');
 const cluster = require('./src/cluster');
 const updates = require('./src/updates');
 const media = require('./src/media');
+const capacity = require('./src/capacity');
+const notify = require('./src/notify');
 const routes = require('./src/routes');
 const openapi = require('./src/openapi');
 const { errorHandler } = require('./src/errors');
@@ -87,6 +89,9 @@ async function main() {
   await cluster.publishOverrides();
   every(config.stationSyncMs, 'audio-overrides', cluster.publishOverrides);
   every(3600 * 1000, 'retention', stats.prune);
+  // What a listener costs is learned from the running servers, a little at a time.
+  every(30 * 1000, 'costs', capacity.sample);
+  every(10 * 60 * 1000, 'notices', notify.run);
   media.sync().catch((err) => console.error('[files]', err.message));
   every(config.stationSyncMs, 'files', media.sync);
   if (updates.enabled()) {

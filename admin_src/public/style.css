@@ -130,3 +130,9 @@ summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
 }
 .notice.prose { word-break: normal; }
 #fileForm { margin: 16px 0; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 16px 0; padding: 4px 14px 8px; }
+legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+.meter { display: block; height: 6px; width: 140px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+.meter > i { display: block; height: 100%; background: var(--accent); }
+.meter.warn > i { background: var(--warn); }
+#estimateNotes { padding-left: 18px; line-height: 1.5; }

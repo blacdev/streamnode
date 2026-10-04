@@ -24,6 +24,7 @@
       <nav id="tabs" role="tablist">
         <button role="tab" data-tab="stations" aria-selected="true">Stations</button>
         <button role="tab" data-tab="files">Audio files</button>
+        <button role="tab" data-tab="billing">Billing</button>
         <button role="tab" data-tab="keys">API keys</button>
         <button role="tab" data-tab="users" data-admin>Accounts</button>
         <button role="tab" data-tab="servers" data-admin>Servers</button>
@@ -59,12 +60,12 @@
           <span class="muted">Shared by all of the account's stations</span>
           <select id="fileAccount" data-admin aria-label="Account"></select>
         </div>
-        <p class="notice prose"><strong>Files are played exactly as uploaded: the gateway does not convert audio.</strong>
-          A file must be MP3 or AAC (an .aac file, not .m4a) and match the station's stream exactly: the same format, bitrate, sample rate and mono or stereo. MP3 files must use a constant bitrate.
-          A file that does not match is refused with the settings to export it with. <span id="fileLimits"></span></p>
+        <p class="notice prose"><strong>It is best to upload a file that is already in the station's stream format</strong>
+          (the same format, bitrate, sample rate and mono or stereo; MP3 at a constant bitrate; AAC as an .aac file): it is then played exactly as you made it.
+          A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be converted for you, if you agree to it: it is re-encoded, which costs a little quality when the upload was already compressed, its loudness is matched to the stream, and the converted file takes the place of the one you uploaded. <span id="fileLimits"></span></p>
         <form id="fileForm" class="card wide-card">
           <h3>Upload a file</h3>
-          <label>Audio file <input name="file" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac" required></label>
+          <label>Audio file <input name="file" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg" required></label>
           <label>Name <input name="name" maxlength="100" placeholder="Shown in the dashboard and to listeners as the title"></label>
           <label>Use it as
             <select name="use">
@@ -74,6 +75,7 @@
             </select></label>
           <label id="fileStationLabel" hidden>Station <select name="station"></select>
             <small id="fileStationFormat"></small></label>
+          <label class="check"><input type="checkbox" name="convert"> If it is not in the station's format, convert it. The converted file replaces what I upload.</label>
           <p id="fileError" class="error" role="alert"></p>
           <div class="actions left"><button class="primary">Upload</button> <span id="fileProgress" class="muted"></span></div>
         </form>
@@ -82,6 +84,26 @@
           <tbody id="fileRows"></tbody>
         </table></div>
         <p id="filesEmpty" class="muted empty" hidden>No files yet.</p>
+      </section>
+
+      <section id="tab-billing" hidden>
+        <div class="bar"><h2>Billing and limits</h2>
+          <span id="billingMonth" class="muted"></span>
+          <select id="billingAccount" data-admin aria-label="Account"></select>
+        </div>
+        <div id="billingTiles" class="tiles"></div>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Station</th><th>Status</th><th>Listeners (peak this month)</th><th class="num">Bitrate</th><th class="num">Listening hours</th><th class="num">Data sent</th><th>Subscription</th><th class="num">Per month</th></tr></thead>
+          <tbody id="billingRows"></tbody>
+        </table></div>
+        <p id="billingNote" class="muted"></p>
+        <form id="emailForm" class="card wide-card">
+          <h3>Notices by email</h3>
+          <p class="muted">Optional. If you give an address, you are told when a station passes half of its listener limit, more often as it gets closer, when your audio storage fills up, and before a subscription ends.</p>
+          <label>Email address <input name="email" type="email" maxlength="254" placeholder="Leave empty for no notices"></label>
+          <p id="emailError" class="error" role="alert"></p>
+          <div class="actions left"><button class="primary">Save</button></div>
+        </form>
       </section>
 
       <section id="tab-settings" hidden>
@@ -94,6 +116,43 @@
               <small>Applies to accounts without a quota of their own. Set a quota for one account under Accounts.</small></label>
             <p id="settingsError" class="error" role="alert"></p>
             <div class="actions left"><button class="primary">Save</button></div>
+          </form>
+        </div>
+        <div class="card wide-card">
+          <h3>Prices</h3>
+          <p class="muted">A station is charged for the listeners it is allowed, at its stream's bitrate, and an account for its storage. The price of one listener is what a server costs you divided by the listeners such a server can carry at that bitrate, plus your margin. Leave the server cost at 0 to show no prices. A discount or a fixed price can be set per station, and a discount per account.</p>
+          <form id="ratesForm">
+            <label>Currency <input name="currency" maxlength="3" class="short" required></label>
+            <label>What one server costs you per month <input name="server_monthly_cost" type="number" min="0" step="0.01" class="short" required></label>
+            <label>That server's vCPUs <input name="server_vcpus" type="number" min="1" class="short" required></label>
+            <label>Its memory, in GB <input name="server_memory_gb" type="number" min="1" class="short" required></label>
+            <label>Its network port, in Mbit/s <input name="server_port_mbps" type="number" min="1" class="short" required></label>
+            <label>Margin on top of cost, in percent <input name="margin_percent" type="number" min="0" step="0.1" class="short" required></label>
+            <label>Storage, per GB per month <input name="storage_price_per_gb" type="number" min="0" step="0.01" class="short" required></label>
+            <p id="ratesError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button></div>
+          </form>
+          <div class="tablewrap"><table id="ratesTable"></table></div>
+          <p id="ratesNote" class="muted"></p>
+        </div>
+        <div class="card wide-card">
+          <h3>Email</h3>
+          <p class="muted">Optional. With a mail server entered here, accounts that have given an address are sent notices about their limits and subscriptions. Without it, nothing is sent and everything else works the same.</p>
+          <form id="smtpForm">
+            <label>SMTP server <input name="host" maxlength="255" placeholder="smtp.example.com"></label>
+            <label>Port <input name="port" type="number" min="1" max="65535" class="short"></label>
+            <label>Encryption
+              <select name="security">
+                <option value="starttls">STARTTLS (usually port 587)</option>
+                <option value="tls">TLS from the start (usually port 465)</option>
+                <option value="none">None</option>
+              </select></label>
+            <label>Username <input name="user" maxlength="255" autocomplete="off"></label>
+            <label>Password <input name="password" type="password" maxlength="255" autocomplete="new-password"></label>
+            <label>Sender <input name="from" maxlength="254" placeholder="StreamNode &lt;noreply@example.com&gt;"></label>
+            <label>Send a copy of every notice to <input name="copy_to" type="email" maxlength="254" placeholder="Optional"></label>
+            <p id="smtpError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button> <button type="button" id="smtpTest">Send a test message</button></div>
           </form>
         </div>
         <div class="card wide-card">
@@ -131,6 +190,7 @@
             <input name="external_id" placeholder="External ID (optional)" aria-label="External ID">
             <input name="max_stations" type="number" min="0" placeholder="Station limit" aria-label="Station limit" class="short">
             <input name="storage_quota_mb" type="number" min="0" placeholder="Storage MB" aria-label="Storage quota in MB" class="short">
+            <input name="email" type="email" placeholder="Email (optional)" aria-label="Email">
             <button class="primary">Add account</button>
           </form>
         </div>
@@ -148,9 +208,34 @@
         <p id="capacityNotice" class="notice" hidden></p>
         <p id="serversUnmanaged" class="notice" hidden>Server management is switched off (HAPROXY_ADMIN is not set), so changes here are saved but not applied.</p>
         <div class="tablewrap"><table>
-          <thead><tr><th>Server</th><th>Address</th><th>State</th><th class="num">Listeners</th><th>CPU</th><th>Memory</th><th>Disk</th><th class="num">Sending</th><th class="num">Weight</th><th></th></tr></thead>
+          <thead><tr><th>Server</th><th>Address</th><th>State</th><th class="num">Listeners</th><th>CPU</th><th>Memory</th><th>Disk</th><th class="num">Sending</th><th>Engine</th><th class="num">Weight</th><th></th></tr></thead>
           <tbody id="serverRows"></tbody>
         </table></div>
+        <div class="card wide-card">
+          <h3>What listeners cost</h3>
+          <p id="proxyLine" class="muted"></p>
+          <div class="actions left"><button type="button" id="masterPort" hidden>Set the master's port speed</button></div>
+          <p id="costLine" class="muted"></p>
+          <div class="tablewrap"><table id="capacityTable"></table></div>
+        </div>
+        <form id="estimateForm" class="card wide-card">
+          <h3>What would another server do?</h3>
+          <label>vCPUs <input name="vcpus" type="number" min="1" value="4" class="short" required></label>
+          <label>Memory, in GB <input name="memory_gb" type="number" min="1" step="0.5" value="8" class="short" required></label>
+          <label>Network port, in Mbit/s <input name="port_mbps" type="number" min="1" value="1000" class="short" required></label>
+          <label>Added as
+            <select name="mode">
+              <option value="proxied">A slave: listeners reach it through the master</option>
+              <option value="direct">An edge server: its own DNS record, answers listeners itself</option>
+            </select></label>
+          <label>Stream bitrate to work with, in kbps <input name="bitrate_kbps" type="number" min="8" value="128" class="short" required></label>
+          <p id="estimateError" class="error" role="alert"></p>
+          <div class="actions left"><button class="primary">Work it out</button></div>
+          <div id="estimateResult" hidden>
+            <ul id="estimateNotes"></ul>
+            <div class="tablewrap"><table id="estimateTable"></table></div>
+          </div>
+        </form>
       </section>
 
       <section id="tab-updates" hidden>
@@ -201,14 +286,27 @@
       <label class="check"><input type="checkbox" name="silence_detection" checked> Treat a stream that sends silence as having no audio</label>
       <label>Ident <select name="ident_file_id"></select>
         <small>Played at every change: on leaving a failed stream and on returning to one that is back. Without an ident, MP3 stations fade out and in instead. Choose a file already in your storage, or upload one:</small>
-        <input name="ident_upload" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac"></label>
+        <input name="ident_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
       <label>Fallback audio <select name="fallback_file_id"></select>
         <small>Played in a loop when neither stream has audio. Choose a file already in your storage, or upload one:</small>
-        <input name="fallback_upload" type="file" accept=".mp3,.aac,audio/mpeg,audio/aac"></label>
-      <p class="muted"><span id="stationFormat"></span> The gateway does not convert audio. <span id="stationStorage"></span></p>
+        <input name="fallback_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
+      <label class="check"><input type="checkbox" name="convert"> Convert uploads that are not in the stream's format. The converted file, matched to the stream's loudness, replaces what I upload.</label>
+      <p class="muted"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
       <p id="stationUpload" class="muted" role="status"></p>
-      <label data-admin>Listener limit <input name="max_listeners" type="number" min="0" value="0">
-        <small>0 for unlimited.</small></label>
+      <fieldset data-admin>
+        <legend>Set by the administrator</legend>
+        <label>Account <select name="user_id"></select>
+          <small>Moving a station to another account clears its ident and fallback audio, which belong to an account.</small></label>
+        <label>Listener limit <input name="max_listeners" type="number" min="0" value="0">
+          <small>0 for unlimited; the station is then charged for the most listeners it had in the month.</small></label>
+        <label>Bitrate to charge at, in kbps <input name="billing_bitrate_kbps" type="number" min="8" max="2000" placeholder="The stream's own">
+          <small>Leave empty to use the bitrate detected on the stream.</small></label>
+        <label>Discount, in percent <input name="discount_percent" type="number" min="0" max="100" step="0.1" value="0"></label>
+        <label>Fixed price per month <input name="price_override" type="number" min="0" step="0.01" placeholder="Calculated">
+          <small>Replaces the calculated price. Leave empty to calculate it.</small></label>
+        <label>Subscription ends on <input name="subscription_ends_on" type="date">
+          <small>The owner is emailed as the date approaches. Leave empty for no end.</small></label>
+      </fieldset>
       <p id="stationError" class="error" role="alert"></p>
       <div class="actions">
         <button type="button" value="cancel" id="stationCancel">Cancel</button>

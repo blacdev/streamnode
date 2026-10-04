@@ -120,7 +120,8 @@ test('a stream is described with the features its type allows', () => {
   // Recorded before profiles existed: a low-rate AAC stream is taken to be AAC+.
   const plus = types.describe({ codec: 'aac', sample_rate: '22050', channels: '2', bitrate: '48' });
   assert.strictEqual(plus.type, 'he-aac');
-  assert.strictEqual(plus.features.silence_detection, false);
+  assert.strictEqual(plus.features.silence_detection, true);
+  assert.strictEqual(plus.features.fades, false);
   assert.strictEqual(plus.features.fallback_audio, true);
   assert.strictEqual(types.describe({ codec: 'aac', sample_rate: '44100', channels: '2', bitrate: '96' }).features.fades, false);
 
@@ -128,4 +129,17 @@ test('a stream is described with the features its type allows', () => {
   assert.strictEqual(other.type, 'other');
   assert.strictEqual(other.codec, null);
   assert.ok(Object.values(other.features).every((on) => on === false));
+});
+
+test('loudness is matched within limits', () => {
+  const convert = require('../src/convert');
+  assert.strictEqual(convert.gainFor(-30, -16), 14);
+  assert.strictEqual(convert.gainFor(-10, -16.5), -6.5);
+  // Small differences are left alone; large ones are capped; an unknown stream level changes nothing.
+  assert.strictEqual(convert.gainFor(-16.4, -16), 0);
+  assert.strictEqual(convert.gainFor(-60, -16), 20);
+  assert.strictEqual(convert.gainFor(-2, -40), -20);
+  assert.strictEqual(convert.gainFor(-30, NaN), 0);
+  // A file that is all but silent is not turned up into noise.
+  assert.strictEqual(convert.gainFor(-91, -16), 0);
 });
