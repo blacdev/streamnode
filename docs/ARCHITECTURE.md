@@ -75,11 +75,23 @@ A source is considered connected only once it has delivered audio bytes, not mer
 accepted a connection. From then on the relay treats three events as loss of source:
 a read error, end of stream, and no data for `STALL_TIMEOUT_SECS`.
 
-MP3 and AAC streams are cut into frames as they pass through (headers only; nothing is
-decoded), which gives the relay three things: switches land on frame boundaries, a
-frame can be recognised as digital silence (an MP3 frame with no spectral data, an AAC
-frame of a few bytes), and the stream's format is known (`format:<slug>` in Redis) so
-uploaded files can be checked against it. Other formats are relayed as opaque bytes.
+MP3 and AAC streams are cut into frames as they pass through, from their headers. That
+gives the relay switches that land on frame boundaries, and the stream's format
+(`format:<slug>` in Redis) for checking uploaded files against. Other formats are
+relayed as opaque bytes.
+
+Whether a stream is silent is found by decoding a sample of it (`detector.rs`, using
+FFmpeg's MP3 and AAC decoders through the `ffmpeg-next` crate). Twice a second the
+decoder is reset and given a short run of consecutive frames: enough lead-in for the
+MP3 bit reservoir and the codecs' frame overlap, then two frames whose peak level is
+measured against `SILENCE_THRESHOLD_DB`. The other nine tenths of the stream are never
+decoded, which keeps the cost near 0.07% of a core per station. The decoded audio is
+discarded; it also tells the engine whether an AAC stream is HE-AAC. If a stream
+cannot be decoded, the frames' own marking of digital silence is used instead.
+
+Only those two decoders are compiled, from FFmpeg's source, and linked into the engine
+binary (`rust_src/build-ffmpeg.sh`), so the image stays small and the server needs no
+FFmpeg installed.
 
 | Situation | Behaviour |
 |---|---|
@@ -102,7 +114,8 @@ should use the same codec as the primary.
 
 ### Passthrough
 
-The engine does not decode, transcode or re-frame audio. The source's `Content-Type`
+The engine never transcodes or re-frames what it sends: listeners receive the source's
+own bytes. (It decodes a sample of the stream only to measure its level.) The source's `Content-Type`
 and its `icy-*` / `ice-audio-info` headers are forwarded as received.
 
 The only bytes the engine handles specially are ICY in-stream metadata blocks. It
@@ -186,8 +199,9 @@ live:<slug>:<node> hash (expires after 15 s)   --> read directly by the API
 | `api_keys` | SHA-256 hashes of API keys, with a display prefix |
 | `station_stats_minute` | One row per station per flush while active |
 | `station_stats_daily` | One row per station per UTC day, permanent |
-| `media_files` | Uploaded idents and fallback files: owner, format, length, where the audio starts, where it is stored |
-| `settings` | Gateway-wide settings changed while running (ident limit, default quota, Dropbox connection) |
+| `media_files` | Uploaded idents and fallback files: owner, format, length, where the audio starts, where it is stored, and whether it is being or has been converted |
+| `settings` | Gateway-wide settings changed while running (ident limit, default quota, Dropbox connection, rates, mail server, the learned cost of a listener) |
+| `notifications` | One row per notice emailed, so that none is sent twice in its period |
 | `engine_nodes` | Streaming servers HAProxy balances across |
 | `join_tokens` | Hashes of one-time tokens for enrolling slave nodes |
 | `audit_log` | Who changed what, from which address |

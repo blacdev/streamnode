@@ -21,7 +21,8 @@ primary stops or goes silent
         ▼
      ident                      (if the station has one)
         ▼
-backup stream                   (if the station has one and it has audio)
+backup stream                   (if the station has one and it answers;
+        │                        if it does not, straight on to the fallback file)
         │  backup stops or goes silent: waits the failover delay, retrying it
         ▼
      ident
@@ -68,11 +69,18 @@ before: listeners are released after a few failed attempts and the dashboard sho
 - the stream keeps sending but carries **silence** (for example the studio feed into
   the encoder was unplugged).
 
-Silence is recognised from the audio frames themselves, without decoding them, so it
-costs no measurable CPU. It catches true digital silence. A stream that carries
-faint noise (an analogue input left open, a hiss) is not silence and does not
-trigger a switch. Silence detection can be switched off per station, for stations
-that broadcast silence on purpose.
+Silence is found by listening. Twice a second the gateway decodes a few frames of the
+stream (about a twentieth of a second of audio) and measures how loud they are;
+anything quieter than **-55 dB** below full level counts as silence. That covers true
+digital silence and also what an encoder sends when nothing is plugged in: the faint
+hiss of an open input. What is decoded is only measured and then discarded. Listeners
+always receive the stream's own bytes, untouched.
+
+Because only a small sample is decoded, this costs little: under a thousandth of one
+processor core per station on air. The level is set for the whole server with
+`SILENCE_THRESHOLD_DB`; a station that plays very quiet material (below -55 dB for
+longer than its failover delay) can have silence detection switched off, as can a
+station that broadcasts silence on purpose.
 
 ### The failover delay
 
@@ -84,12 +92,11 @@ else happens. The delay does not apply to coming back, which is immediate.
 A short delay reacts faster but moves on during brief network hiccups. A long delay
 rides those out but leaves listeners in silence for longer.
 
-## Files must match the stream exactly
+## Files: match the stream, or have them converted
 
-**The gateway does not convert audio.** Idents and fallback files are sent to
-listeners exactly as uploaded, spliced into the same connection as the live stream. A
+Idents and fallback files are spliced into the same connection as the live stream. A
 player that is given a different format in mid-stream stutters, plays at the wrong
-speed or stops. So a file must already be what the stream is:
+speed or stops, so what is played must be exactly what the stream is:
 
 | Must match | Example |
 |---|---|
@@ -101,32 +108,70 @@ speed or stops. So a file must already be what the stream is:
 The station's own format is shown next to the file choices in the dashboard once the
 station has been on air, and in the API as `live.stream_format`.
 
-A file that cannot be used is **refused, with the reason and what to do**:
-
-> "night-mix" cannot be played on this station because its bitrate is 128 kbps and
-> the stream's is 96 kbps. The gateway does not convert audio, so the file has to
-> match the stream exactly: export it as MP3, 96 kbps constant bitrate, 44.1 kHz,
-> stereo and upload it again.
-
-| Refusal | What to do |
-|---|---|
-| WAV, FLAC, Ogg, M4A/MP4 | Export as MP3, or as AAC in an `.aac` file |
-| Different bitrate, sample rate, or mono/stereo | Export with the settings named in the message |
-| Variable bitrate MP3 | Export as constant bitrate (CBR) |
-| Ident too long | Shorten it. The limit is 5 seconds unless the administrator changed it |
-| Not enough storage | Delete files you no longer need, or ask the administrator for a larger quota |
-
-Exporting with the free tool ffmpeg, for a 96 kbps stereo 44.1 kHz stream:
+**The best file is one already in that format.** It is played exactly as you made it,
+byte for byte. Exporting with the free tool ffmpeg, for a 96 kbps stereo 44.1 kHz
+stream:
 
 ```bash
 ffmpeg -i input.wav -c:a libmp3lame -b:a 96k -ar 44100 -ac 2 output.mp3          # MP3
 ffmpeg -i input.wav -c:a aac -b:a 96k -ar 44100 -ac 2 -f adts output.aac         # AAC
 ```
 
+### Letting the gateway convert a file
+
+A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be
+converted for the station instead. This happens only **with your agreement**, because
+of what it does:
+
+- the file is **re-encoded** to the stream's format. If what you uploaded was already
+  compressed (MP3, AAC, Ogg), that costs a little quality; from WAV or FLAC it does not;
+- its **loudness is matched to the stream**: the gateway measures how loud the stream
+  is on average while it plays, and turns the file up or down to that level (by at
+  most 20 dB, with peaks held just below full scale), so an ident or fallback file is
+  neither louder nor quieter than the programme around it;
+- **the converted file takes the place of what you uploaded.** The upload itself is
+  not kept.
+
+You agree by ticking *Convert...* next to the upload in the dashboard, or by passing
+`convert=true` in the API. Without it, such a file is refused with this explanation.
+
+Choosing a file that is already in your storage for a station it does not match works
+the same way: the dashboard asks, and on your yes a converted copy is made for that
+station and replaces the original there. The original is removed if no other station
+uses it.
+
+Converting runs in the background, one file at a time. The file appears at once,
+marked *Converting*, can be chosen straight away, and plays as soon as it is ready.
+Converting is given one processor core at the lowest priority, so that it never
+competes with listeners, and runs at roughly 20 times real time for MP3 and 14 times
+for AAC: a few seconds for an ident, about 10 minutes for a three-hour mix. Live
+streams are never converted.
+
+What conversion needs:
+
+- a **station**: the target format is that station's, so a file in another format has
+  to be uploaded for a station (from its edit form, or with `station=` in the API);
+- the station to **have been on air**, so that its format is known. Its loudness is
+  known after about 20 seconds on air; before that the file is converted without a
+  change of level;
+- an **MP3 or plain AAC** stream. The gateway cannot produce HE-AAC, so for an HE-AAC
+  station the file must be supplied in that format.
+
+A file is still **refused, with the reason and what to do**, when:
+
+| Refusal | What to do |
+|---|---|
+| Another format, and conversion not agreed to | Agree to the conversion, or export the file with the settings named in the message |
+| Not audio | Upload MP3, AAC, WAV, FLAC, Ogg or M4A |
+| Another format, with no station given or a station that has never been on air | Upload it from the station's form once the station has played |
+| HE-AAC station and a file that does not match | Supply the file as HE-AAC with the stream's settings |
+| Ident too long | Shorten it. The limit is 5 seconds unless the administrator changed it |
+| Not enough storage | Delete files you no longer need, or ask the administrator for a larger quota. An upload must fit in the free space as uploaded, even though the converted file is usually smaller |
+
 Other points:
 
 - Only **MP3 and AAC** stations (including HE-AAC) can use idents and fallback files,
-  and silence is recognised on MP3 and plain AAC only. See
+  and have silence detection. See
   [Supported stream types](STATION_GUIDE.md#supported-stream-types).
 - For an **HE-AAC** station the file must be HE-AAC made with the same encoder
   settings. The gateway can compare what the frame headers state (sample rate,
@@ -227,10 +272,16 @@ back, nothing is changed. The copies in Dropbox are left there.
 
 - Fades are a fade-out followed by a fade-in, not an overlap of the two, and are
   available on MP3 streams only.
-- Silence detection recognises digital silence only; it does not measure loudness.
+- Silence detection samples the stream twice a second rather than listening to all of
+  it, and judges by peak level only. Sound quieter than the threshold is silence to it.
 - The ident is one per station and is used for every change, in both directions.
-- When the primary and the backup are both down, the ident is heard twice, as each one
-  is given up on, with the failover delay between them.
+- The ident is heard once per change. When the primary fails and the backup cannot be
+  reached either, the station goes from one ident straight to the fallback file; if the
+  backup returns later it is brought in then.
+- Loudness is matched on average level, measured from a sample of the stream. It is a
+  good match for programme material, not a broadcast loudness standard, and it is
+  applied only to files the gateway converts: a file uploaded in the stream's own
+  format is never altered.
 - A station that starts up with both streams down goes straight to the fallback file.
 - If the master cannot be reached when a streaming server needs a file it has not
   fetched yet, the file is skipped and the station behaves as if it had none.

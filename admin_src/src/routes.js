@@ -14,6 +14,9 @@ const media = require('./media');
 const settings = require('./settings');
 const dropbox = require('./dropbox');
 const streamTypes = require('./streamtypes');
+const billing = require('./billing');
+const mail = require('./mail');
+const notify = require('./notify');
 const config = require('./config');
 const v = require('./validate');
 const { wrap, badRequest, invalid, forbidden, notFound, conflict, HttpError } = require('./errors');
@@ -154,7 +157,18 @@ router.post('/auth/logout', wrap(async (req, res) => {
 
 router.get('/auth/me', wrap(async (req, res) => {
   const { id, username, role, external_id, max_stations } = req.user;
-  res.json({ id, username, role, external_id, max_stations, storage: await media.usage(req.user), authenticated_via: req.user.via });
+  res.json({ id, username, role, external_id, max_stations, email: req.user.email || null, storage: await media.usage(req.user), authenticated_via: req.user.via });
+}));
+
+// An account may set where its own notices go. Everything else about an account is the administrator's.
+router.patch('/auth/me', wrap(async (req, res) => {
+  const body = req.body || {};
+  const problem = body.email === undefined ? 'is required (empty to stop notices)' : v.checkEmail(body.email);
+  if (problem) throw invalid([{ field: 'email', message: problem }]);
+  const email = body.email === null || body.email === '' ? null : body.email.trim();
+  await db.query('UPDATE users SET email = $1, updated_at = now() WHERE id = $2', [email, req.user.id]);
+  audit(req, 'user.email', req.user.username);
+  res.json({ id: req.user.id, username: req.user.username, email });
 }));
 
 // ── Stations ──────────────────────────────────────────────────────────────
@@ -474,11 +488,13 @@ router.post('/files', wrap(async (req, res) => {
     }
     if (errors.length) throw invalid(errors);
 
-    const row = await media.create(req, owner, { name, originalName: original, use, station });
-    if (!row.already_stored) audit(req, 'file.upload', `file:${row.id}`, { name: row.name, size_bytes: row.size_bytes, user_id: owner.id });
+    // Converting replaces what was uploaded, so it is only done when the caller says so.
+    const consent = req.query.convert === 'true' || req.query.convert === '1';
+    const row = await media.create(req, owner, { name, originalName: original, use, station, consent });
+    if (!row.already_stored) audit(req, 'file.upload', `file:${row.id}`, { name: row.name, size_bytes: row.size_bytes, user_id: owner.id, converting: row.status === 'converting' });
     // assign=false only checks the file against the station; the caller sets it on the station itself.
     if (station && req.query.assign !== 'false') await updateStation(req, station, { [`${use}_file_id`]: row.id });
-    res.status(row.already_stored ? 200 : 201).json({ ...(await presentFiles([row]))[0], already_stored: Boolean(row.already_stored), usage: await media.usage(owner) });
+    res.status(row.already_stored ? 200 : row.status === 'converting' ? 202 : 201).json({ ...(await presentFiles([row]))[0], already_stored: Boolean(row.already_stored), usage: await media.usage(owner) });
   } catch (err) {
     // The rest of the upload is not read, so this connection cannot be reused.
     res.set('Connection', 'close');
@@ -489,6 +505,21 @@ router.post('/files', wrap(async (req, res) => {
 
 router.get('/files/:id', wrap(async (req, res) => {
   res.json((await presentFiles([await loadFile(req)]))[0]);
+}));
+
+// Converts a file already in the library to a station's format. Calling this
+// is the owner's agreement to it: the converted file takes the original's place
+// on that station, and the original is removed if nothing else uses it.
+router.post('/files/:id/convert', wrap(async (req, res) => {
+  const file = await loadFile(req);
+  const body = req.body || {};
+  const station = typeof body.station === 'string' ? await stations.findBySlug(body.station) : null;
+  if (!station || station.user_id !== file.user_id) throw invalid([{ field: 'station', message: "must be a station in this file's account" }]);
+  if (body.use !== 'ident' && body.use !== 'fallback') throw invalid([{ field: 'use', message: 'must be "ident" or "fallback"' }]);
+  const { rows } = await db.query('SELECT id, username, role, storage_quota_mb FROM users WHERE id = $1', [file.user_id]);
+  const row = await media.convertExisting(file, rows[0], station, body.use);
+  audit(req, 'file.convert', `file:${file.id}`, { station: station.slug, use: body.use, new_file: row.id });
+  res.status(202).json((await presentFiles([row]))[0]);
 }));
 
 router.get('/files/:id/content', wrap(async (req, res) => {
@@ -515,6 +546,70 @@ router.delete('/files/:id', wrap(async (req, res) => {
   await stations.republishUser(current.user_id);
   audit(req, 'file.delete', `file:${current.id}`, { name: current.name, removed_from: inUse });
   res.status(204).end();
+}));
+
+// ── Billing and limits ────────────────────────────────────────────────────
+
+const BILLING_USER = 'id, username, role, email, storage_quota_mb, discount_percent';
+
+// What an account's stations and storage cost, and how close each is to its limits.
+// An account sees its own; an administrator names one with user_id, or gets them all.
+router.get('/billing', wrap(async (req, res) => {
+  if (!isAdmin(req)) return res.json(await billing.forAccount(req.user));
+  if (req.query.user_id !== undefined) {
+    const id = v.intParam(req.query.user_id, { name: 'user_id', min: 1, max: 2147483647 });
+    const { rows } = await db.query(`SELECT ${BILLING_USER} FROM users WHERE id = $1`, [id]);
+    if (!rows[0]) throw notFound('User');
+    return res.json(await billing.forAccount(rows[0]));
+  }
+  const { rows } = await db.query(`SELECT ${BILLING_USER} FROM users ORDER BY username`);
+  const accounts = [];
+  for (const user of rows) accounts.push(await billing.forAccount(user));
+  const priced = accounts.filter((a) => a.monthly_total !== null);
+  res.json({
+    currency: accounts[0] ? accounts[0].currency : (await billing.rates()).currency,
+    month: new Date().toISOString().slice(0, 7),
+    monthly_total: priced.length ? Math.round(priced.reduce((sum, a) => sum + a.monthly_total, 0) * 100) / 100 : null,
+    accounts,
+  });
+}));
+
+// What a given number of listeners, bitrate and storage would cost per month.
+router.get('/billing/quote', wrap(async (req, res) => {
+  const number = (name, min, max, fallback) => {
+    if (req.query[name] === undefined || req.query[name] === '') return fallback;
+    const n = Number(req.query[name]);
+    if (!Number.isFinite(n) || n < min || n > max) throw invalid([{ field: name, message: `must be a number from ${min} to ${max}` }]);
+    return n;
+  };
+  const listeners = number('listeners', 0, 1e9);
+  if (listeners === undefined) throw invalid([{ field: 'listeners', message: 'is required' }]);
+  res.json(await billing.quote({
+    listeners,
+    bitrate_kbps: number('bitrate_kbps', 8, 2000, 128),
+    storage_mb: number('storage_mb', 0, 1e9, 0),
+    discount_percent: isAdmin(req) ? number('discount_percent', 0, 100, 0) : 0,
+  }));
+}));
+
+// The rates prices are worked out from: what a server costs, its size, the margin, and storage.
+router.get('/billing/rates', auth.requireAdmin, wrap(async (req, res) => {
+  res.json(await billing.describeRates());
+}));
+
+router.put('/billing/rates', auth.requireAdmin, wrap(async (req, res) => {
+  const fields = v.parseRates(req.body);
+  await settings.set({ billing: { ...(await billing.rates()), ...fields } });
+  audit(req, 'billing.rates', null, fields);
+  res.json(await billing.describeRates());
+}));
+
+// One station against its limits: what its owner watches.
+router.get('/stations/:slug/limits', wrap(async (req, res) => {
+  const row = await loadStation(req);
+  const { rows } = await db.query(`SELECT ${BILLING_USER} FROM users WHERE id = $1`, [row.user_id]);
+  const bill = await billing.forAccount(rows[0]);
+  res.json({ ...bill.stations.find((s) => s.station === row.slug), currency: bill.currency, storage: bill.storage });
 }));
 
 // ── API keys ──────────────────────────────────────────────────────────────
@@ -571,7 +666,7 @@ router.delete('/api-keys/:id', wrap(async (req, res) => {
 
 // ── Users (administrators only) ───────────────────────────────────────────
 
-const USER_COLUMNS = 'id, username, role, external_id, max_stations, storage_quota_mb, is_active, created_at, updated_at';
+const USER_COLUMNS = 'id, username, role, external_id, max_stations, storage_quota_mb, email, discount_percent, is_active, created_at, updated_at';
 const users = express.Router();
 users.use(auth.requireAdmin);
 
@@ -799,6 +894,11 @@ async function presentSettings(req) {
   return {
     ident_max_seconds: all.ident_max_seconds,
     default_storage_quota_mb: all.default_storage_quota_mb,
+    // The master's own machine, for capacity estimates, where no engine beside it reports it.
+    master_port_mbps: all.master_port_mbps || 1000,
+    master_vcpus: all.master_vcpus || null,
+    master_memory_gb: all.master_memory_gb || null,
+    smtp: await mail.describe(),
     storage: {
       backend: state.refreshToken ? 'dropbox' : 'local',
       local: { files: count('local').files, bytes: count('local').bytes },
@@ -831,9 +931,38 @@ router.put('/settings', auth.requireAdmin, wrap(async (req, res) => {
   if (changesApp && before.refreshToken) {
     throw conflict('dropbox_connected', 'Disconnect Dropbox before changing its app key or secret.');
   }
+  // Only the supplied parts of the mail settings change; the password stays unless a new one is given.
+  if (fields.smtp) fields.smtp = { ...(await mail.smtp()), ...fields.smtp };
   await settings.set(fields);
-  audit(req, 'settings.update', null, { ...fields, ...(fields.dropbox_app_secret ? { dropbox_app_secret: '(set)' } : {}) });
+  audit(req, 'settings.update', null, {
+    ...fields,
+    ...(fields.dropbox_app_secret ? { dropbox_app_secret: '(set)' } : {}),
+    ...(fields.smtp ? { smtp: { ...fields.smtp, password: fields.smtp.password ? '(set)' : '' } } : {}),
+  });
   res.json(await presentSettings(req));
+}));
+
+// Sends a test message, to show that the mail settings work.
+router.post('/settings/email/test', auth.requireAdmin, wrap(async (req, res) => {
+  const to = req.body && req.body.to;
+  if (!to || v.checkEmail(to)) throw invalid([{ field: 'to', message: 'must be an email address' }]);
+  await mail.send({ to: to.trim(), subject: 'StreamNode test message', text: 'This message shows that StreamNode can send email with the settings you entered.\n' });
+  audit(req, 'settings.email_test', to.trim());
+  res.json({ sent: true, to: to.trim() });
+}));
+
+// Sends any notices that are due now, instead of waiting for the next round.
+router.post('/notifications/run', auth.requireAdmin, wrap(async (req, res) => {
+  res.json(await notify.run());
+}));
+
+router.get('/notifications', auth.requireAdmin, wrap(async (req, res) => {
+  const limit = v.intParam(req.query.limit, { name: 'limit', min: 1, max: 500, fallback: 100 });
+  const { rows } = await db.query(
+    `SELECT n.id, n.sent_at, u.username, s.slug AS station, n.kind, n.threshold, n.period, n.recipient, n.subject
+     FROM notifications n JOIN users u ON u.id = n.user_id LEFT JOIN stations s ON s.id = n.station_id ORDER BY n.id DESC LIMIT $1`, [limit]
+  );
+  res.json({ notifications: rows });
 }));
 
 // Starts the approval: the administrator opens the returned address and allows the app.
@@ -887,6 +1016,11 @@ router.post('/system/update', auth.requireAdmin, wrap(async (req, res) => {
 // CPU, memory, disk and traffic per server, with a verdict on whether to add another.
 router.get('/capacity', auth.requireAdmin, wrap(async (req, res) => {
   res.json(await capacity.report());
+}));
+
+// What adding a server of a given size would do to capacity, load and traffic.
+router.post('/capacity/estimate', auth.requireAdmin, wrap(async (req, res) => {
+  res.json(await capacity.estimate(v.parseCandidate(req.body)));
 }));
 
 router.get('/audit-log', auth.requireAdmin, wrap(async (req, res) => {

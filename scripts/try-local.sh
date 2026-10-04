@@ -202,7 +202,10 @@ Things to try:
        scripts/try-local.sh backup-down     -> 6 s, the ident, then the fallback file
                                                ("On air (fallback audio)")
        scripts/try-local.sh primary-up      -> within about 3 s: the ident, then the live stream
-     The demo-samples/refused-*.* files are each turned down, with the reason.
+     The other demo-samples files are in other formats: each is turned down with
+     the reason and an offer to convert it. Tick "Convert uploads..." and upload
+     one again: it is converted to the stream's format and loudness.
+     (refused-ident-too-long.mp3 stays refused as an ident: it is too long.)
      Storage quotas: Accounts > Storage, and Settings.
   3. Load spreading: open the stream in several players and look at the
      Servers tab. Listeners are shared between "local" (the engine beside the

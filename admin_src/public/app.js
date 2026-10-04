@@ -46,7 +46,10 @@ async function api(method, path, body) {
   if (!res.ok) {
     const err = (data && data.error) || {};
     const details = (Array.isArray(err.details) ? err.details : []).map((d) => `${FIELD_LABELS[d.field] || d.field} ${d.message}`).join('; ');
-    throw new Error(details || err.message || `Request failed (${res.status})`);
+    const error = new Error(details || err.message || `Request failed (${res.status})`);
+    error.code = err.code;
+    error.details = err.details;
+    throw error;
   }
   return data;
 }
@@ -150,7 +153,8 @@ $('tabs').addEventListener('click', (event) => {
     $(`tab-${button.dataset.tab}`).hidden = button !== event.target;
   }
   if (tab === 'files') loadFiles().catch(fail);
-  if (tab === 'settings') loadSettings().catch(fail);
+  if (tab === 'billing') loadBilling().catch(fail);
+  if (tab === 'settings') Promise.all([loadSettings(), loadRates()]).catch(fail);
   if (tab === 'keys') loadKeys().catch(fail);
   if (tab === 'users') loadUsers().catch(fail);
   if (tab === 'servers') loadServers().catch(fail);
@@ -263,10 +267,19 @@ async function openStationForm(station) {
   const format = station && station.live.stream_format;
   const usable = !format || format.features.idents;
   $('stationFormat').textContent = !format ? 'Files must be in exactly the same format as the stream.'
-    : usable ? `This station's stream is ${format.summary}; files must match it exactly.`
+    : usable ? `This station's stream is ${format.summary}. A file in exactly that format is used as it is, which is best.`
       : `This station's stream is ${format.summary}, so idents and fallback audio cannot be used on it.`;
   $('stationStream').textContent = format ? `Detected: ${format.summary}. ${featureWords(format.features)} ${format.features.fallback_audio && !Object.values(format.features).every(Boolean) ? format.notes : ''}` : '';
   showStreamTypes().catch(() => {});
+  if (isAdmin()) {
+    // The account the station belongs to, and what it is charged for.
+    const { users } = await api('GET', '/users');
+    form.elements.user_id.replaceChildren(...users.map((user) => h('option', { value: user.id }, user.username)));
+    form.elements.user_id.value = station ? station.user_id : state.user.id;
+    for (const field of ['billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on']) {
+      form.elements[field].value = station ? station[field] ?? '' : field === 'discount_percent' ? 0 : '';
+    }
+  }
   form.dataset.slug = station ? station.slug : '';
   $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : 'Add station';
   $('stationError').textContent = '';
@@ -295,6 +308,7 @@ for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], [
     const note = $('stationUpload');
     $('stationError').textContent = '';
     const query = new URLSearchParams({ filename: file.name, use });
+    if (form.elements.convert.checked) query.set('convert', 'true');
     if (form.dataset.slug) {
       query.set('station', form.dataset.slug);
       query.set('assign', 'false');
@@ -310,7 +324,7 @@ for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], [
       form.elements[field].value = stored.id;
       state.stationFiles.usage = stored.usage;
       showStationStorage();
-      note.textContent = `${stored.name} ${stored.already_stored ? 'is already in your storage and has been' : 'uploaded and'} selected. Save the station to use it.`;
+      note.textContent = `${stored.name} ${stored.already_stored ? 'is already in your storage and has been' : 'uploaded and'} selected. Save the station to use it.${stored.status === 'converting' ? ' It is being converted to the stream\'s format and plays once that is done.' : ''}`;
     } catch (err) {
       note.textContent = '';
       $('stationError').textContent = err.message;
@@ -338,8 +352,37 @@ $('stationForm').addEventListener('submit', async (event) => {
   body.silence_detection = form.elements.silence_detection.checked;
   body.ident_file_id = Number(form.elements.ident_file_id.value) || null;
   body.fallback_file_id = Number(form.elements.fallback_file_id.value) || null;
+  if (isAdmin()) {
+    const owner = Number(form.elements.user_id.value);
+    const current = state.stations.find((s) => s.slug === editing);
+    if (!current || current.user_id !== owner) {
+      body.user_id = owner;
+      // The files chosen belong to the account the station is leaving.
+      if (current) { delete body.ident_file_id; delete body.fallback_file_id; }
+    }
+    const optional = (name) => (form.elements[name].value === '' ? null : Number(form.elements[name].value));
+    body.billing_bitrate_kbps = optional('billing_bitrate_kbps');
+    body.discount_percent = Number(form.elements.discount_percent.value) || 0;
+    body.price_override = optional('price_override');
+    body.subscription_ends_on = form.elements.subscription_ends_on.value || null;
+  }
+  const save = () => api(editing ? 'PATCH' : 'POST', editing ? `/stations/${editing}` : '/stations', body);
   try {
-    await api(editing ? 'PATCH' : 'POST', editing ? `/stations/${editing}` : '/stations', body);
+    try {
+      await save();
+    } catch (err) {
+      // A chosen file is in another format than the stream. Converting it replaces it, so that is asked first.
+      const convertible = editing && Array.isArray(err.details) ? err.details.filter((d) => d.can_convert) : [];
+      if (!convertible.length || convertible.length !== err.details.length) throw err;
+      const question = `${convertible.map((d) => `${FIELD_LABELS[d.field]} ${d.message}`).join('\n\n')}\n\nConvert ${convertible.length === 1 ? 'it' : 'them'} now?`;
+      if (!confirm(question)) throw err;
+      for (const d of convertible) {
+        const made = await api('POST', `/files/${d.file_id}/convert`, { station: editing, use: d.field === 'ident_file_id' ? 'ident' : 'fallback' });
+        body[d.field] = made.id;
+      }
+      await save();
+      toast('Converting; the file plays once that is done');
+    }
     $('stationDialog').close();
     toast(editing ? 'Station updated' : 'Station added');
     await refresh();
@@ -519,6 +562,15 @@ const formatLength = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.
   : s >= 60 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : `${s.toFixed(1)} s`);
 const fileScope = () => (isAdmin() && $('fileAccount').value && Number($('fileAccount').value) !== state.user.id ? `user_id=${$('fileAccount').value}` : '');
 
+// A file's format, and where it stands if the gateway is converting or has converted it.
+function fileState(file) {
+  if (file.status === 'converting') return [`Converting to ${file.format}`, h('small', {}, 'It can be chosen already; it plays once this is done.')];
+  if (file.status === 'failed') return [h('span', { class: 'status off' }, 'Could not be converted'), h('small', {}, file.status_detail || '')];
+  if (!file.converted) return file.format;
+  const gain = file.gain_db ? `, loudness ${file.gain_db > 0 ? 'raised' : 'lowered'} by ${Math.abs(file.gain_db)} dB to match the stream` : '';
+  return [file.format, h('small', {}, `Converted by the gateway${gain}`)];
+}
+
 async function loadFiles() {
   if (isAdmin() && !$('fileAccount').options.length) {
     const { users } = await api('GET', '/users');
@@ -533,7 +585,7 @@ async function loadFiles() {
   $('filesEmpty').hidden = library.files.length > 0;
   $('fileRows').replaceChildren(...library.files.map((file) => h('tr', {},
     h('td', {}, h('div', { class: 'station-name' }, file.name), file.original_name && h('small', {}, file.original_name)),
-    h('td', {}, file.format),
+    h('td', { class: file.status === 'failed' ? 'wrap' : '' }, fileState(file)),
     h('td', { class: 'num' }, formatLength(file.duration_seconds)),
     h('td', { class: 'num' }, formatSize(file.size_bytes)),
     h('td', { class: 'wrap' }, file.used_by.length ? file.used_by.map((u) => `${u.station} (${u.as})`).join(', ') : h('span', { class: 'muted' }, 'Not in use')),
@@ -545,6 +597,11 @@ async function loadFiles() {
   // Stations of the account being shown, for "use it as".
   const owner = scope ? Number($('fileAccount').value) : state.user.id;
   const mine = (isAdmin() ? (await api('GET', `/stations?limit=500&user_id=${owner}`)).stations : state.stations);
+  // While something is being converted, keep the list current.
+  clearTimeout(loadFiles.timer);
+  if (library.files.some((file) => file.status === 'converting') && !$('tab-files').hidden) {
+    loadFiles.timer = setTimeout(() => loadFiles().catch(() => {}), 4000);
+  }
   state.fileStations = mine;
   $('fileForm').elements.station.replaceChildren(...mine.map((station) => h('option', { value: station.slug }, station.name)));
   showFileStation();
@@ -582,10 +639,12 @@ function uploadFile(file, query, usage, onProgress) {
     request.onload = () => {
       let data = null;
       try { data = JSON.parse(request.responseText); } catch { /* not JSON */ }
-      if (request.status === 201 || request.status === 200) return resolve(data);
+      if (request.status === 201 || request.status === 200 || request.status === 202) return resolve(data);
       if (request.status === 401) showLogin();
       const err = (data && data.error) || {};
-      reject(new Error((Array.isArray(err.details) && err.details.map((d) => `${FIELD_LABELS[d.field] || d.field} ${d.message}`).join('; ')) || err.message || `Upload failed (${request.status})`));
+      const error = new Error((Array.isArray(err.details) && err.details.map((d) => `${FIELD_LABELS[d.field] || d.field} ${d.message}`).join('; ')) || err.message || `Upload failed (${request.status})`);
+      error.code = err.code;
+      reject(error);
     };
     onProgress('Starting');
     request.send(file);
@@ -601,6 +660,7 @@ $('fileForm').addEventListener('submit', async (event) => {
   if (!file) return;
   const query = new URLSearchParams({ filename: file.name });
   if (form.name.value.trim()) query.set('name', form.name.value.trim());
+  if (form.convert.checked) query.set('convert', 'true');
   if (form.use.value && form.station.value) {
     query.set('use', form.use.value);
     query.set('station', form.station.value);
@@ -614,7 +674,7 @@ $('fileForm').addEventListener('submit', async (event) => {
   try {
     const stored = await uploadFile(file, `${query}${scope ? `&${scope}` : ''}`, state.files && state.files.usage, (text) => { $('fileProgress').textContent = text; });
     event.target.reset();
-    toast(stored.already_stored ? `${stored.name} is already in your storage` : `${stored.name} uploaded`);
+    toast(stored.already_stored ? `${stored.name} is already in your storage` : stored.status === 'converting' ? `${stored.name} uploaded; it is being converted` : `${stored.name} uploaded`);
     loadFiles().catch(fail);
     refresh().catch(() => {});
   } catch (err) {
@@ -643,6 +703,10 @@ async function loadSettings() {
   const d = s.storage.dropbox;
   $('settingsForm').elements.ident_max_seconds.value = s.ident_max_seconds;
   $('settingsForm').elements.default_storage_quota_mb.value = s.default_storage_quota_mb;
+  const mailForm = $('smtpForm').elements;
+  for (const field of ['host', 'port', 'security', 'user', 'from', 'copy_to']) mailForm[field].value = s.smtp[field] ?? '';
+  mailForm.password.value = '';
+  mailForm.password.placeholder = s.smtp.password_set ? 'Saved. Leave empty to keep it.' : '';
   $('dropboxRedirect').textContent = d.redirect_uri;
   $('dropboxForm').elements.dropbox_app_key.value = d.app_key || '';
   $('dropboxForm').elements.dropbox_app_secret.placeholder = d.app_secret_set ? 'Saved. Leave empty to keep it.' : '';
@@ -684,6 +748,136 @@ $('dropboxForm').addEventListener('submit', async (event) => {
 $('dropboxDisconnect').addEventListener('click', async () => {
   if (!confirm('Disconnect Dropbox? Every file is first copied back to this server, which needs the disk space for them. The copies in Dropbox are left there.')) return;
   await api('DELETE', '/storage/dropbox').then(() => { toast('Dropbox disconnected'); return loadSettings(); }).catch(fail);
+});
+
+$('smtpForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('smtpError').textContent = '';
+  const smtp = { host: form.host.value.trim(), port: Number(form.port.value) || 587, security: form.security.value, user: form.user.value.trim(), from: form.from.value.trim(), copy_to: form.copy_to.value.trim() };
+  if (form.password.value) smtp.password = form.password.value;
+  try {
+    await api('PUT', '/settings', { smtp });
+    toast(smtp.host ? 'Email settings saved' : 'Email is switched off');
+    await loadSettings();
+  } catch (err) {
+    $('smtpError').textContent = err.message;
+  }
+});
+
+$('smtpTest').addEventListener('click', async () => {
+  const to = prompt('Send a test message to which address? (Save the settings first.)', state.user.email || '');
+  if (!to) return;
+  $('smtpError').textContent = '';
+  try {
+    await api('POST', '/settings/email/test', { to: to.trim() });
+    toast(`Test message sent to ${to.trim()}`);
+  } catch (err) {
+    $('smtpError').textContent = err.message;
+  }
+});
+
+// ── Prices ─────────────────────────────────────────────────────────────────
+
+const money = (amount, currency) => (amount === null || amount === undefined ? 'Not set' : `${currency} ${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+
+async function loadRates() {
+  const r = await api('GET', '/billing/rates');
+  const form = $('ratesForm').elements;
+  for (const field of ['currency', 'server_monthly_cost', 'server_vcpus', 'server_memory_gb', 'server_port_mbps', 'margin_percent', 'storage_price_per_gb']) form[field].value = r[field];
+  $('ratesTable').replaceChildren(
+    h('thead', {}, h('tr', {}, ['Stream bitrate', 'Listeners one such server carries', 'What stops it there', 'Price per listener per month', '100 listeners', '1,000 listeners'].map((t, i) => h('th', { class: i && i !== 2 ? 'num' : '' }, t)))),
+    h('tbody', {}, r.per_listener.map((row) => h('tr', {},
+      h('td', {}, `${row.bitrate_kbps} kbps`),
+      h('td', { class: 'num' }, formatNumber(row.listeners_per_server)),
+      h('td', {}, row.limited_by),
+      h('td', { class: 'num' }, r.configured ? `${r.currency} ${row.price_per_listener.toFixed(4)}` : 'Not set'),
+      h('td', { class: 'num' }, r.configured ? money(row.price_per_listener * 100, r.currency) : ''),
+      h('td', { class: 'num' }, r.configured ? money(row.price_per_listener * 1000, r.currency) : ''))))
+  );
+  const m = r.cost_model;
+  $('ratesNote').textContent = `Worked out from what a listener costs a server: ${m.engine.percent_of_core_per_1000_listeners + m.proxy.percent_of_core_per_1000_listeners}% of a core per 1,000 listeners${m.engine.measured && m.proxy.measured ? ', as measured on this installation' : ' (starting figures, until this installation has carried enough listeners to measure)'}, with a quarter of each server kept in reserve.`;
+}
+
+$('ratesForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('ratesError').textContent = '';
+  const body = { currency: form.currency.value.trim() };
+  for (const field of ['server_monthly_cost', 'server_vcpus', 'server_memory_gb', 'server_port_mbps', 'margin_percent', 'storage_price_per_gb']) body[field] = Number(form[field].value);
+  try {
+    await api('PUT', '/billing/rates', body);
+    toast('Prices saved');
+    await loadRates();
+  } catch (err) {
+    $('ratesError').textContent = err.message;
+  }
+});
+
+// ── Billing and limits ─────────────────────────────────────────────────────
+
+const STANDING = { ok: ['live', 'Within its limit'], near_limit: ['backup', 'Near its limit'], at_limit: ['off', 'At its limit'], expiring: ['backup', 'Subscription ending'], expired: ['off', 'Subscription ended'] };
+
+async function loadBilling() {
+  if (isAdmin() && !$('billingAccount').options.length) {
+    const { users } = await api('GET', '/users');
+    $('billingAccount').replaceChildren(...users.map((user) => h('option', { value: user.id, selected: user.id === state.user.id }, user.username)));
+  }
+  const other = isAdmin() && Number($('billingAccount').value) !== state.user.id;
+  const bill = await api('GET', `/billing${isAdmin() ? `?user_id=${$('billingAccount').value}` : ''}`);
+  state.bill = bill;
+  $('billingMonth').textContent = `${new Date(`${bill.month}-01T00:00:00Z`).toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })} so far`;
+  const storage = bill.storage;
+  tiles($('billingTiles'), [
+    ['Per month', bill.monthly_total === null ? 'Not set' : money(bill.monthly_total, bill.currency)],
+    ['Stations', bill.stations.length],
+    ['Audio storage', storage.quota_bytes === null ? `${formatSize(storage.used_bytes)} used` : `${formatSize(storage.used_bytes)} of ${formatSize(storage.quota_bytes)}`],
+    ['Storage per month', storage.monthly_price === null ? 'Not set' : money(storage.monthly_price, bill.currency)],
+  ]);
+  $('billingRows').replaceChildren(...bill.stations.map((s) => {
+    const [kind, label] = STANDING[s.status];
+    const limit = s.plan.max_listeners;
+    const percent = s.usage.percent_of_limit;
+    const ends = s.plan.subscription_ends_on;
+    return h('tr', {},
+      h('td', {}, h('div', { class: 'station-name' }, s.name), h('code', {}, `/${s.station}`)),
+      h('td', {}, h('span', { class: `status ${kind}` }, label)),
+      h('td', {}, limit
+        ? [`${formatNumber(s.usage.peak_listeners_this_month)} of ${formatNumber(limit)} (${percent}%)`, h('span', { class: `meter${percent >= 75 ? ' warn' : ''}`, role: 'img', 'aria-label': `${percent}% of the limit` }, h('i', { style: `width:${Math.min(100, percent)}%` })), h('small', {}, `${formatNumber(s.usage.listeners_now)} listening now`)]
+        : [`${formatNumber(s.usage.peak_listeners_this_month)}, no limit`, h('small', {}, `${formatNumber(s.usage.listeners_now)} listening now`)]),
+      h('td', { class: 'num' }, `${s.plan.bitrate_kbps} kbps`, s.plan.bitrate_source === 'default' && h('small', {}, 'assumed until the station plays')),
+      h('td', { class: 'num' }, formatNumber(s.usage.listener_hours_this_month)),
+      h('td', { class: 'num' }, `${s.usage.gigabytes_this_month.toFixed(2)} GB`),
+      h('td', {}, ends ? [ends, h('small', {}, s.plan.days_left < 0 ? 'Ended' : s.plan.days_left === 0 ? 'Ends today' : `${s.plan.days_left} days left`)] : h('span', { class: 'muted' }, 'No end date')),
+      h('td', { class: 'num' }, s.monthly_price === null ? 'Not set' : money(s.monthly_price, bill.currency),
+        s.plan.price_override !== null ? h('small', {}, 'Fixed price') : s.plan.discount_percent > 0 && h('small', {}, `${s.plan.discount_percent}% discount`))
+    );
+  }));
+  const notes = [];
+  if (!bill.prices_set) notes.push('Prices have not been set, so only usage and limits are shown.');
+  else notes.push(`A station is charged for the listeners it is allowed, at its stream's bitrate${bill.stations.some((s) => !s.plan.max_listeners) ? '; one with no limit is charged for the most listeners it had at once this month' : ''}.`);
+  if (bill.discount_percent > 0) notes.push(`A discount of ${bill.discount_percent}% is taken off the account's total.`);
+  notes.push('Listener limits, bitrates, prices and subscription dates are set by the administrator.');
+  $('billingNote').textContent = notes.join(' ');
+  $('emailForm').elements.email.value = bill.email || '';
+  $('emailForm').dataset.user = other ? bill.user_id : '';
+}
+
+$('billingAccount').addEventListener('change', () => loadBilling().catch(fail));
+
+$('emailForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('emailError').textContent = '';
+  const email = event.target.elements.email.value.trim() || null;
+  try {
+    // An administrator looking at another account sets that account's address.
+    if (event.target.dataset.user) await api('PATCH', `/users/${event.target.dataset.user}`, { email });
+    else await api('PATCH', '/auth/me', { email });
+    toast(email ? 'Notices will be sent to that address' : 'No notices will be sent');
+    if (!event.target.dataset.user) state.user.email = email;
+  } catch (err) {
+    $('emailError').textContent = err.message;
+  }
 });
 
 // Dropbox sends the administrator back with the outcome in the address.
@@ -732,7 +926,7 @@ async function revokeKey(key) {
 async function loadUsers() {
   const { users } = await api('GET', '/users');
   $('userRows').replaceChildren(...users.map((user) => h('tr', {},
-    h('td', {}, user.username),
+    h('td', {}, user.username, user.email && h('small', {}, user.email), Number(user.discount_percent) > 0 && h('small', {}, `${Number(user.discount_percent)}% discount`)),
     h('td', {}, user.role === 'admin' ? 'Administrator' : 'Tenant'),
     h('td', {}, user.external_id || h('span', { class: 'muted' }, 'None')),
     h('td', { class: 'num' }, user.role === 'admin' ? user.station_count : `${user.station_count} of ${user.max_stations}`),
@@ -742,6 +936,8 @@ async function loadUsers() {
     h('td', { class: 'row-actions' }, user.id !== state.user.id && [
       user.role !== 'admin' && h('button', { onclick: () => changeStationLimit(user) }, 'Station limit'),
       user.role !== 'admin' && h('button', { onclick: () => changeStorageQuota(user) }, 'Storage'),
+      h('button', { onclick: () => changeEmail(user) }, 'Email'),
+      user.role !== 'admin' && h('button', { onclick: () => changeDiscount(user) }, 'Discount'),
       h('button', { onclick: () => api('PATCH', `/users/${user.id}`, { is_active: !user.is_active }).then(loadUsers).catch(fail) }, user.is_active ? 'Disable' : 'Enable'),
       h('button', { class: 'danger', onclick: () => removeUser(user) }, 'Delete'),
     ])
@@ -756,6 +952,7 @@ $('userForm').addEventListener('submit', async (event) => {
   if (form.get('external_id').trim()) body.external_id = form.get('external_id').trim();
   if (form.get('max_stations') !== '') body.max_stations = Number(form.get('max_stations'));
   if (form.get('storage_quota_mb') !== '') body.storage_quota_mb = Number(form.get('storage_quota_mb'));
+  if (form.get('email').trim()) body.email = form.get('email').trim();
   try {
     await api('POST', '/users', body);
     event.target.reset();
@@ -777,6 +974,20 @@ async function changeStationLimit(user) {
   const limit = Number(answer);
   if (!Number.isInteger(limit) || limit < 0) return toast('Enter a whole number, 0 or more.');
   await api('PATCH', `/users/${user.id}`, { max_stations: limit }).then(loadUsers).catch(fail);
+}
+
+async function changeEmail(user) {
+  const answer = prompt(`Email address for notices to ${user.username} (limits and subscriptions). Leave empty for none.`, user.email || '');
+  if (answer === null) return;
+  await api('PATCH', `/users/${user.id}`, { email: answer.trim() || null }).then(loadUsers).catch(fail);
+}
+
+async function changeDiscount(user) {
+  const answer = prompt(`Discount on everything ${user.username} is charged, in percent (0 to 100).`, Number(user.discount_percent));
+  if (answer === null) return;
+  const discount = Number(answer);
+  if (!(discount >= 0 && discount <= 100)) return toast('Enter a number from 0 to 100.');
+  await api('PATCH', `/users/${user.id}`, { discount_percent: discount }).then(loadUsers).catch(fail);
 }
 
 async function changeStorageQuota(user) {
@@ -888,6 +1099,7 @@ async function loadServers() {
     h('strong', {}, report.add_server_recommended ? 'Capacity is running low: consider adding a streaming server. ' : 'Worth a look: '),
     report.reasons.join('; ') + '.'
   );
+  showCosts(report);
   $('serverRows').replaceChildren(...servers.map((server) => {
     const direct = server.mode === 'direct';
     let [kind, label] = SERVER_STATES[server.state] || ['', managed ? 'Pending' : 'Not applied'];
@@ -905,8 +1117,13 @@ async function loadServers() {
       h('td', {}, usageCell(res && res.memory, res && `of ${formatGb(res.memory.total_bytes)}`)),
       h('td', {}, usageCell(res && res.disk, res && `${formatGb(res.disk.free_bytes)} free`)),
       h('td', { class: 'num' }, res ? `${((res.network_out_bps * 8) / 1e6).toFixed(1)} Mbit/s` : ''),
+      h('td', {}, res && res.engine
+        ? [`${res.engine.cpu_percent.toFixed(0)}% of a core, ${formatSize(res.engine.memory_bytes)}`,
+          h('small', {}, server.cost_per_listener ? `${(server.cost_per_listener.percent_of_core * 1000).toFixed(1)}% of a core per 1,000 listeners` : 'Too few listeners to cost one')]
+        : h('span', { class: 'muted' }, 'No data')),
       h('td', { class: 'num' }, direct ? '' : server.weight),
       h('td', { class: 'row-actions' },
+        h('button', { onclick: () => changePort(server) }, `Port: ${server.port_mbps >= 1000 ? `${server.port_mbps / 1000} Gbit` : `${server.port_mbps} Mbit`}`),
         // Weight and draining act on this gateway's HAProxy, which a direct server bypasses.
         !direct && h('button', { onclick: () => changeWeight(server) }, 'Weight'),
         !direct && h('button', { onclick: () => updateServer(server, { enabled: !server.enabled }) }, server.enabled ? 'Drain' : 'Enable'),
@@ -917,6 +1134,67 @@ async function loadServers() {
     );
   }));
 }
+
+// What listeners cost here, as measured, and what the servers as they are can carry.
+function showCosts(report) {
+  const p = report.proxy;
+  $('proxyLine').textContent = p
+    ? `The master's HAProxy, which every listener's audio passes through unless they are on an edge server, is holding ${formatNumber(p.connections)} connections and using ${p.processor_percent}% of the master's ${p.machine.cores} cores and ${formatSize(p.memory_bytes)} of memory, sending ${((p.bytes_out_per_second * 8) / 1e6).toFixed(1)} Mbit/s on a ${p.machine.port_mbps >= 1000 ? `${p.machine.port_mbps / 1000} Gbit` : `${p.machine.port_mbps} Mbit`} port.`
+    : 'HAProxy is not reporting, so its share of the work is not known.';
+  // A master with no engine beside it has no row above to set its port on.
+  $('masterPort').hidden = !p || p.machine.has_engine;
+  $('masterPort').dataset.port = p ? p.machine.port_mbps : 1000;
+  const m = report.cost_model;
+  const part = (name, c) => `${name}: ${c.percent_of_core_per_1000_listeners}% of a core and ${formatSize(c.kilobytes_per_listener * 1024 * 1000)} per 1,000 listeners (${c.measured ? `measured here, ${formatNumber(c.samples)} readings` : 'not yet measured here: a starting figure, replaced once a server has carried 25 listeners'})`;
+  $('costLine').textContent = `${part('The engine', m.engine)}. ${part('The master\'s proxying', m.proxy)}.`;
+  $('capacityTable').replaceChildren(
+    h('thead', {}, h('tr', {}, h('th', {}, 'Stream bitrate'), h('th', { class: 'num' }, 'Listeners these servers can carry'), h('th', {}, 'What stops it there'))),
+    h('tbody', {}, report.listener_capacity.map((row) => h('tr', {}, h('td', {}, `${row.bitrate_kbps} kbps`), h('td', { class: 'num' }, formatNumber(row.listeners)), h('td', {}, row.limited_by))))
+  );
+}
+
+$('masterPort').addEventListener('click', async (event) => {
+  const answer = prompt("Speed of the master's network port, in Mbit/s (1000 for 1 Gbit). Every listener who is not on an edge server is carried by it.", event.target.dataset.port);
+  if (answer === null) return;
+  await api('PUT', '/settings', { master_port_mbps: Number(answer) }).then(loadServers).catch(fail);
+});
+
+async function changePort(server) {
+  const answer = prompt(`Speed of ${server.name}'s network port, in Mbit/s (1000 for 1 Gbit). It is used to work out how many listeners the server has room for.`, server.port_mbps);
+  if (answer === null) return;
+  await updateServer(server, { port_mbps: Number(answer) });
+}
+
+$('estimateForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target.elements;
+  $('estimateError').textContent = '';
+  try {
+    const result = await api('POST', '/capacity/estimate', {
+      vcpus: Number(form.vcpus.value), memory_gb: Number(form.memory_gb.value), port_mbps: Number(form.port_mbps.value),
+      mode: form.mode.value, bitrate_kbps: Number(form.bitrate_kbps.value),
+    });
+    $('estimateNotes').replaceChildren(...result.notes.map((note) => h('li', {}, note)));
+    const names = Object.keys(result.load_now.after.servers);
+    const cell = (side, name) => {
+      const s = result.load_now[side].servers[name];
+      return h('td', { class: 'num' }, s ? `${formatNumber(s.listeners)}${s.processor_percent === null ? '' : ` (${s.processor_percent}% CPU)`}` : '');
+    };
+    const masterRow = (label, pick) => h('tr', {}, h('td', {}, label), h('td', { class: 'num' }, pick(result.load_now.before.master)), h('td', { class: 'num' }, pick(result.load_now.after.master)));
+    $('estimateTable').replaceChildren(
+      h('thead', {}, h('tr', {}, h('th', {}, `With today's ${formatNumber(result.listeners_now)} listeners`), h('th', { class: 'num' }, 'Now'), h('th', { class: 'num' }, 'With the new server'))),
+      h('tbody', {},
+        ...names.map((name) => h('tr', {}, h('td', {}, `Listeners on ${name}`), cell('before', name), cell('after', name))),
+        masterRow('Master: processor in use', (m) => `${m.processor_percent}%`),
+        masterRow('Master: traffic', (m) => `${m.traffic_mbps} Mbit/s (${m.port_percent}% of its port)`),
+        h('tr', {}, h('td', {}, `Most listeners possible at ${result.bitrate_kbps} kbps`), h('td', { class: 'num' }, formatNumber(result.capacity.before.listeners)), h('td', { class: 'num' }, formatNumber(result.capacity.after.listeners))),
+        h('tr', {}, h('td', {}, 'What stops it there'), h('td', { class: 'num' }, result.capacity.before.limited_by), h('td', { class: 'num' }, result.capacity.after.limited_by)))
+    );
+    $('estimateResult').hidden = false;
+  } catch (err) {
+    $('estimateError').textContent = err.message;
+  }
+});
 
 async function updateServer(server, changes) {
   if (changes.enabled === false && !confirm(`Drain ${server.name}? Its current listeners stay connected, and no new listeners are sent to it.`)) return;

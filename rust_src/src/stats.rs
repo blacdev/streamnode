@@ -257,6 +257,8 @@ async fn heartbeat(hub: &Arc<Hub>, sampler: &mut Sampler, started_at: u64) {
                 ("disk_total", usage.disk_total.to_string()),
                 ("disk_free", usage.disk_free.to_string()),
                 ("network_out_bps", usage.network_out_bps.to_string()),
+                ("engine_cpu_percent", format!("{:.2}", usage.engine_cpu_percent)),
+                ("engine_memory", usage.engine_memory.to_string()),
                 ("listeners", listeners.to_string()),
                 ("stations", relays.len().to_string()),
                 ("started_at", started_at.to_string()),

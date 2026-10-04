@@ -14,7 +14,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use redis::aio::ConnectionManager;
 use tokio::{
     sync::{broadcast, watch},
@@ -32,6 +32,11 @@ use crate::{
 };
 
 /// Chunks a slow listener may fall behind before it starts skipping audio.
+/// How long audio is gathered before it is sent on to listeners, in
+/// milliseconds (set from PUBLISH_INTERVAL_MS at start-up).
+pub static PUBLISH_INTERVAL_MS: AtomicU64 = AtomicU64::new(400);
+/// A piece is sent early once it reaches this size, whatever its age.
+const PUBLISH_MAX_BYTES: usize = 64 * 1024;
 const CHANNEL_CAPACITY: usize = 512;
 
 #[derive(Clone)]
@@ -66,6 +71,9 @@ struct Shared {
     tx: Option<broadcast::Sender<Bytes>>,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
+    /// Audio gathered since the last piece went out to listeners.
+    pending: BytesMut,
+    pending_since: Option<Instant>,
 }
 
 pub struct Relay {
@@ -107,7 +115,7 @@ impl Relay {
         Self {
             slug: station.slug.clone(),
             started_at: unix_now(),
-            shared: Mutex::new(Shared { tx: Some(tx), ring: VecDeque::new(), ring_bytes: 0 }),
+            shared: Mutex::new(Shared { tx: Some(tx), ring: VecDeque::new(), ring_bytes: 0, pending: BytesMut::new(), pending_since: None }),
             status: watch::Sender::new(Status::Connecting),
             now_playing: watch::Sender::new(Arc::new(initial)),
             connections: AtomicUsize::new(0),
@@ -227,8 +235,21 @@ impl Relay {
         Some((shared.ring.clone(), rx))
     }
 
+    /// Hands audio to the listeners. It is gathered into pieces of about
+    /// `PUBLISH_INTERVAL_MS` first: every piece sent wakes every listener's
+    /// task and costs a write on every connection, so sending the stream in a
+    /// few larger pieces a second instead of dozens of small ones is what
+    /// keeps the cost per listener low. Players buffer far more than this.
     pub(crate) fn publish(&self, chunk: Bytes, burst_bytes: usize) {
         let mut shared = self.shared.lock().unwrap();
+        shared.pending.extend_from_slice(&chunk);
+        let since = *shared.pending_since.get_or_insert_with(Instant::now);
+        let interval = Duration::from_millis(PUBLISH_INTERVAL_MS.load(Ordering::Relaxed));
+        if since.elapsed() < interval && shared.pending.len() < PUBLISH_MAX_BYTES {
+            return;
+        }
+        let chunk = shared.pending.split().freeze();
+        shared.pending_since = None;
         shared.ring_bytes += chunk.len();
         shared.ring.push_back(chunk.clone());
         while shared.ring_bytes > burst_bytes && shared.ring.len() > 1 {
@@ -244,6 +265,8 @@ impl Relay {
     pub(crate) fn close(&self) {
         let mut shared = self.shared.lock().unwrap();
         shared.tx = None;
+        shared.pending.clear();
+        shared.pending_since = None;
         shared.ring.clear();
         shared.ring_bytes = 0;
     }

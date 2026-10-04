@@ -125,4 +125,34 @@ async function status() {
   }
 }
 
-module.exports = { sync, status, serverName, enabled };
+// What HAProxy itself is using: how busy its threads are, its memory, the
+// connections it holds and what it is sending. null when it cannot be asked.
+async function info() {
+  if (!enabled()) return null;
+  try {
+    return parseInfo(await command('show info'));
+  } catch {
+    return null;
+  }
+}
+
+// Reads the answer to "show info".
+function parseInfo(out) {
+  const field = (name) => {
+    const match = new RegExp(`^${name}:\\s*(.+)$`, 'm').exec(out);
+    return match ? Number(match[1]) : NaN;
+  };
+  const threads = field('Nbthread') || 1;
+  const idle = field('Idle_pct');
+  if (!Number.isFinite(idle)) return null;
+  return {
+    threads,
+    // Idle_pct is the share of time its threads spend waiting.
+    cores_used: Math.round(((100 - idle) / 100) * threads * 1000) / 1000,
+    connections: field('CurrConns') || 0,
+    memory_bytes: Math.round((field('PoolAlloc_MB') || 0) * 1024 * 1024),
+    bytes_out_per_second: field('BytesOutRate') || 0,
+  };
+}
+
+module.exports = { sync, status, info, parseInfo, serverName, enabled };

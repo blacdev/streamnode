@@ -4,6 +4,70 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] - 2026-10-04
+
+### Added
+
+- **What a listener costs, measured per server.** Each engine reports its own
+  processor and memory use, and the master reads HAProxy's; divided by the listeners
+  served, that is the cost of a listener on the engine and on the master, through
+  which every proxied listener's audio passes. Shown on the Servers tab and in
+  `GET /capacity`, with how many listeners the servers can carry at common bitrates
+  and what stops them there.
+- **Add-a-server calculator** (`POST /capacity/estimate`, and on the Servers tab): for
+  a server of a given size, as a slave or an edge server, how much capacity it adds,
+  how today's listeners spread, and what happens to the master's traffic.
+- **Billing.** A station is charged for its listener limit at its stream's bitrate, an
+  account for its storage. The price per listener is worked out from what a server
+  costs and how many listeners it carries, plus a margin (`/billing/rates`). Per
+  station: discount, fixed price, bitrate to charge at, subscription date. Per account:
+  discount. `GET /billing`, `/billing/quote`, `/stations/{slug}/limits`.
+- **Billing tab** for every account: each station against its limit, its subscription
+  and price, storage, and the account's total.
+- **Notices by email** (optional): as a station nears its listener limit, storage
+  fills, or a subscription nears its end, more often the closer it gets. SMTP settings
+  under Settings; an address per account, which its owner may set.
+- An administrator can move a station to another account from the dashboard.
+- Per-server port speed (`port_mbps`), used for capacity.
+- Guide: [Costs, capacity, billing and limits](docs/BILLING.md).
+
+- **Files in another format can be converted for a station, with the owner's
+  agreement.** WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings are re-encoded to
+  the station's stream format in the background and stored in place of the upload
+  (`convert=true`, `POST /files/{id}/convert`, a tick box and a question in the
+  dashboard). Without agreement such a file is refused as before, with the advice that
+  a file already in the stream's format is best. Not available for HE-AAC stations.
+- **Loudness matching.** The engine measures each stream's average level
+  (`live.stream_format.level_db`) and converted files are brought to it.
+- Files report `status` (`ready`, `converting`, `failed`), `converted` and `gain_db`.
+
+### Changed
+
+- **About a quarter of the processor cost per listener.** Audio is now gathered for
+  400 ms (`PUBLISH_INTERVAL_MS`) and sent to listeners in a few larger pieces a second
+  instead of many small ones. Measured on the engine alone: 41% of a core per 1,000
+  listeners before, 10% after.
+- File conversion is confined to one processor core at the lowest priority.
+- **One ident per change of source.** When the primary fails and the backup cannot be
+  reached, the station plays the ident once and goes straight to the fallback file,
+  instead of an ident, a second wait and a second ident. When the primary and backup
+  return together, one ident leads straight to the primary.
+- **Silence is now detected by listening to the stream.** Twice a second the engine
+  decodes a short run of frames and measures their level, using FFmpeg's MP3 and AAC
+  decoders (`ffmpeg-next`). A stream quieter than `SILENCE_THRESHOLD_DB` (default -55 dB)
+  for the station's failover delay counts as having no audio. This catches the hiss of
+  an open input as well as digital silence, and works for HE-AAC, where silence could
+  not be recognised before. About nine tenths of the stream is never decoded; the cost
+  is about 0.07% of a processor core per station on air.
+- What listeners receive is unchanged: the stream's own bytes. Decoded audio is only
+  measured.
+- HE-AAC streams are recognised from the decoded audio rather than guessed from the
+  headers once a station has been on air.
+- The admin image now includes `ffmpeg`, used only for converting uploads.
+- The engine image builds FFmpeg's two decoders from source and links them in
+  (`rust_src/build-ffmpeg.sh`). The image needs nothing more at run time; building it
+  from source takes a few minutes longer.
+
 ## [2.9.0] - 2026-10-03
 
 ### Changed

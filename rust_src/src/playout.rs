@@ -30,6 +30,7 @@ use tokio::{
 };
 
 use crate::{
+    detector::{Decoded, Detector, Verdict},
     frames::{attenuate, supported, Codec, Entry, Frame, Framer},
     hub::{unix_now, Hub, Relay, Source, Status},
     icy::IcyDemux,
@@ -48,6 +49,12 @@ const RETURN_CONFIRM: Duration = Duration::from_secs(1);
 /// This much audio without one recognisable frame means the stream is not
 /// what its label says. A real stream never goes a tenth as long without one.
 const UNFRAMED_AFTER: usize = 16 * 1024;
+/// How long the backup is given to answer when the primary has failed.
+const BACKUP_CHECK: Duration = Duration::from_secs(3);
+/// How far the stream's measured level must move, and how long must pass,
+/// before it is published again.
+const LEVEL_STEP_DB: f32 = 0.5;
+const LEVEL_EVERY: Duration = Duration::from_secs(30);
 const RECHECK: Duration = Duration::from_secs(2);
 /// A fade lasts this many half-frames (granules), each 1.5 dB apart: about half
 /// a second at 44.1 kHz, down to or up from 60 dB below full level.
@@ -71,12 +78,14 @@ pub struct LiveSource {
     /// arrives from the moment that is clear, starting with this.
     held: Vec<Bytes>,
     held_bytes: usize,
+    /// Decodes a little of the stream to hear whether it is silent.
+    detector: Option<Detector>,
 }
 
 impl LiveSource {
     fn new(upstream: Upstream, source: Source) -> Self {
         let framer = supported(&upstream.info.content_type).then(Framer::new);
-        Self { source, body: upstream.body, demux: upstream.metaint.map(IcyDemux::new), info: upstream.info, framer, pending: Vec::new(), held: Vec::new(), held_bytes: 0 }
+        Self { source, body: upstream.body, demux: upstream.metaint.map(IcyDemux::new), info: upstream.info, framer, pending: Vec::new(), held: Vec::new(), held_bytes: 0, detector: None }
     }
 
     /// Reads the next piece. Frames (or raw audio, for formats that are not
@@ -122,9 +131,36 @@ impl LiveSource {
     }
 }
 
-/// Whether what just arrived counts as audio for the dead-air check.
-fn has_sound(frames: &[Frame], raw: &[Bytes], detect_silence: bool) -> bool {
-    !raw.is_empty() || frames.iter().any(|frame| !detect_silence || !frame.silent)
+impl LiveSource {
+    /// Whether what just arrived is audio, for the dead-air check: `Some(true)`
+    /// when sound was heard, `Some(false)` when silence was, and `None` when
+    /// these frames were not among the few that are listened to.
+    fn heard(&mut self, frames: &[Frame], raw: &[Bytes], detect_silence: bool, threshold_db: f32) -> Option<bool> {
+        if !raw.is_empty() {
+            return Some(true);
+        }
+        let first = frames.first()?;
+        if !detect_silence {
+            return Some(true);
+        }
+        let detector = self.detector.get_or_insert_with(|| Detector::new(first.format.codec, first.format.sample_rate, threshold_db));
+        match detector.feed(frames) {
+            Verdict::Loud => Some(true),
+            Verdict::Quiet => Some(false),
+            Verdict::Pending => None,
+            // Without a decoder, the frames' own marking of digital silence is what there is.
+            Verdict::Unavailable => Some(frames.iter().any(|frame| !frame.silent)),
+        }
+    }
+
+    /// The stream's average level in dB, once enough of it has been heard.
+    fn level_db(&self) -> Option<f32> {
+        self.detector.as_ref().and_then(Detector::level_db)
+    }
+
+    fn newly_decoded(&mut self) -> Option<Decoded> {
+        self.detector.as_mut().and_then(Detector::newly_decoded)
+    }
 }
 
 /// Watches a source in the background and hands it over as soon as it is
@@ -156,16 +192,18 @@ fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, detect
                     if frames.is_empty() && raw.is_empty() {
                         continue;
                     }
-                    if has_sound(&frames, &raw, detect_silence) {
-                        if good_since.get_or_insert_with(Instant::now).elapsed() >= hold {
-                            // What was just read is the first thing listeners hear of it.
-                            live.pending = std::mem::take(&mut frames);
-                            tracing::info!(station = %slug, source = source.as_str(), "source has audio again");
-                            let _ = tx.send(live).await;
-                            return;
+                    match live.heard(&frames, &raw, detect_silence, hub.cfg.silence_threshold_db) {
+                        Some(true) => {
+                            if good_since.get_or_insert_with(Instant::now).elapsed() >= hold {
+                                // What was just read is the first thing listeners hear of it.
+                                live.pending = std::mem::take(&mut frames);
+                                tracing::info!(station = %slug, source = source.as_str(), "source has audio again");
+                                let _ = tx.send(live).await;
+                                return;
+                            }
                         }
-                    } else {
-                        good_since = None;
+                        Some(false) => good_since = None,
+                        None => {}
                     }
                 }
             }
@@ -253,6 +291,12 @@ pub struct RelayTask {
     out_silent: bool,
     /// The bitrate of the stream's first frame, to notice a variable bitrate.
     first_bitrate: Option<u32>,
+    /// The live stream was last heard to be silent.
+    quiet: bool,
+    /// What decoding showed the playing stream to be.
+    decoded: Option<Decoded>,
+    /// The stream level last published, and when.
+    level: Option<(f32, Instant)>,
 }
 
 impl RelayTask {
@@ -272,6 +316,9 @@ impl RelayTask {
             fade: None,
             out_silent: true,
             first_bitrate: None,
+            quiet: false,
+            decoded: None,
+            level: None,
         }
     }
 
@@ -308,7 +355,11 @@ impl RelayTask {
                 Outcome::Switch(mut live) => {
                     // A stream is back. With an ident, the ident announces the return;
                     // without one, what was playing has already been faded out.
+                    self.prefer_primary(&mut live);
                     self.play_ident(Some(&mut live)).await;
+                    // The primary may have come back at the same moment, or while the
+                    // ident played. One ident covers both: go straight to the primary.
+                    self.prefer_primary(&mut live);
                     current = Some(live);
                 }
                 Outcome::Lost(source) => {
@@ -423,18 +474,40 @@ impl RelayTask {
     /// The source in use has failed for good (for now). Plays the ident and
     /// moves down one step: to the backup stream if there is one that works,
     /// otherwise to the fallback file. `Ok(None)` means "play the fallback".
+    ///
+    /// The ident is heard once per move. Whether the backup is there is found
+    /// out first, briefly, so that a backup that cannot be reached costs
+    /// listeners neither a second ident nor a second wait: the watcher brings
+    /// it in later if it returns.
     async fn fail_over(&mut self, from: Source) -> Result<Option<LiveSource>, Flow> {
-        self.play_ident(None).await;
         if from == Source::Primary && self.station.backup.is_some() {
-            let deadline = Instant::now() + self.station.failover_delay;
-            if let Some(live) = self.reconnect_until(Source::Backup, deadline).await? {
-                tracing::info!(station = %self.relay.slug, "switched to the backup stream");
-                return Ok(Some(live));
+            // One attempt. Listeners have already waited the failover delay for the primary.
+            let url = self.station.backup.clone().unwrap_or_default();
+            match timeout(BACKUP_CHECK, self.hub.connector.connect(&url)).await {
+                Ok(Ok(upstream)) => {
+                    let mut live = LiveSource::new(upstream, Source::Backup);
+                    self.play_ident(Some(&mut live)).await;
+                    tracing::info!(station = %self.relay.slug, "switched to the backup stream");
+                    return Ok(Some(live));
+                }
+                Ok(Err(error)) => self.last_error = format!("backup: {error}"),
+                Err(_) => self.last_error = "backup: no answer".into(),
             }
             tracing::warn!(station = %self.relay.slug, reason = %self.last_error, "backup stream unavailable too");
-            self.play_ident(None).await;
         }
+        self.play_ident(None).await;
         Ok(None)
+    }
+
+    /// Swaps a returning backup for the primary if the primary is back as well.
+    fn prefer_primary(&mut self, live: &mut LiveSource) {
+        if live.source == Source::Primary {
+            return;
+        }
+        if let Some(Ok(primary)) = self.primary_watch.as_mut().map(|watch| watch.try_recv()) {
+            tracing::info!(station = %self.relay.slug, "the primary stream is back as well: going to it");
+            *live = primary;
+        }
     }
 
     /// Starts or stops the background watchers according to what is playing.
@@ -491,7 +564,9 @@ impl RelayTask {
 
     /// Records the stream's format the first time it is seen, for checking
     /// uploaded idents and fallback files against it.
-    fn learn_format(&mut self, frame: &Frame, info: &StreamInfo) {
+    ///
+    /// Returns whether the description was published in full.
+    fn learn_format(&mut self, frame: &Frame, info: &StreamInfo) -> bool {
         if frame.bitrate_kbps > 0 && self.first_bitrate.is_some_and(|first| first != 0 && first != frame.bitrate_kbps) {
             // Frames of different bitrates: the stream has no single bitrate to match.
             self.first_bitrate = Some(0);
@@ -499,15 +574,21 @@ impl RelayTask {
         }
         let reframed = self.relay.set_unframed(false);
         if !self.relay.set_format(frame.format) && !reframed {
-            return;
+            return false;
         }
         self.first_bitrate = Some(frame.bitrate_kbps);
         let bitrate = if frame.bitrate_kbps > 0 { frame.bitrate_kbps } else { info.header("icy-br").and_then(|v| v.parse().ok()).unwrap_or(0) };
-        // AAC+ halves the sample rate in its frame headers and is announced as "aacp".
-        let he_aac = frame.format.codec == Codec::Aac && (frame.format.sample_rate <= 24000 || info.content_type.to_ascii_lowercase().contains("aacp"));
+        // Decoding shows whether an AAC stream is AAC+. Until it has, go by the
+        // signs: AAC+ halves the sample rate in its frame headers and is announced as "aacp".
+        let he_aac = frame.format.codec == Codec::Aac
+            && self.decoded.map_or(frame.format.sample_rate <= 24000 || info.content_type.to_ascii_lowercase().contains("aacp"), |decoded| decoded.he_aac);
+        // Nothing is removed: the stream's measured level stays until it is measured again.
         self.describe_stream(
             vec![
+                ("vbr", "0".into()),
                 ("framed", "1".into()),
+                ("decoded", if self.decoded.is_some() { "1" } else { "0" }.into()),
+                ("output_rate", self.decoded.map_or(frame.format.sample_rate, |decoded| decoded.sample_rate).to_string()),
                 ("codec", frame.format.codec.as_str().to_string()),
                 ("profile", if he_aac { "he-aac".into() } else { frame.format.codec.as_str().to_string() }),
                 ("sample_rate", frame.format.sample_rate.to_string()),
@@ -516,8 +597,9 @@ impl RelayTask {
                 ("content_type", info.content_type.clone()),
                 ("seen_at", unix_now().to_string()),
             ],
-            true,
+            false,
         );
+        true
     }
 
     /// Records that the stream is being relayed as it arrives, with none of
@@ -555,7 +637,7 @@ impl RelayTask {
     /// there is no ident to mark the change, something audible is playing, and
     /// the format lets the level be changed without decoding.
     fn fades(&self) -> bool {
-        !self.ident_ready() && !self.out_silent && self.relay.format().is_some_and(|format| format.codec == Codec::Mp3)
+        !self.ident_ready() && !self.out_silent && !self.quiet && self.relay.format().is_some_and(|format| format.codec == Codec::Mp3)
     }
 
     fn ident_ready(&self) -> bool {
@@ -565,6 +647,8 @@ impl RelayTask {
 
     async fn play_live(&mut self, mut live: LiveSource) -> Outcome {
         self.entry = Entry::new();
+        self.quiet = false;
+        self.decoded = None;
         let source = live.source;
         let delay = self.station.failover_delay;
         self.watch(source);
@@ -588,13 +672,34 @@ impl RelayTask {
                         }
                         if !frames.is_empty() || !raw.is_empty() {
                             last_data = Instant::now();
-                            if has_sound(&frames, &raw, self.station.silence_detection) {
-                                last_sound = last_data;
-                                self.relay.touch_audio();
+                            match live.heard(&frames, &raw, self.station.silence_detection, self.hub.cfg.silence_threshold_db) {
+                                Some(true) => {
+                                    last_sound = last_data;
+                                    self.quiet = false;
+                                    self.relay.touch_audio();
+                                }
+                                Some(false) => self.quiet = true,
+                                None => {}
                             }
+                            let fresh = live.newly_decoded();
+                            self.decoded = fresh.or(self.decoded);
                             if let Some(info) = info.as_ref() {
                                 match frames.first() {
-                                    Some(frame) => self.learn_format(frame, info),
+                                    Some(frame) => {
+                                        let published = self.learn_format(frame, info);
+                                        if let (Some(decoded), false) = (fresh, published) {
+                                            // The stream was described before it had been listened to: add what that showed.
+                                            let he_aac = frame.format.codec == Codec::Aac && decoded.he_aac;
+                                            self.describe_stream(
+                                                vec![
+                                                    ("decoded", "1".into()),
+                                                    ("output_rate", decoded.sample_rate.to_string()),
+                                                    ("profile", if he_aac { "he-aac".into() } else { frame.format.codec.as_str().to_string() }),
+                                                ],
+                                                false,
+                                            );
+                                        }
+                                    }
                                     None if live.framer.is_none() => self.learn_unframed(info),
                                     None => {}
                                 }
@@ -624,6 +729,14 @@ impl RelayTask {
                     if ticks % 4 == 0 {
                         if let Some(flow) = self.housekeep().await {
                             return Outcome::Flow(flow);
+                        }
+                        // The primary's level is the station's: files are matched to it.
+                        if let (Source::Primary, Some(level)) = (source, live.level_db()) {
+                            let due = self.level.is_none_or(|(last, at)| (level - last).abs() >= LEVEL_STEP_DB && at.elapsed() >= LEVEL_EVERY);
+                            if due {
+                                self.level = Some((level, Instant::now()));
+                                self.describe_stream(vec![("level_db", format!("{level:.1}"))], false);
+                            }
                         }
                         self.poll_metadata();
                     }
@@ -718,6 +831,7 @@ impl RelayTask {
         }
         tracing::info!(station = %self.relay.slug, "playing the ident");
         self.entry = Entry::new();
+        self.quiet = false;
         self.fade = None;
         let started = Instant::now();
         let mut sent = Duration::ZERO;
@@ -744,6 +858,7 @@ impl RelayTask {
             return Outcome::Unavailable;
         }
         self.watch(Source::Fallback);
+        self.quiet = false;
         let wanted = self.relay.format();
         let mut body: Option<Body> = None;
         let mut framer = Framer::new();

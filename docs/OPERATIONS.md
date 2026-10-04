@@ -186,9 +186,9 @@ accounts and keys, with the address the request came from.
 
 | Resource | Guidance |
 |---|---|
-| Bandwidth | Listeners multiplied by bitrate, plus about 5% overhead. Usually the first limit |
-| CPU | Low. The engine copies bytes; TLS in HAProxy is the larger share for HTTPS listeners |
-| Memory | About 1 MB per active station plus a few tens of KB per listener |
+| Memory | Engine: about 22 MB plus 25 KB per listener (measured). Allow about 100 KB per listener across the engine, HAProxy and the kernel's network buffers |
+| Processor | Engine: about 10% of one core per 1,000 listeners (measured on a 1.7 GHz laptop core over loopback, with `PUBLISH_INTERVAL_MS=400`), whatever the bitrate. HAProxy needs its own share per listener, more for HTTPS. About 0.07% of a core per station on air for silence detection. A file conversion takes one core at the lowest priority while it runs |
+| Network | Usually the first limit at higher bitrates: a 1 Gbit/s port carries about 5,800 listeners at 128 kbps, 7,800 at 96 kbps and 2,300 at 320 kbps, leaving a fifth of the port spare |
 | File descriptors | One per listener in HAProxy and in the engine. The compose file raises the limits to 131,072 and 65,536 |
 | Database growth | One row per active station per minute, removed after the retention period; one permanent row per station per day |
 

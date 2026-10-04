@@ -18,8 +18,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust_src
-      - run: cargo test --locked
-      - run: cargo build --release --locked
+      # The engine links in two FFmpeg decoders, built the same way as in its Docker image.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nasm clang libclang-dev pkg-config xz-utils
+      - uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('rust_src/build-ffmpeg.sh') }}
+      - run: ./build-ffmpeg.sh "$HOME/ffmpeg"
+      - run: FFMPEG_DIR="$HOME/ffmpeg" cargo test --locked --features static-ffmpeg
+      - run: FFMPEG_DIR="$HOME/ffmpeg" cargo build --release --locked --features static-ffmpeg
 
   admin:
     name: Management API (Node.js)
@@ -44,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shell syntax
         run: |
-          for f in get.sh install.sh scripts/*.sh edge/sync-cert.sh; do bash -n "$f"; done
+          for f in get.sh install.sh scripts/*.sh edge/sync-cert.sh rust_src/build-ffmpeg.sh; do bash -n "$f"; done
       - name: The one-line installer's file list matches the repository
         run: |
           for f in $(sed -n 's/^RUNTIME_FILES="\(.*\)"$/\1/p' get.sh); do test -e "$f" || { echo "get.sh lists $f, which does not exist"; exit 1; }; done

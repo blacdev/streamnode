@@ -242,18 +242,40 @@ curl -o copy.mp3 $API/files/3/content -H "X-API-Key: $KEY"
 Uploading a file the account already holds (the same bytes) stores nothing new: the
 existing file is returned with `200` and `"already_stored": true`.
 
-Nothing is converted. A file that cannot be used is refused, and the message says why
-and what to do:
+A file in the station's format is stored as it is. One in another format is converted
+only when `convert=true` is passed, which is the caller's agreement that the file is
+re-encoded to the stream's format, matched to the stream's loudness, and stored in
+place of what was uploaded. The answer is then `202` with `"status": "converting"`;
+the file can be assigned at once and plays when `status` becomes `ready` (poll
+`GET /files/{id}`). `failed` comes with `status_detail`.
+
+```bash
+curl -H "X-API-Key: $KEY" --data-binary @mix.wav \
+  "$API/files?filename=mix.wav&use=fallback&station=powerbeats&convert=true"
+
+# A file already in the library, for a station it does not match:
+curl -X POST $API/files/3/convert -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"station": "powerbeats", "use": "fallback"}'
+```
+
+`POST /files/{id}/convert` answers `202` with a new file, which takes the original's
+place on that station when it is ready; the original is removed if nothing else uses
+it. Each file reports `status`, `converted` and `gain_db` (how much it was turned up
+or down to match the stream).
+
+A file that cannot be used is refused, and the message says why and what to do:
 
 | Status | `code` | When |
 |---|---|---|
-| `422` | `file_not_usable` | Not MP3 or AAC (ADTS); an ident longer than the limit; or, with `station`, a format, bitrate, sample rate or channel count different from the stream's, or a variable-bitrate MP3 |
+| `422` | `conversion_needed` | The file is not in the station's format and `convert=true` was not passed. `details.can_convert` is `true` and `details.target` names the format |
+| `422` | `file_not_usable` | Not audio; an ident longer than the limit; another format with no station to convert it for, or for a station whose format is not yet known or cannot be produced (HE-AAC) |
 | `413` | `quota_exceeded` | The file does not fit in the account's remaining storage. `details` has `file_bytes`, `used_bytes`, `quota_bytes`, `free_bytes` |
 | `507` | `server_storage_full` | The server's own disk is full |
 | `409` | `file_in_use` | Deleting a file a station still uses, without `?force` |
 
 The same checks apply when a file is assigned with `ident_file_id` or
-`fallback_file_id` on a station; a mismatch is a `422` naming the field.
+`fallback_file_id` on a station; a mismatch is a `422` naming the field, with
+`can_convert: true` and the `file_id` when `POST /files/{id}/convert` would resolve it.
 
 ### Settings and storage (administrators)
 
@@ -352,10 +374,32 @@ curl -X DELETE $API/users/4 -H "X-API-Key: $KEY"
 | `password` | Optional. Only needed if the account signs in to the dashboard. Minimum 10 characters |
 | `external_id` | Your identifier for the customer. Unique |
 | `storage_quota_mb` | Megabytes of uploaded audio the account may hold. `null` (the default) uses the gateway-wide setting |
+| `email` | Optional. Where notices about limits and subscriptions go. The account's owner can also set it (`PATCH /auth/me`) |
+| `discount_percent` | Taken off the account's monthly total |
 | `max_stations` | How many stations the account may create and manage. Defaults to 5 (`DEFAULT_MAX_STATIONS`). `0` means stations are created by an administrator only |
 | `is_active` | `false` blocks the account's keys and sign-in. It does **not** stop its stations; suspend those separately |
 
 Deleting an account deletes its stations, keys, statistics and uploaded files.
+
+## Billing, limits and capacity
+
+Prices per station and account, each station against its limits, the add-a-server
+calculator and email notices are described, with their calls, in
+[Costs, capacity, billing and limits](BILLING.md). In short:
+
+```bash
+curl $API/billing -H "X-API-Key: $KEY"                         # the account's bill (a tenant sees only their own)
+curl $API/stations/powerbeats/limits -H "X-API-Key: $KEY"      # one station against its limits
+curl "$API/billing/quote?listeners=500&bitrate_kbps=128&storage_mb=2048" -H "X-API-Key: $KEY"
+curl $API/billing/rates -H "X-API-Key: $KEY"                   # administrators: the rate card
+curl -X POST $API/capacity/estimate -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"vcpus": 4, "memory_gb": 8, "port_mbps": 1000, "mode": "proxied"}'
+```
+
+A station's listener limit, the bitrate it is charged at, its discount, a fixed price,
+its subscription date and the account it belongs to are fields of the station
+(`max_listeners`, `billing_bitrate_kbps`, `discount_percent`, `price_override`,
+`subscription_ends_on`, `user_id`) that only an administrator can set.
 
 ## Servers
 

@@ -25,10 +25,14 @@ const stationWritable = {
   silence_detection: { type: 'boolean', default: true, description: 'Treat a stream that keeps sending but carries only silence as having no audio. Applies to MP3 and AAC streams.' },
   ident_file_id: { type: 'integer', nullable: true, description: 'An uploaded file played once at every change of source: on leaving a failed stream and on returning to one that is back. Without it, MP3 stations fade between sources. Must belong to the station\'s account, match the stream\'s format and be no longer than the ident limit.' },
   fallback_file_id: { type: 'integer', nullable: true, description: 'An uploaded file looped while neither stream has audio. Must belong to the station\'s account and match the stream\'s format.' },
-  max_listeners: { type: 'integer', minimum: 0, description: 'Concurrent listener cap, 0 for unlimited. Administrators only.', example: 500 },
+  max_listeners: { type: 'integer', minimum: 0, description: 'Concurrent listener cap, 0 for unlimited. Also the number of listeners the station is charged for; an unlimited station is charged for its highest concurrent listeners in the month. Administrators only.', example: 500 },
+  billing_bitrate_kbps: { type: 'integer', nullable: true, minimum: 8, maximum: 2000, description: 'The bitrate the station is charged at. null uses the bitrate detected on its stream. Administrators only.' },
+  discount_percent: { type: 'number', minimum: 0, maximum: 100, description: 'Taken off this station\'s calculated price. Administrators only.' },
+  price_override: { type: 'number', nullable: true, minimum: 0, description: 'A fixed monthly price that replaces the calculated one. Administrators only.' },
+  subscription_ends_on: { type: 'string', format: 'date', nullable: true, description: 'The last day paid for. Produces notices to the owner; the station is not suspended automatically. Administrators only.' },
   external_id: { type: 'string', nullable: true, maxLength: 100, description: 'Your own identifier for this station, such as a billing service id. Administrators only.', example: 'whmcs-service-1042' },
   is_active: { type: 'boolean', description: 'false suspends the station. Administrators only.' },
-  user_id: { type: 'integer', description: 'Owning account. Administrators only; defaults to the caller.' },
+  user_id: { type: 'integer', description: 'Owning account. Administrators only; defaults to the caller. Changing it moves the station to that account and clears its ident and fallback audio, which belong to an account.' },
 };
 
 module.exports = {
@@ -53,6 +57,7 @@ module.exports = {
     { name: 'Statistics', description: 'Live status, history and billing usage.' },
     { name: 'Files', description: 'Uploaded audio: station idents and the files played when a station\'s streams have no audio. The gateway never converts audio, so a file must already match the stream it is used on.' },
     { name: 'Settings', description: 'Gateway-wide settings and where uploaded files are kept.' },
+    { name: 'Billing', description: 'What stations and accounts cost per month, how close they are to their limits, and the notices sent about that. Prices follow from the measured cost of a listener.' },
     { name: 'Accounts', description: 'Tenant accounts and API keys.' },
     { name: 'Servers', description: 'Streaming servers that listeners are spread across.' },
     { name: 'Updates', description: 'Version monitoring and installing updates.' },
@@ -167,6 +172,7 @@ module.exports = {
           { name: 'name', in: 'query', schema: { type: 'string', maxLength: 100 }, description: 'Display name; listeners see it as the title while a fallback file plays. Defaults to the file name without its extension.' },
           { name: 'use', in: 'query', schema: { type: 'string', enum: ['ident', 'fallback'] } },
           { name: 'station', in: 'query', schema: { type: 'string' }, description: 'Slug of a station to check the file against and assign it to. Requires `use`.' },
+          { name: 'convert', in: 'query', schema: { type: 'boolean', default: false }, description: '`true` is the caller\'s agreement that a file which is not in the station\'s format is re-encoded to it, matched to the stream\'s loudness, and stored in place of what was uploaded. Needs `station`. Without it such a file is refused with `conversion_needed`.' },
           { name: 'assign', in: 'query', schema: { type: 'boolean', default: true }, description: '`false` checks the file against `station` and stores it without assigning it.' },
           { name: 'user_id', in: 'query', schema: { type: 'integer' }, description: 'Administrators only: upload into another account.' },
         ],
@@ -174,6 +180,7 @@ module.exports = {
         responses: {
           200: ok('The account already holds this exact file; the existing one is returned (`already_stored: true`) and no storage is used.', ref('File')),
           201: ok('Stored.', ref('File')),
+          202: ok('Stored and being converted to the station\'s format (`status: converting`). It can be assigned at once and plays when ready.', ref('File')),
           413: error('The file does not fit in the account\'s remaining storage (`quota_exceeded`).'),
           422: error('The file cannot be used (`file_not_usable`); the message says why and what to do.'),
           507: error('The server itself is out of disk space.'),
@@ -190,6 +197,15 @@ module.exports = {
         description: 'Refused with `409 file_in_use` while a station uses the file, unless `force` is passed, which also removes it from those stations.',
         parameters: [{ name: 'force', in: 'query', schema: { type: 'boolean' }, allowEmptyValue: true }],
         responses: { 204: { description: 'Deleted.' }, 409: error('A station still uses the file.'), ...AUTH_ERRORS },
+      },
+    },
+    '/files/{id}/convert': {
+      parameters: [idParam],
+      post: {
+        tags: ['Files'], summary: 'Convert a file for a station',
+        description: 'For a file whose format differs from a station\'s stream. Calling this is the owner\'s agreement to the conversion: a converted copy is made in the stream\'s format and at the stream\'s loudness, and when it is ready it takes the original\'s place on that station. The original is removed if no other station uses it. Not possible for HE-AAC stations.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['station', 'use'], properties: { station: { type: 'string', description: 'Station slug.' }, use: { type: 'string', enum: ['ident', 'fallback'] } } }) },
+        responses: { 202: ok('The new file, being converted.', ref('File')), 409: error('The file already matches, or is not ready.'), 422: error('It cannot be converted for this station.'), ...AUTH_ERRORS },
       },
     },
     '/files/{id}/content': {
@@ -298,6 +314,52 @@ module.exports = {
         responses: { 200: ok('Capacity report.', ref('Capacity')), ...AUTH_ERRORS },
       },
     },
+    '/capacity/estimate': {
+      post: {
+        tags: ['Servers'], summary: 'What adding a server would do',
+        description: 'Administrators only. Given the size of a server, says how many listeners it could serve, how the installation\'s capacity changes and what limits it afterwards, and how today\'s listeners, the master\'s processor use and the master\'s traffic would be spread. A `proxied` server (a slave) takes over engine work but no traffic, since every listener still passes through the master; a `direct` server (an edge server) takes its listeners and their traffic away from the master.',
+        requestBody: { required: true, content: json(ref('ServerCandidate')) },
+        responses: { 200: ok('The estimate.', ref('CapacityEstimate')), 422: error('Validation failed.'), ...AUTH_ERRORS },
+      },
+    },
+    '/billing': {
+      get: {
+        tags: ['Billing'], summary: 'What an account costs, and how close it is to its limits',
+        description: 'A tenant receives their own account. An administrator receives one account with `user_id`, or every account with a total.',
+        parameters: [{ name: 'user_id', in: 'query', schema: { type: 'integer' } }],
+        responses: { 200: ok('The account\'s bill, or for an administrator without `user_id` an object with `accounts` and `monthly_total`.', ref('AccountBill')), ...AUTH_ERRORS },
+      },
+    },
+    '/billing/quote': {
+      get: {
+        tags: ['Billing'], summary: 'Price a plan',
+        description: 'What a number of listeners at a bitrate, and an amount of storage, cost per month at the current rates.',
+        parameters: [
+          { name: 'listeners', in: 'query', required: true, schema: { type: 'integer' } },
+          { name: 'bitrate_kbps', in: 'query', schema: { type: 'integer', default: 128 } },
+          { name: 'storage_mb', in: 'query', schema: { type: 'integer', default: 0 } },
+          { name: 'discount_percent', in: 'query', schema: { type: 'number' }, description: 'Administrators only.' },
+        ],
+        responses: { 200: ok('The quote.', ref('Quote')), ...AUTH_ERRORS },
+      },
+    },
+    '/billing/rates': {
+      get: { tags: ['Billing'], summary: 'The rates prices are worked out from', description: 'Administrators only. Includes the resulting price per listener at common bitrates.', responses: { 200: ok('Rates.', ref('Rates')), ...AUTH_ERRORS } },
+      put: { tags: ['Billing'], summary: 'Change the rates', description: 'Administrators only. Only the supplied fields change. `server_monthly_cost: 0` leaves prices unset.', requestBody: { required: true, content: json(ref('RatesUpdate')) }, responses: { 200: ok('Saved.', ref('Rates')), 422: error('Validation failed.'), ...AUTH_ERRORS } },
+    },
+    '/stations/{slug}/limits': {
+      parameters: [slugParam],
+      get: { tags: ['Billing'], summary: 'One station against its limits', description: 'The station\'s plan, its use this month and its standing: what its owner watches.', responses: { 200: ok('The station\'s plan and use.', ref('StationBill')), 404: error('No such station.'), ...AUTH_ERRORS } },
+    },
+    '/settings/email/test': {
+      post: { tags: ['Settings'], summary: 'Send a test email', description: 'Administrators only. Shows that the mail settings work.', requestBody: { required: true, content: json({ type: 'object', required: ['to'], properties: { to: { type: 'string', format: 'email' } } }) }, responses: { 200: ok('Sent.', { type: 'object', properties: { sent: { type: 'boolean' }, to: { type: 'string' } } }), 409: error('Email is not set up.'), 502: error('The mail server refused the message.'), ...AUTH_ERRORS } },
+    },
+    '/notifications': {
+      get: { tags: ['Billing'], summary: 'Notices sent', description: 'Administrators only. The most recent first.', parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 100, maximum: 500 } }], responses: { 200: ok('Notices.', { type: 'object', properties: { notifications: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, sent_at: { type: 'string', format: 'date-time' }, username: { type: 'string' }, station: { type: 'string', nullable: true }, kind: { type: 'string', enum: ['listeners', 'storage', 'subscription'] }, threshold: { type: 'integer' }, period: { type: 'string' }, recipient: { type: 'string' }, subject: { type: 'string' } } } } } }), ...AUTH_ERRORS } },
+    },
+    '/notifications/run': {
+      post: { tags: ['Billing'], summary: 'Send the notices that are due', description: 'Administrators only. They are otherwise sent every 10 minutes.', responses: { 200: ok('How many were sent.', { type: 'object', properties: { sent: { type: 'integer' }, error: { type: 'string' } } }), ...AUTH_ERRORS } },
+    },
     '/api-keys': {
       get: { tags: ['Accounts'], summary: 'List API keys', description: 'Your own keys. Administrators may pass `user_id` (or `all`).', parameters: [{ name: 'user_id', in: 'query', schema: { type: 'string' } }], responses: { 200: ok('Keys, without their secret values.', { type: 'object', properties: { api_keys: { type: 'array', items: ref('ApiKey') } } }), ...AUTH_ERRORS } },
       post: { tags: ['Accounts'], summary: 'Create an API key', description: 'The full key is returned once, in this response only. Store it immediately.', requestBody: { required: true, content: json({ type: 'object', required: ['name'], properties: { name: { type: 'string', maxLength: 50, example: 'WHMCS module' }, user_id: { type: 'integer', description: 'Administrators only: create the key for another account.' } } }) }, responses: { 201: ok('The new key, including its secret.', ref('ApiKeyCreated')), 422: error('Validation failed.'), ...AUTH_ERRORS } },
@@ -366,6 +428,59 @@ module.exports = {
           source_offline: { type: 'boolean', description: 'true when every server has found the station\'s sources silent, i.e. the station itself is off the air.' },
         },
       },
+      ServerCandidate: {
+        type: 'object', required: ['vcpus', 'memory_gb', 'port_mbps'],
+        properties: {
+          vcpus: { type: 'number', example: 4 }, memory_gb: { type: 'number', example: 8 }, port_mbps: { type: 'number', example: 1000 },
+          mode: { type: 'string', enum: ['proxied', 'direct'], default: 'proxied', description: '`proxied`: a slave behind the master. `direct`: an edge server with its own DNS record.' },
+          bitrate_kbps: { type: 'number', default: 128 }, listeners: { type: 'number', description: 'The load to spread. Default: the listeners connected now.' },
+        },
+      },
+      CapacityEstimate: {
+        type: 'object',
+        properties: {
+          bitrate_kbps: { type: 'integer' }, listeners_now: { type: 'integer' },
+          new_server: { type: 'object', description: 'The server as given, with `capacity`: the listeners it could serve and what limits it (`processor`, `memory` or `network`).' },
+          capacity: { type: 'object', description: '`before` and `after`: `listeners` the installation can carry, how many of them `through_master`, and `limited_by`. `gained` is the difference.' },
+          load_now: { type: 'object', description: '`before` and `after`: per server its `listeners` and `processor_percent`; for the `master` its `listeners_through_it`, `processor_percent`, `traffic_mbps` and `port_percent`.' },
+          notes: { type: 'array', items: { type: 'string' }, description: 'The same, in sentences.' },
+        },
+      },
+      CostModel: {
+        type: 'object', description: 'What one listener costs, as measured on this installation. `measured: false` marks a starting figure not yet replaced by a measurement.',
+        properties: Object.fromEntries(['engine', 'proxy'].map((part) => [part, { type: 'object', properties: { percent_of_core_per_1000_listeners: { type: 'number' }, kilobytes_per_listener: { type: 'integer' }, measured: { type: 'boolean' }, samples: { type: 'integer' } } }])),
+      },
+      StationBill: {
+        type: 'object',
+        properties: {
+          station: { type: 'string' }, name: { type: 'string' }, is_active: { type: 'boolean' },
+          plan: { type: 'object', properties: { max_listeners: { type: 'integer' }, listeners_billed: { type: 'integer' }, bitrate_kbps: { type: 'integer' }, bitrate_source: { type: 'string', enum: ['set', 'detected', 'default'] }, price_per_listener: { type: 'number' }, discount_percent: { type: 'number' }, price_override: { type: 'number', nullable: true }, subscription_ends_on: { type: 'string', format: 'date', nullable: true }, days_left: { type: 'integer', nullable: true } } },
+          usage: { type: 'object', properties: { listeners_now: { type: 'integer' }, peak_listeners_this_month: { type: 'integer' }, percent_of_limit: { type: 'number', nullable: true }, listener_hours_this_month: { type: 'number' }, gigabytes_this_month: { type: 'number' } } },
+          status: { type: 'string', enum: ['ok', 'near_limit', 'at_limit', 'expiring', 'expired'] },
+          monthly_price: { type: 'number', nullable: true, description: 'null while prices are not set.' },
+        },
+      },
+      AccountBill: {
+        type: 'object',
+        properties: {
+          user_id: { type: 'integer' }, username: { type: 'string' }, email: { type: 'string', nullable: true }, currency: { type: 'string', example: 'USD' },
+          prices_set: { type: 'boolean', description: 'false until the administrator has entered what a server costs.' }, month: { type: 'string', example: '2026-10' },
+          stations: { type: 'array', items: ref('StationBill') },
+          storage: { type: 'object', properties: { used_bytes: { type: 'integer' }, quota_bytes: { type: 'integer', nullable: true }, free_bytes: { type: 'integer', nullable: true }, percent_used: { type: 'number', nullable: true }, monthly_price: { type: 'number', nullable: true } } },
+          discount_percent: { type: 'number' }, monthly_total: { type: 'number', nullable: true },
+        },
+      },
+      ListenerRate: { type: 'object', properties: { bitrate_kbps: { type: 'integer' }, listeners_per_server: { type: 'integer' }, limited_by: { type: 'string', enum: ['processor', 'memory', 'network'] }, cost_per_listener: { type: 'number' }, price_per_listener: { type: 'number' } } },
+      Quote: { type: 'object', properties: { currency: { type: 'string' }, configured: { type: 'boolean' }, listeners: { type: 'integer' }, bitrate_kbps: { type: 'integer' }, storage_mb: { type: 'integer' }, rate: ref('ListenerRate'), listeners_price: { type: 'number' }, storage_price: { type: 'number' }, discount_percent: { type: 'number' }, monthly_total: { type: 'number' } } },
+      RatesUpdate: {
+        type: 'object',
+        properties: {
+          currency: { type: 'string', example: 'USD' }, server_monthly_cost: { type: 'number', description: 'What one server of the size below costs per month. 0 leaves prices unset.' },
+          server_vcpus: { type: 'integer' }, server_memory_gb: { type: 'integer' }, server_port_mbps: { type: 'integer' },
+          margin_percent: { type: 'number' }, storage_price_per_gb: { type: 'number' },
+        },
+      },
+      Rates: { allOf: [ref('RatesUpdate'), { type: 'object', properties: { configured: { type: 'boolean' }, per_listener: { type: 'array', items: ref('ListenerRate') }, cost_model: ref('CostModel') } }] },
       StreamFeatures: {
         type: 'object', description: 'What the gateway can do with a stream of this type.',
         properties: {
@@ -389,7 +504,9 @@ module.exports = {
           name: { type: 'string', example: 'MP3' }, summary: { type: 'string', example: 'MP3, 96 kbps, 44.1 kHz, stereo' },
           codec: { type: 'string', enum: ['mp3', 'aac'], nullable: true }, sample_rate: { type: 'integer', nullable: true, example: 44100 }, channels: { type: 'integer', nullable: true, example: 2 },
           bitrate_kbps: { type: 'integer', nullable: true, example: 96, description: 'null for a variable-bitrate stream, or when unknown.' }, variable_bitrate: { type: 'boolean' },
-          content_type: { type: 'string', nullable: true, example: 'audio/mpeg' }, features: ref('StreamFeatures'), notes: { type: 'string' },
+          content_type: { type: 'string', nullable: true, example: 'audio/mpeg' },
+          level_db: { type: 'number', nullable: true, example: -16.2, description: 'The stream\'s average level in dB below full scale, known after about 20 seconds on air. Converted files are brought to it.' },
+          features: ref('StreamFeatures'), notes: { type: 'string' },
         },
       },
       File: {
@@ -401,6 +518,10 @@ module.exports = {
           bitrate_kbps: { type: 'integer', description: 'Exact for constant-bitrate MP3, otherwise the average.' }, constant_bitrate: { type: 'boolean' },
           duration_seconds: { type: 'number' },
           stored_in: { type: 'string', enum: ['local', 'dropbox'] },
+          status: { type: 'string', enum: ['ready', 'converting', 'failed'], description: '`converting`: described as it will be once converted, and not yet playable.' },
+          status_detail: { type: 'string', nullable: true, description: 'Why a conversion failed.' },
+          converted: { type: 'boolean', description: 'The stored audio is the gateway\'s conversion, not what was uploaded.' },
+          gain_db: { type: 'number', nullable: true, description: 'How much a converted file was turned up or down to match the stream\'s loudness.' },
           used_by: { type: 'array', items: { type: 'object', properties: { station: { type: 'string' }, as: { type: 'string', enum: ['ident', 'fallback'] } } } },
           created_at: { type: 'string', format: 'date-time' },
         },
