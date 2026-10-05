@@ -23,7 +23,7 @@
       <strong>StreamNode</strong>
       <nav id="tabs" role="tablist">
         <button role="tab" data-tab="stations" aria-selected="true">Stations</button>
-        <button role="tab" data-tab="files">Audio files</button>
+        <button role="tab" data-tab="files">Files</button>
         <button role="tab" data-tab="billing">Billing</button>
         <button role="tab" data-tab="keys">API keys</button>
         <button role="tab" data-tab="users" data-admin>Accounts</button>
@@ -55,23 +55,25 @@
       </section>
 
       <section id="tab-files" hidden>
-        <div class="bar"><h2>Audio files</h2>
+        <div class="bar"><h2>Files</h2>
           <span id="fileUsage" class="muted"></span>
           <span class="muted">Shared by all of the account's stations</span>
           <select id="fileAccount" data-admin aria-label="Account"></select>
         </div>
         <p class="notice prose"><strong>It is best to upload a file that is already in the station's stream format</strong>
           (the same format, bitrate, sample rate and mono or stereo; MP3 at a constant bitrate; AAC as an .aac file): it is then played exactly as you made it.
-          A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be converted for you, if you agree to it: it is re-encoded, which costs a little quality when the upload was already compressed, its loudness is matched to the stream, and the converted file takes the place of the one you uploaded. <span id="fileLimits"></span></p>
+          A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be converted for you, if you agree to it: it is re-encoded, which costs a little quality when the upload was already compressed, its loudness is matched to the stream, and the converted file takes the place of the one you uploaded. <span id="fileLimits"></span>
+          Station images (JPEG, PNG, WebP or GIF) are kept here too and count toward the same storage.</p>
         <form id="fileForm" class="card wide-card">
           <h3>Upload a file</h3>
-          <label>Audio file <input name="file" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg" required></label>
+          <label>Audio file or image <input name="file" type="file" accept="audio/*,image/jpeg,image/png,image/webp,image/gif,.mp3,.aac,.wav,.flac,.m4a,.ogg" required></label>
           <label>Name <input name="name" maxlength="100" placeholder="Shown in the dashboard and to listeners as the title"></label>
           <label>Use it as
             <select name="use">
               <option value="">Just add it to the library</option>
               <option value="fallback">Fallback audio for a station</option>
               <option value="ident">Ident for a station</option>
+              <option value="artwork">Image for a station</option>
             </select></label>
           <label id="fileStationLabel" hidden>Station <select name="station"></select>
             <small id="fileStationFormat"></small></label>
@@ -307,6 +309,16 @@
       <label>Title &amp; artwork URL <input name="metadata_url" type="url" placeholder="Optional">
         <small>A JSON or text endpoint with the current title, artist and artwork. Leave empty to use titles from the stream.</small></label>
       <label>Station artwork URL <input name="artwork_url" type="url" placeholder="Optional"></label>
+      <fieldset>
+        <legend>Shown when nothing else is known</legend>
+        <p class="muted">Used while the fallback audio plays, when the stream and the title URL give no title or artwork, and when an address above does not work.</p>
+        <label>Title <input name="default_title" maxlength="200" placeholder="Optional, for example the station's slogan"></label>
+        <label>Artist <input name="default_artist" maxlength="200" placeholder="Optional, for example the station's name"></label>
+        <label>Station image <select name="artwork_file_id"></select>
+          <small>A JPEG, PNG, WebP or GIF of up to 5 MB; a square works best. It is kept in your storage. Choose one already there, or upload one:</small>
+          <input name="artwork_upload" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+        <div id="stationImage"></div>
+      </fieldset>
       <label>Seconds without audio before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
         <small>How long a stream may be down or silent before the station moves to the next source. When a stream is back the station returns to it at once.</small></label>
       <label class="check"><input type="checkbox" name="silence_detection" checked> Treat a stream that sends silence as having no audio</label>
@@ -325,7 +337,7 @@
       <fieldset data-admin>
         <legend>Set by the administrator</legend>
         <label>Account <select name="user_id"></select>
-          <small>Moving a station to another account clears its ident and fallback audio, which belong to an account.</small></label>
+          <small>Moving a station to another account clears its ident, fallback audio and image, which belong to an account.</small></label>
         <label>Plan
           <select name="plan_type">
             <option value="listeners">By listeners: pays for a number of listeners at once</option>

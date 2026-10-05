@@ -33,7 +33,7 @@ app.use((req, res, next) => {
     'Referrer-Policy': 'no-referrer',
     // Artwork and the preview player load from station-supplied hosts.
     'Content-Security-Policy':
-      "default-src 'self'; img-src * data:; media-src *; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+      "default-src 'self'; img-src * data: blob:; media-src *; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
   });
   next();
 });

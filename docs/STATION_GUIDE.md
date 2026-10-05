@@ -126,12 +126,48 @@ Miles Davis - Blue in Green
 ```
 
 If the address stops responding, the gateway goes back to the titles embedded in your
-stream until it recovers.
+stream until it recovers, and if the stream carries none, to your station's own title
+and artist (below).
 
 ### Station artwork
 
 A fixed image (your logo) shown whenever no per-song artwork is available. Use a
 square image of at least 500 by 500 pixels, served over `https`.
+
+### Your station's own title, artist and image
+
+Three optional settings say what listeners see when nothing better is known:
+
+| Setting | Example |
+|---|---|
+| Title | `More music, less talk` |
+| Artist | `Power Beats FM` |
+| Station image | An uploaded JPEG, PNG, WebP or GIF, up to 5 MB; a square works best |
+
+The image is uploaded into your storage, like your audio files, and counts toward the
+same quota. You can upload it from the station's form or choose one you uploaded
+before, and use the same image for several stations.
+
+They are used:
+
+- **while the fallback audio plays**, in place of the file's name;
+- **when there is no title**: your stream carries none, and there is no title address
+  or it gives none;
+- **when the title address stops answering**, if the stream has no title of its own;
+- **when there is no artwork**: the title address gives none and no artwork address is
+  set, **or an artwork address does not work** (it is not reachable, or what answers
+  is not a picture). The gateway tries each artwork address itself. One that fails is
+  tried again every minute, and used again as soon as it works.
+
+What is shown, in order of preference:
+
+| | First choice | Then | Then |
+|---|---|---|---|
+| Title and artist | The title address, while it answers | The title in the stream | Your station's own |
+| Artwork | The title address's artwork, if it works | The artwork address, if it works | Your uploaded image |
+
+Players that show artwork are given your image at a public address on the gateway
+(`/api/v1/public/stations/<slug>/artwork`), which you may also use on your own website.
 
 ## What you get
 
@@ -183,4 +219,5 @@ figures are in the gateway's statistics.
 switches within a few seconds and listeners stay connected.
 
 **Why is the title blank?** Either your encoder is not sending titles, or nobody is
-listening at the moment (titles are only tracked while there are listeners).
+listening at the moment (titles are only tracked while there are listeners). Give the
+station a title and artist of its own and they are shown in both cases.

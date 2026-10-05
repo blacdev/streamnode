@@ -4,13 +4,17 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
-// The ident and fallback files of the given stations, by id.
+// Where anyone can fetch a station's uploaded image. `version` names its
+// content, so that a changed image is a changed address.
+const artworkPath = (slug, version) => `/api/v1/public/stations/${slug}/artwork${version ? `?v=${version}` : ''}`;
+
+// The ident, fallback and image files of the given stations, by id.
 async function mediaFor(rows) {
-  const ids = [...new Set(rows.flatMap((row) => [row.ident_file_id, row.fallback_file_id]).filter(Boolean))];
+  const ids = [...new Set(rows.flatMap((row) => [row.ident_file_id, row.fallback_file_id, row.artwork_file_id]).filter(Boolean))];
   if (!ids.length) return new Map();
   // A file that is still being converted, or could not be, is not offered to the engines.
   const found = await db.query("SELECT id, name, sha256 FROM media_files WHERE id = ANY($1) AND status = 'ready'", [ids]);
@@ -27,8 +31,14 @@ function profile(row, media) {
     out[`${prefix}_ver`] = file.sha256.slice(0, 16);
     out[`${prefix}_name`] = file.name;
   }
+  const picture = row.artwork_file_id && media.get(row.artwork_file_id);
   return {
     ...out,
+    // Shown when the stream and the metadata URL name nothing, and while the fallback file plays.
+    default_title: row.default_title || '',
+    default_artist: row.default_artist || '',
+    // Players need a full address; without a public address set, the path is all that can be given.
+    default_artwork: picture ? `${config.publicBaseUrl || ''}${artworkPath(row.slug, picture.sha256.slice(0, 12))}` : '',
     failover_delay: String(row.failover_delay_secs),
     silence: row.silence_detection ? '1' : '0',
     noise: row.noise_detection ? '1' : '0',
@@ -173,8 +183,23 @@ function baseUrl(req) {
   return `${req.protocol}://${host}`;
 }
 
+// Artwork an engine could only name by its path here is completed with the address being used.
+const absolute = (url, req) => (url && url.startsWith('/') ? `${baseUrl(req)}${url}` : url);
+
+// The station's title, artist and artwork as a visitor should see them: what
+// is on air, and for whatever is missing there, the station's own.
+function shown(row, live, req) {
+  const none = !live.title && !live.artist;
+  return {
+    title: none ? row.default_title : live.title,
+    artist: none ? row.default_artist : live.artist,
+    artwork: absolute(live.artwork, req) || row.artwork_url || (row.artwork_file_id ? `${baseUrl(req)}${artworkPath(row.slug)}` : null),
+  };
+}
+
 function present(row, live, req) {
   const stream = `${baseUrl(req)}/${row.slug}`;
+  if (live && live.artwork) live = { ...live, artwork: absolute(live.artwork, req) };
   return {
     id: row.id,
     slug: row.slug,
@@ -193,6 +218,11 @@ function present(row, live, req) {
     silence_threshold_db: row.silence_threshold_db,
     ident_file_id: row.ident_file_id,
     fallback_file_id: row.fallback_file_id,
+    default_title: row.default_title,
+    default_artist: row.default_artist,
+    artwork_file_id: row.artwork_file_id,
+    // Where the uploaded image can be fetched by anyone, when there is one.
+    default_artwork_url: row.artwork_file_id ? `${baseUrl(req)}${artworkPath(row.slug)}` : null,
     billing_bitrate_kbps: row.billing_bitrate_kbps,
     discount_percent: Number(row.discount_percent),
     price_override: row.price_override === null ? null : Number(row.price_override),
@@ -216,4 +246,4 @@ async function findBySlug(slug) {
   return rows[0] || null;
 }
 
-module.exports = { COLUMNS, publish, republishUser, streamFormat, unpublish, syncAll, liveFor, mergeLive, silentServers, activeNodes, present, baseUrl, findBySlug };
+module.exports = { COLUMNS, publish, republishUser, streamFormat, unpublish, syncAll, liveFor, mergeLive, silentServers, activeNodes, present, shown, baseUrl, findBySlug };

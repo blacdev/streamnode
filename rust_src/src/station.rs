@@ -12,6 +12,11 @@ pub struct Station {
     pub backup: Option<String>,
     pub metadata_url: Option<String>,
     pub artwork_url: Option<String>,
+    /// Shown when neither the stream nor the metadata URL names what is playing.
+    pub default_title: Option<String>,
+    pub default_artist: Option<String>,
+    /// The station's uploaded image, used when there is no other artwork or the artwork URL does not work.
+    pub default_artwork: Option<String>,
     /// 0 means unlimited.
     pub max_listeners: usize,
     pub active: bool,
@@ -65,6 +70,9 @@ impl Station {
             backup: take("backup"),
             metadata_url: take("metadata_url"),
             artwork_url: take("artwork_url"),
+            default_title: take("default_title"),
+            default_artist: take("default_artist"),
+            default_artwork: take("default_artwork"),
             max_listeners: take("max_listeners").and_then(|v| v.parse().ok()).unwrap_or(0),
             active: take("active").is_none_or(|v| v != "0"),
             failover_delay: Duration::from_secs(take("failover_delay").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(1, 300)),
@@ -127,6 +135,14 @@ mod tests {
         assert_eq!(s.failover_delay, Duration::from_secs(12));
         assert!(!s.silence_detection);
         assert_eq!(s.fallback, Some(Media { id: "7".into(), version: "abc".into(), name: "Night mix".into() }));
+    }
+
+    #[test]
+    fn defaults_for_what_is_shown() {
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("default_title", " Jazz FM "), ("default_artist", ""), ("default_artwork", "/api/v1/public/stations/jazz/artwork?v=ab")])).unwrap();
+        assert_eq!(s.default_title.as_deref(), Some("Jazz FM"));
+        assert_eq!(s.default_artist, None);
+        assert_eq!(s.default_artwork.as_deref(), Some("/api/v1/public/stations/jazz/artwork?v=ab"));
     }
 
     #[test]

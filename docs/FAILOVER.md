@@ -58,7 +58,10 @@ change.
 Every join is also made safe for players. An MP3 frame can depend on the frames before
 it, so the first one or two frames of a stream that is being joined (about a twentieth
 of a second) are sent as silence instead of being left to decode as a burst of noise. While the fallback file plays,
-listeners see its name as the title and the dashboard shows the station as
+listeners see the station's own title, artist and image if it has them (see the
+[Station guide](STATION_GUIDE.md#your-stations-own-title-artist-and-image)), and
+otherwise the file's name as the title. The titles of the stream that stopped are not
+shown, since that is not what is playing. The dashboard shows the station as
 **On air (fallback audio)**.
 
 If a station has none of these left (no backup, no fallback file), it behaves as

@@ -95,6 +95,8 @@ curl -X PUT $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: appl
 | `backup_url` | No | Failover source. Same codec as the primary |
 | `metadata_url` | No | Endpoint for title, artist and artwork; see the [Station guide](STATION_GUIDE.md#title-and-artwork-url) |
 | `artwork_url` | No | Station artwork, used when the metadata URL gives none |
+| `default_title`, `default_artist` | No | Up to 200 characters each. Shown when the stream and the metadata URL name nothing, when the metadata URL stops answering, and while the fallback file plays |
+| `artwork_file_id` | No | An uploaded image from the station's account, used when there is no other artwork or `artwork_url` does not answer with a picture. The response gives its public address as `default_artwork_url` |
 | `max_listeners` | No | Administrators only. `0` (default) is unlimited |
 | `external_id` | No | Administrators only. Your identifier for the station |
 | `failover_delay_secs` | No | Seconds without audio before moving to the next source. 1 to 300, default 6. Returning to a stream that is back is immediate |
@@ -220,6 +222,28 @@ curl -X PATCH $API/files/3 -H "X-API-Key: $KEY" -H "Content-Type: application/js
 curl -X DELETE "$API/files/3?force" -H "X-API-Key: $KEY"   # ?force also removes it from stations using it
 curl -o copy.mp3 $API/files/3/content -H "X-API-Key: $KEY"
 ```
+
+**Station images** go through the same endpoints and the same storage quota. A JPEG,
+PNG, WebP or GIF is recognised by its content and stored with `kind: "image"` (its
+`format` reads like `PNG image, 600 × 600`); `GET /files?kind=image` or `?kind=audio`
+lists one kind only. An image may be at most 5 MB (`413 image_too_large`) and is never
+converted.
+
+```bash
+# Upload a logo and make it the station's image in one call
+curl -H "X-API-Key: $KEY" --data-binary @logo.png \
+  "$API/files?filename=logo.png&use=artwork&station=powerbeats"
+
+# Or choose one already in storage, and set the title and artist to fall back on
+curl -X PATCH $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"artwork_file_id": 7, "default_title": "More music, less talk", "default_artist": "Power Beats FM"}'
+
+# Anyone can fetch it, from any site
+curl -O https://stream.example.com/api/v1/public/stations/powerbeats/artwork
+```
+
+An image cannot be a station's ident or fallback, nor audio its image: both are
+refused with `422` and a message saying so.
 
 | Upload parameter | Notes |
 |---|---|
@@ -588,8 +612,13 @@ curl https://stream.example.com/api/v1/public/stations/powerbeats/now-playing
 }
 ```
 
-Responses may be cached for 5 seconds. `title` and `artist` are `null` while nobody is
-listening.
+Responses may be cached for 5 seconds. `title`, `artist` and `artwork` are what is on
+air; whatever is missing there (or everything, while nobody is listening) is filled
+from the station's `default_title`, `default_artist` and uploaded image, and is `null`
+only when the station has none.
+
+`GET /api/v1/public/stations/{slug}/artwork` returns the station's uploaded image
+itself (`404` when it has none). It may be embedded in any web page.
 
 ## Dashboard sessions
 

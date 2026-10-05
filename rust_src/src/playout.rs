@@ -19,7 +19,7 @@
 
 use std::{
     collections::VecDeque,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -33,7 +33,7 @@ use tokio::{
 use crate::{
     detector::{Decoded, Detector, Verdict},
     frames::{attenuate, supported, Codec, Entry, Frame, Framer},
-    hub::{unix_now, Hub, Relay, Source, Status},
+    hub::{unix_now, Defaults, Hub, Relay, Source, Status},
     icy::IcyDemux,
     nowplaying,
     station::{Media, Station},
@@ -57,6 +57,9 @@ const BACKUP_CHECK: Duration = Duration::from_secs(3);
 const LEVEL_STEP_DB: f32 = 0.5;
 const LEVEL_EVERY: Duration = Duration::from_secs(30);
 const RECHECK: Duration = Duration::from_secs(2);
+/// How often, in seconds, an artwork address that works is tried again, and one that does not.
+const ARTWORK_RECHECK: u64 = 300;
+const ARTWORK_RETRY: u64 = 60;
 /// How long a fade out, and a fade in, lasts.
 const FADE: Duration = Duration::from_millis(1500);
 /// How far down a fade goes, in the 1.5 dB steps an MP3 frame states its level
@@ -691,6 +694,11 @@ impl RelayTask {
         let delay = self.station.failover_delay;
         self.watch(source);
         self.relay.set_live(std::mem::take(&mut live.info), source);
+        // Titles start afresh with each stream: until it names something, the station's own are shown.
+        self.relay.update_titles(|titles| {
+            titles.file = None;
+            titles.stream.clear();
+        });
         tracing::info!(station = %self.relay.slug, source = source.as_str(), "playing the live stream");
 
         let mut tick = interval(Duration::from_millis(250));
@@ -1006,7 +1014,7 @@ impl RelayTask {
                             let info = self.relay.current_info().map(|info| StreamInfo { content_type: info.content_type.clone(), headers: info.headers.clone() })
                                 .unwrap_or(StreamInfo { content_type: format.codec.content_type().to_string(), headers: Vec::new() });
                             self.relay.set_live(info, Source::Fallback);
-                            self.relay.set_title(media.name.clone(), String::new(), self.station.artwork_url.clone().unwrap_or_default());
+                            self.relay.update_titles(|titles| titles.file = Some(media.name.clone()));
                             tracing::info!(station = %self.relay.slug, file = %media.name, "playing the fallback file");
                         }
                         self.publish_frames(&batch);
@@ -1064,6 +1072,7 @@ impl RelayTask {
             self.idle_since = None;
         }
 
+        self.keep_titles();
         if self.last_refresh.elapsed() >= self.hub.cfg.config_refresh {
             self.last_refresh = Instant::now();
             let mut redis = self.hub.redis.clone();
@@ -1077,6 +1086,7 @@ impl RelayTask {
                         || fresh.noise_detection != self.station.noise_detection
                         || fresh.silence_threshold_db != self.station.silence_threshold_db;
                     self.station = fresh;
+                    self.relay.update_titles(|titles| titles.defaults = Defaults::of(&self.station));
                     self.load_ident();
                     if rewired {
                         tracing::info!(station = %self.relay.slug, "source URLs changed, reconnecting");
@@ -1102,14 +1112,16 @@ impl RelayTask {
         self.last_meta_poll = Some(Instant::now());
         let hub = self.hub.clone();
         let relay = self.relay.clone();
-        let fallback_art = self.station.artwork_url.clone().unwrap_or_default();
+        // An answer counts until three polls have gone by without another.
+        let fresh_for = self.hub.cfg.metadata_poll.as_secs() * 3;
         tokio::spawn(async move {
             match hub.connector.fetch_text(&url).await {
                 Ok(text) => {
                     if let Some(found) = nowplaying::parse(&text, &url) {
-                        let artwork = if found.artwork.is_empty() { fallback_art } else { found.artwork };
-                        relay.external_meta_at.store(unix_now(), Ordering::Relaxed);
-                        relay.set_title(found.title, found.artist, artwork);
+                        if !found.artwork.is_empty() {
+                            check_artwork(&hub, &relay, &found.artwork).await;
+                        }
+                        relay.update_titles(|titles| titles.external = Some((found, unix_now() + fresh_for)));
                     }
                 }
                 Err(error) => tracing::debug!(station = %relay.slug, %error, "metadata URL poll failed"),
@@ -1117,14 +1129,51 @@ impl RelayTask {
         });
     }
 
-    /// In-stream titles are used unless the metadata URL is answering.
+    /// The title carried in the stream. It is shown unless the metadata URL is answering.
     fn accept_stream_title(&self, title: String) {
-        let fresh_for = self.hub.cfg.metadata_poll.as_secs() * 3;
-        let external_ok = self.station.metadata_url.is_some()
-            && unix_now().saturating_sub(self.relay.external_meta_at.load(Ordering::Relaxed)) <= fresh_for;
-        if !external_ok {
-            let artwork = self.station.artwork_url.clone().unwrap_or_default();
-            self.relay.set_title(title, String::new(), artwork);
+        self.relay.update_titles(|titles| titles.stream = title);
+    }
+
+    /// Keeps what listeners are shown up to date when nothing new arrives: a
+    /// metadata URL that stopped answering gives way to the stream's title or
+    /// the station's own, and an artwork address that stopped working gives
+    /// way to the station's uploaded image.
+    fn keep_titles(&self) {
+        self.relay.update_titles(|_| {});
+        // Without an image to use instead, there is nothing to decide.
+        if let (Some(url), Some(_)) = (self.station.artwork_url.clone(), &self.station.default_artwork) {
+            if artwork_due(&self.relay, &url) {
+                let (hub, relay) = (self.hub.clone(), self.relay.clone());
+                tokio::spawn(async move { check_artwork(&hub, &relay, &url).await });
+            }
         }
     }
+}
+
+fn artwork_due(relay: &Relay, url: &str) -> bool {
+    let now = unix_now();
+    relay.artwork_checked(url).is_none_or(|(ok, at)| now.saturating_sub(at) >= if ok { ARTWORK_RECHECK } else { ARTWORK_RETRY })
+}
+
+/// Tries an artwork address unless it was tried recently, and records whether
+/// it answered with a picture. One that failed is tried again sooner.
+async fn check_artwork(hub: &Hub, relay: &Relay, url: &str) {
+    if !artwork_due(relay, url) {
+        return;
+    }
+    let now = unix_now();
+    // Marked as it stands while the request is out, so that it is not asked twice at once.
+    let before = relay.artwork_checked(url).is_none_or(|(ok, _)| ok);
+    relay.update_titles(|titles| {
+        titles.checked.insert(url.to_string(), (before, now));
+    });
+    let ok = hub.connector.serves_image(url).await;
+    if ok != before {
+        tracing::info!(station = %relay.slug, artwork = url, working = ok, "artwork address checked");
+    }
+    relay.update_titles(|titles| {
+        let now = unix_now();
+        titles.checked.retain(|_, (_, at)| now.saturating_sub(*at) < 3600);
+        titles.checked.insert(url.to_string(), (ok, now));
+    });
 }
