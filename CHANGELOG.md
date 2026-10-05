@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.13.0] - 2026-10-05
+
+### Added
+
+- **A title, artist and image of the station's own.** Each station can be given a
+  default title and artist (`default_title`, `default_artist`) and an uploaded image
+  (`artwork_file_id`). They are shown while the fallback file plays, when neither the
+  stream nor the metadata URL names what is playing, when the metadata URL stops
+  answering, and when there is no artwork or an artwork address does not work.
+- **Images in the upload library.** JPEG, PNG, WebP and GIF, up to 5 MB, are recognised
+  by their content, kept in the account's storage and counted toward its quota, like
+  audio. `use=artwork` on upload, `kind` on files, `GET /files?kind=`.
+- `GET /api/v1/public/stations/{slug}/artwork` serves a station's image to anyone.
+- The engine tries artwork addresses before handing them to players: one that is
+  unreachable, or answers with something other than a picture, is passed over, tried
+  again each minute, and used again once it works.
+
+### Changed
+
+- A metadata URL that stops answering now gives way after three missed polls even when
+  the stream carries no title; before, its last title stayed on show.
+- A stream's titles start afresh each time a source is joined, and are not shown over
+  the fallback file.
+- Artwork is given to players in the stream only as a full address.
+- The dashboard's "Audio files" tab is now "Files".
+
 ## [2.11.0] - 2026-10-04
 
 ### Added

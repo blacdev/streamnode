@@ -353,6 +353,21 @@ impl Connector {
         let mut body = response.bytes_stream().map(|r| r.map_err(io::Error::other)).boxed();
         read_text(&mut body, self.connect_timeout).await
     }
+
+    /// Whether an address answers with an image. Only the response's headers
+    /// are read; the picture itself is not downloaded.
+    pub async fn serves_image(&self, raw: &str) -> bool {
+        let Ok(url) = self.check_url(raw) else { return false };
+        let Ok(Ok(response)) = timeout(self.connect_timeout, self.client.get(url).send()).await else { return false };
+        if !response.status().is_success() {
+            return false;
+        }
+        // Some servers send pictures without saying what they are; a page of text is what a dead link looks like.
+        response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_none_or(|kind| {
+            let kind = kind.trim().to_ascii_lowercase();
+            kind.starts_with("image/") || kind.ends_with("/octet-stream")
+        })
+    }
 }
 
 fn collect_header(name: &str, value: String, info: &mut StreamInfo, metaint: &mut Option<usize>) {

@@ -146,12 +146,23 @@ metadata-aware and metadata-unaware players share one upstream connection.
 
 ### Title and artwork
 
-Now-playing information has two possible origins:
+Now-playing information has three possible origins:
 
 1. **In-stream ICY titles** from the source (the default).
 2. **The station's metadata URL**, polled every `METADATA_POLL_SECS` while the station
    has listeners. When it answers, it takes precedence. If it stops answering for
    three polls, in-stream titles are used again.
+3. **The station's own title, artist and uploaded image**, when neither of the above
+   names anything, and while the fallback file plays.
+
+The engine keeps what each origin last said and works out what to show from all of it
+(`Titles` in `hub.rs`), so that one going quiet lets the next show through. Artwork is
+chosen the same way: the metadata URL's, then the station's artwork address, then its
+uploaded image. Before an artwork address is handed to players the engine requests it
+(headers only, through the same guard as sources) and passes over one that fails or is
+not a picture; a working address is tried again every five minutes, a failed one every
+minute. The uploaded image is served by the admin service at
+`/api/v1/public/stations/{slug}/artwork`.
 
 The result is delivered three ways: as ICY metadata to players that ask for it, in
 the `live` object of the API, and on the public now-playing endpoint.
@@ -209,7 +220,7 @@ live:<slug>:<node> hash (expires after 15 s)   --> read directly by the API
 | `api_keys` | SHA-256 hashes of API keys, with a display prefix |
 | `station_stats_minute` | One row per station per flush while active |
 | `station_stats_daily` | One row per station per UTC day, permanent |
-| `media_files` | Uploaded idents and fallback files: owner, format, length, where the audio starts, where it is stored, and whether it is being or has been converted |
+| `media_files` | Uploaded idents, fallback files and station images (`kind`): owner, format, length or picture size, where the audio starts, where it is stored, and whether it is being or has been converted |
 | `settings` | Gateway-wide settings changed while running (ident limit, default quota, Dropbox connection, rates, mail server, the learned cost of a listener) |
 | `notifications` | One row per notice emailed, so that none is sent twice in its period |
 | `engine_nodes` | Streaming servers HAProxy balances across |

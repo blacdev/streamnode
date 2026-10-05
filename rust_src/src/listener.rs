@@ -141,7 +141,9 @@ impl ListenerStream {
         let out = match self.mux.as_mut() {
             Some(mux) => {
                 let np = self.now_playing.borrow().clone();
-                mux.wrap(&chunk, &np.stream_title(), &np.artwork)
+                // Players are given the artwork only as a full address: a path on this gateway means nothing to them.
+                let artwork = if np.artwork.starts_with("http") { np.artwork.as_str() } else { "" };
+                mux.wrap(&chunk, &np.stream_title(), artwork)
             }
             None => chunk,
         };

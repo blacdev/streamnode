@@ -90,8 +90,8 @@ pub struct Relay {
     bytes: AtomicU64,
     sessions: AtomicU64,
     source: AtomicU8,
-    /// Unix seconds of the last successful metadata-URL poll.
-    pub(crate) external_meta_at: AtomicU64,
+    /// Everything known about what is playing; what listeners are shown is worked out from it.
+    titles: Mutex<Titles>,
     /// Unix seconds when audio last arrived from the source.
     last_audio: AtomicU64,
     /// The stream's audio format, once a frame of it has been seen.
@@ -101,6 +101,83 @@ pub struct Relay {
     unframed: AtomicBool,
 }
 
+/// What a station's owner set to be shown when nothing better is known.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Defaults {
+    pub title: String,
+    pub artist: String,
+    /// The artwork address given for the station.
+    pub artwork_url: String,
+    /// The station's uploaded image.
+    pub image: String,
+}
+
+impl Defaults {
+    pub(crate) fn of(station: &Station) -> Self {
+        Self {
+            title: station.default_title.clone().unwrap_or_default(),
+            artist: station.default_artist.clone().unwrap_or_default(),
+            artwork_url: station.artwork_url.clone().unwrap_or_default(),
+            image: station.default_artwork.clone().unwrap_or_default(),
+        }
+    }
+}
+
+/// The sources of a station's title and artwork. In order of preference: what
+/// the metadata URL last said, while it is still answering; the title carried
+/// in the stream; the station's own defaults. Artwork follows the same idea:
+/// the metadata URL's, the station's artwork address, the uploaded image, and
+/// an address that was tried and does not work is passed over.
+#[derive(Default)]
+pub(crate) struct Titles {
+    pub defaults: Defaults,
+    /// The metadata URL's last answer and the Unix second it has to be renewed by.
+    pub external: Option<(NowPlaying, u64)>,
+    /// The title last carried in the playing stream.
+    pub stream: String,
+    /// The name of the fallback file, while it is what is playing.
+    pub file: Option<String>,
+    /// Artwork addresses that were tried: whether each one worked, and when it was tried.
+    pub checked: HashMap<String, (bool, u64)>,
+}
+
+impl Titles {
+    fn works(&self, url: &str) -> bool {
+        !url.is_empty() && self.checked.get(url).is_none_or(|(ok, _)| *ok)
+    }
+
+    fn station_artwork(&self) -> String {
+        if self.works(&self.defaults.artwork_url) {
+            self.defaults.artwork_url.clone()
+        } else {
+            self.defaults.image.clone()
+        }
+    }
+
+    pub(crate) fn shown(&self, now: u64) -> NowPlaying {
+        let defaults = &self.defaults;
+        // While the file plays, the stream's titles describe audio that is not on air.
+        if let Some(file) = &self.file {
+            let named = !defaults.title.is_empty() || !defaults.artist.is_empty();
+            return NowPlaying {
+                title: if named { defaults.title.clone() } else { file.clone() },
+                artist: defaults.artist.clone(),
+                artwork: self.station_artwork(),
+            };
+        }
+        if let Some((external, until)) = &self.external {
+            if now <= *until && !(external.title.is_empty() && external.artist.is_empty()) {
+                let artwork = if self.works(&external.artwork) { external.artwork.clone() } else { self.station_artwork() };
+                return NowPlaying { title: external.title.clone(), artist: external.artist.clone(), artwork };
+            }
+        }
+        if !self.stream.is_empty() {
+            return NowPlaying { title: self.stream.clone(), artist: String::new(), artwork: self.station_artwork() };
+        }
+        NowPlaying { title: defaults.title.clone(), artist: defaults.artist.clone(), artwork: self.station_artwork() }
+    }
+}
+
 pub fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -108,10 +185,8 @@ pub fn unix_now() -> u64 {
 impl Relay {
     fn new(station: &Station) -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-        let initial = NowPlaying {
-            artwork: station.artwork_url.clone().unwrap_or_default(),
-            ..NowPlaying::default()
-        };
+        let titles = Titles { defaults: Defaults::of(station), ..Titles::default() };
+        let initial = titles.shown(unix_now());
         Self {
             slug: station.slug.clone(),
             started_at: unix_now(),
@@ -124,7 +199,7 @@ impl Relay {
             bytes: AtomicU64::new(0),
             sessions: AtomicU64::new(0),
             source: AtomicU8::new(Source::None as u8),
-            external_meta_at: AtomicU64::new(0),
+            titles: Mutex::new(titles),
             last_audio: AtomicU64::new(0),
             format: Mutex::new(None),
             unframed: AtomicBool::new(false),
@@ -276,11 +351,22 @@ impl Relay {
         self.status.send_replace(Status::Live(Arc::new(info)));
     }
 
-    pub(crate) fn set_title(&self, title: String, artist: String, artwork: String) {
-        let current = self.now_playing.borrow().clone();
-        if current.title != title || current.artist != artist || current.artwork != artwork {
-            self.now_playing.send_replace(Arc::new(NowPlaying { title, artist, artwork }));
+    /// Changes something that is known about what is playing, then shows
+    /// listeners whatever now ranks highest.
+    pub(crate) fn update_titles(&self, change: impl FnOnce(&mut Titles)) {
+        let shown = {
+            let mut titles = self.titles.lock().unwrap();
+            change(&mut titles);
+            titles.shown(unix_now())
+        };
+        if **self.now_playing.borrow() != shown {
+            self.now_playing.send_replace(Arc::new(shown));
         }
+    }
+
+    /// Whether an artwork address has been tried, and when; see [`Titles::checked`].
+    pub(crate) fn artwork_checked(&self, url: &str) -> Option<(bool, u64)> {
+        self.titles.lock().unwrap().checked.get(url).copied()
     }
 }
 
@@ -458,5 +544,66 @@ impl Hub {
         if relays.get(&relay.slug).is_some_and(|r| Arc::ptr_eq(r, relay)) {
             relays.remove(&relay.slug);
         }
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    fn np(title: &str, artist: &str, artwork: &str) -> NowPlaying {
+        NowPlaying { title: title.into(), artist: artist.into(), artwork: artwork.into() }
+    }
+
+    fn defaults() -> Defaults {
+        Defaults { title: "Jazz FM".into(), artist: "All day".into(), artwork_url: "http://a/logo.png".into(), image: "http://gw/art".into() }
+    }
+
+    #[test]
+    fn defaults_are_shown_until_something_better_is_known() {
+        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
+        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png"));
+        titles.stream = "Miles Davis - So What".into();
+        assert_eq!(titles.shown(100), np("Miles Davis - So What", "", "http://a/logo.png"));
+        titles.external = Some((np("So What", "Miles Davis", "http://a/cover.jpg"), 130));
+        assert_eq!(titles.shown(100), np("So What", "Miles Davis", "http://a/cover.jpg"));
+    }
+
+    #[test]
+    fn a_metadata_url_that_stopped_answering_gives_way() {
+        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
+        titles.external = Some((np("So What", "Miles Davis", ""), 130));
+        assert_eq!(titles.shown(130), np("So What", "Miles Davis", "http://a/logo.png"));
+        assert_eq!(titles.shown(131), np("Jazz FM", "All day", "http://a/logo.png"));
+        titles.stream = "From the stream".into();
+        assert_eq!(titles.shown(131).title, "From the stream");
+    }
+
+    #[test]
+    fn artwork_that_does_not_work_is_passed_over() {
+        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
+        titles.external = Some((np("So What", "", "http://a/cover.jpg"), 130));
+        titles.checked.insert("http://a/cover.jpg".into(), (false, 90));
+        assert_eq!(titles.shown(100).artwork, "http://a/logo.png");
+        titles.checked.insert("http://a/logo.png".into(), (false, 90));
+        assert_eq!(titles.shown(100).artwork, "http://gw/art");
+        titles.checked.insert("http://a/logo.png".into(), (true, 95));
+        assert_eq!(titles.shown(100).artwork, "http://a/logo.png");
+        // No address at all: the uploaded image.
+        titles.defaults.artwork_url.clear();
+        titles.external = None;
+        assert_eq!(titles.shown(100).artwork, "http://gw/art");
+    }
+
+    #[test]
+    fn the_fallback_file_shows_the_station_defaults() {
+        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
+        titles.stream = "Old stream title".into();
+        titles.external = Some((np("Old", "Old", ""), 500));
+        titles.file = Some("Night mix".into());
+        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png"));
+        // With nothing set for the station, the file's name is all there is.
+        titles.defaults = Defaults::default();
+        assert_eq!(titles.shown(100), np("Night mix", "", ""));
     }
 }

@@ -157,6 +157,11 @@ What follows from this:
   accounts.
 - Uploaded files are visible only to their account and to administrators. Streaming
   servers fetch them from `/api/v1/internal/files/{id}` with the engine secret.
+- The one exception is an image set as a station's image: it is public by design, at
+  `/api/v1/public/stations/{slug}/artwork`, for as long as it is set. Only JPEG, PNG,
+  WebP and GIF are accepted, recognised by content rather than by name (SVG, which can
+  carry scripts, is refused), and they are served with their checked type and
+  `X-Content-Type-Options: nosniff`.
 - The Dropbox app secret and refresh token are stored in the database (`settings`
   table) and are never returned by the API. Creating the app with *App folder* access
   confines the gateway to its own folder in the Dropbox account.

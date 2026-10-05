@@ -72,6 +72,7 @@ td code, .links code, #joinCommand { margin-top: 10px; }
 #joinCommand code { display: block; user-select: all; }
 .notice code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .station-name { font-weight: 600; }
+.preview { max-width: 120px; max-height: 120px; border-radius: 6px; display: block; margin: 4px 0 8px; background: var(--grid); }
 .art { width: 28px; height: 28px; border-radius: 4px; object-fit: cover; vertical-align: middle; margin-right: 8px; background: var(--grid); }
 .empty { text-align: center; padding: 32px; }
 

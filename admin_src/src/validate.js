@@ -130,8 +130,14 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     else if (!Number.isInteger(body.silence_threshold_db) || body.silence_threshold_db < -90 || body.silence_threshold_db > -10) fail('silence_threshold_db', 'must be an integer from -90 to -10, or null for the server\'s setting');
     else out.silence_threshold_db = body.silence_threshold_db;
   }
+  for (const field of ['default_title', 'default_artist']) {
+    if (!has(body, field)) continue;
+    if (blank(body[field]) || (typeof body[field] === 'string' && !body[field].trim())) out[field] = null;
+    else if (typeof body[field] !== 'string' || body[field].trim().length > 200 || /[\u0000-\u001f\u007f]/.test(body[field])) fail(field, 'must be text of at most 200 characters on one line');
+    else out[field] = body[field].trim();
+  }
   // Whether the files exist, belong to the account and fit the stream is checked by the caller.
-  for (const field of ['ident_file_id', 'fallback_file_id']) {
+  for (const field of ['ident_file_id', 'fallback_file_id', 'artwork_file_id']) {
     if (!has(body, field)) continue;
     if (blank(body[field])) out[field] = null;
     else if (!Number.isInteger(body[field]) || body[field] < 1) fail(field, 'must be the id of an uploaded file, or null');

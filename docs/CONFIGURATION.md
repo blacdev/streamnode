@@ -30,7 +30,7 @@ These apply to every role. See [Images](INSTALLATION.md#images) and
 | Variable | Default | Description |
 |---|---|---|
 | `DOMAIN` | the server's IP address | Public hostname, or the server's IP address when installed without a domain. Used for the certificate, the HTTPS redirect and `scripts/letsencrypt.sh` |
-| `PUBLIC_BASE_URL` | `https://<domain>`; empty without a domain | Origin placed in `stream_url`, `playlist_urls` and slave install commands. When empty it is taken from each request. Requests made to the server's IP address always get URLs on that address |
+| `PUBLIC_BASE_URL` | `https://<domain>`; empty without a domain | Origin placed in `stream_url`, `playlist_urls` and slave install commands. When empty it is taken from each request. Requests made to the server's IP address always get URLs on that address. Players are told the address of a station's uploaded image in the stream only when this is set, since they need a full address; the API gives it either way |
 | `TLS_MODE` | set by the installer | Where the domain's certificate comes from: `letsencrypt`, `provided`, `external` (HTTPS handled in front of this server) or `selfsigned`. See [Certificates](INSTALLATION.md#certificates) |
 | `HTTP_BIND` | `0.0.0.0` | Address the HTTP port is published on. `0.0.0.0` is every IPv4 interface; use `::` to publish on IPv6 as well |
 | `HTTP_PORT` | `80` | Host port for plain HTTP |

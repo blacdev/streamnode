@@ -1,5 +1,5 @@
-// The upload library: station idents and the files played when a station's
-// streams have no audio.
+// The upload library: station idents, the files played when a station's
+// streams have no audio, and station images.
 //
 // Every file has a row in media_files and, while it is needed, a copy in
 // FILES_DIR named by its id. With Dropbox connected the copy in Dropbox is the
@@ -17,6 +17,7 @@ const db = require('./db');
 const { redis } = require('./cache');
 const audio = require('./audio');
 const convert = require('./convert');
+const image = require('./image');
 const dropbox = require('./dropbox');
 const settings = require('./settings');
 const stations = require('./stations');
@@ -24,7 +25,7 @@ const { HttpError, invalid } = require('./errors');
 
 const MB = 1024 * 1024;
 const COLUMNS =
-  'id, user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate, duration_seconds, audio_offset, audio_bytes, sha256, storage, storage_path, created_at, status, status_detail, converted, gain_db, target_level_db, replaces_id, for_station_id';
+  'id, user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate, duration_seconds, audio_offset, audio_bytes, sha256, storage, storage_path, created_at, status, status_detail, converted, gain_db, target_level_db, replaces_id, for_station_id, kind, width, height';
 // Disk space that uploads never eat into.
 const DISK_RESERVE = 512 * MB;
 
@@ -93,7 +94,7 @@ function overQuota(fileBytes, used, quota) {
 
 // ── Format checks ───────────────────────────────────────────────────────────
 
-const describeFile = (row) => audio.describe(row);
+const describeFile = (row) => (row.kind === 'image' ? image.describe(row) : audio.describe(row));
 
 // What an engine last saw the station's stream to be (format:<slug>).
 const streamFormat = async (slug) => stations.streamFormat(await redis.hGetAll(`format:${slug}`));
@@ -104,6 +105,7 @@ const streamFormat = async (slug) => stations.streamFormat(await redis.hGetAll(`
  * while it is not known (the station has never been on air).
  */
 function problemFor(file, use, format, identMaxSeconds) {
+  if (file.kind === 'image') return `"${file.name}" is an image, and ${use === 'ident' ? 'an ident' : 'fallback audio'} has to be an audio file.`;
   if (use === 'ident' && Number(file.duration_seconds) > identMaxSeconds) {
     return `"${file.name}" is ${Number(file.duration_seconds).toFixed(1)} seconds long and an ident may be at most ${identMaxSeconds} seconds. Shorten it and upload it again.`;
   }
@@ -160,8 +162,10 @@ async function receive(req, limit, onTooLarge) {
 
 /**
  * Receives an upload for `owner`, checks it and stores it.
- * `use` ('ident' | 'fallback') and `station` (a row) are optional: with them
- * the file is also checked for that use on that station before it is kept.
+ * `use` ('ident' | 'fallback' | 'artwork') and `station` (a row) are
+ * optional: with them the file is also checked for that use on that station
+ * before it is kept. A picture is recognised by its content and kept as an
+ * image; everything else is treated as audio.
  */
 async function create(req, owner, { name, originalName, use, station, consent = false }) {
   const quota = await capBytes(owner);
@@ -181,6 +185,20 @@ async function create(req, owner, { name, originalName, use, station, consent = 
 
   let stored = false;
   try {
+    const picture = await image.inspectFile(received.tmp, received.bytes);
+    if (picture) {
+      if (use && use !== 'artwork') throw refuse(422, 'file_not_usable', `"${name}" is an image, and ${use === 'ident' ? 'an ident' : 'fallback audio'} has to be an audio file.`);
+      if (received.bytes > image.MAX_BYTES) {
+        throw refuse(413, 'image_too_large', `"${name}" is ${size(received.bytes)} and a station image may be at most ${size(image.MAX_BYTES)}. Save it smaller (a square of 500 to 1500 pixels is plenty) and upload it again.`);
+      }
+      const row = await insertReady(owner, quota, received, {
+        name, originalName, kind: 'image', codec: picture.type, width: picture.width, height: picture.height, audio_bytes: received.bytes,
+      });
+      stored = !row.already_stored;
+      return row;
+    }
+    if (use === 'artwork') throw refuse(422, 'file_not_usable', `"${name}" is not a ${image.ACCEPTED} image, which is what a station image has to be.`);
+
     // MP3 and AAC are read directly. Anything else can only be used by converting it.
     let info = null;
     let unreadable = null;
@@ -230,41 +248,49 @@ async function create(req, owner, { name, originalName, use, station, consent = 
       if (problem) throw refuse(422, 'file_not_usable', problem);
     }
 
-    // The same file again (uploaded from another station, say) is not stored twice.
-    const same = await db.query(`SELECT ${COLUMNS} FROM media_files WHERE user_id = $1 AND sha256 = $2 ORDER BY id LIMIT 1`, [owner.id, received.sha256]);
-    if (same.rows[0]) return { ...same.rows[0], already_stored: true };
-
-    const client = await db.pool.connect();
-    let row;
-    try {
-      // The account row is locked so that two uploads at once cannot both fit into the last free space.
-      await client.query('BEGIN');
-      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [owner.id]);
-      const now = await usedBytes(owner.id, client);
-      if (quota !== null && now + received.bytes > quota) throw overQuota(received.bytes, now, quota);
-      ({ rows: [row] } = await client.query(
-        `INSERT INTO media_files (user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate,
-                                  duration_seconds, audio_offset, audio_bytes, sha256)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING ${COLUMNS}`,
-        [owner.id, name, originalName, received.bytes, info.codec, info.sample_rate, info.channels, info.bitrate_kbps, info.constant_bitrate,
-          info.duration_seconds, info.audio_offset, info.audio_bytes, received.sha256]
-      ));
-      await fs.promises.rename(received.tmp, localPath(row.id));
-      stored = true;
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
-      if (stored) await fs.promises.rm(localPath(row.id), { force: true });
-      throw err;
-    } finally {
-      client.release();
-    }
-    // Copying to Dropbox happens afterwards, so a slow or failing Dropbox never loses an upload.
-    sync().catch((err) => console.error('[files]', err.message));
+    const row = await insertReady(owner, quota, received, { name, originalName, kind: 'audio', ...info });
+    stored = !row.already_stored;
     return row;
   } finally {
     if (!stored) await fs.promises.rm(received.tmp, { force: true });
   }
+}
+
+// Keeps a received file that needs nothing more done to it, and returns its row.
+async function insertReady(owner, quota, received, file) {
+  // The same file again (uploaded from another station, say) is not stored twice.
+  const same = await db.query(`SELECT ${COLUMNS} FROM media_files WHERE user_id = $1 AND sha256 = $2 ORDER BY id LIMIT 1`, [owner.id, received.sha256]);
+  if (same.rows[0]) return { ...same.rows[0], already_stored: true };
+
+  const client = await db.pool.connect();
+  let row;
+  let moved = false;
+  try {
+    // The account row is locked so that two uploads at once cannot both fit into the last free space.
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [owner.id]);
+    const now = await usedBytes(owner.id, client);
+    if (quota !== null && now + received.bytes > quota) throw overQuota(received.bytes, now, quota);
+    ({ rows: [row] } = await client.query(
+      `INSERT INTO media_files (user_id, name, original_name, size_bytes, codec, sample_rate, channels, bitrate_kbps, constant_bitrate,
+                                duration_seconds, audio_offset, audio_bytes, sha256, kind, width, height)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING ${COLUMNS}`,
+      [owner.id, file.name, file.originalName, received.bytes, file.codec, file.sample_rate || 0, file.channels || 0, file.bitrate_kbps || 0, Boolean(file.constant_bitrate),
+        file.duration_seconds || 0, file.audio_offset || 0, file.audio_bytes || 0, received.sha256, file.kind, file.width || null, file.height || null]
+    ));
+    await fs.promises.rename(received.tmp, localPath(row.id));
+    moved = true;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (moved) await fs.promises.rm(localPath(row.id), { force: true });
+    throw err;
+  } finally {
+    client.release();
+  }
+  // Copying to Dropbox happens afterwards, so a slow or failing Dropbox never loses an upload.
+  sync().catch((err) => console.error('[files]', err.message));
+  return row;
 }
 
 // ── Conversion ──────────────────────────────────────────────────────────────
@@ -303,6 +329,7 @@ async function insertConverting(owner, quota, { name, originalName, size: bytes,
  * original is removed if no other station uses it.
  */
 async function convertExisting(file, owner, station, use) {
+  if (file.kind === 'image') throw refuse(422, 'file_not_usable', 'This is an image. Only audio is converted.');
   const format = await streamFormat(station.slug);
   if (file.status !== 'ready') throw refuse(409, 'file_not_ready', 'This file is still being converted, or its conversion failed.');
   if (!differs(file, format)) throw refuse(409, 'conversion_not_needed', 'This file is already in the station\'s format.');
@@ -430,20 +457,27 @@ async function find(id) {
 }
 
 // Sends the file. `audioOnly` leaves out tags, which is what an engine splices into a stream.
-async function send(res, row, { audioOnly = false, download = false } = {}) {
+// `open` is for a station's image, which anyone may fetch and keep: `open.versioned` says
+// the address names this exact content, so it never has to be asked for again.
+async function send(res, row, { audioOnly = false, download = false, open = null } = {}) {
   if (row.status !== 'ready') {
     throw refuse(409, 'file_not_ready', row.status === 'converting' ? 'This file is still being converted.' : 'This file could not be converted and has no audio.');
   }
   const file = await ensureLocal(row);
   const start = audioOnly ? row.audio_offset : 0;
   const length = audioOnly ? row.audio_bytes : row.size_bytes;
+  const isImage = row.kind === 'image';
+  const etag = `"${row.sha256.slice(0, 16)}"`;
   res.set({
-    'Content-Type': row.codec === 'aac' ? 'audio/aac' : 'audio/mpeg',
-    'Content-Length': String(length),
-    ETag: `"${row.sha256.slice(0, 16)}"`,
-    'Cache-Control': 'private, no-cache',
+    'Content-Type': isImage ? image.TYPES[row.codec] : row.codec === 'aac' ? 'audio/aac' : 'audio/mpeg',
+    ETag: etag,
+    'Cache-Control': open ? (open.versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=300') : 'private, no-cache',
+    // A file is only ever what it was checked to be.
+    'X-Content-Type-Options': 'nosniff',
   });
-  if (download) res.attachment(row.original_name || `${row.name}.${row.codec === 'aac' ? 'aac' : 'mp3'}`);
+  if (open && res.req.get('if-none-match') === etag) return res.status(304).end();
+  res.set('Content-Length', String(length));
+  if (download) res.attachment(row.original_name || `${row.name}.${isImage ? image.EXTENSIONS[row.codec] : row.codec === 'aac' ? 'aac' : 'mp3'}`);
   // Once the headers are out, a failure can only be shown by cutting the response short.
   await pipeline(fs.createReadStream(file, { start, end: start + length - 1 }), res).catch(() => res.destroy());
 }
@@ -451,7 +485,7 @@ async function send(res, row, { audioOnly = false, download = false } = {}) {
 // ── Removal ─────────────────────────────────────────────────────────────────
 
 async function stationsUsing(id) {
-  const { rows } = await db.query('SELECT slug FROM stations WHERE ident_file_id = $1 OR fallback_file_id = $1 ORDER BY slug', [id]);
+  const { rows } = await db.query('SELECT slug FROM stations WHERE ident_file_id = $1 OR fallback_file_id = $1 OR artwork_file_id = $1 ORDER BY slug', [id]);
   return rows.map((row) => row.slug);
 }
 
@@ -504,7 +538,7 @@ async function sync() {
 async function trim() {
   const { rows } = await db.query(
     `SELECT f.id, f.storage,
-            EXISTS (SELECT 1 FROM stations s WHERE s.ident_file_id = f.id OR s.fallback_file_id = f.id) AS in_use
+            EXISTS (SELECT 1 FROM stations s WHERE s.ident_file_id = f.id OR s.fallback_file_id = f.id OR s.artwork_file_id = f.id) AS in_use
      FROM media_files f`
   );
   const known = new Map(rows.map((row) => [String(row.id), row]));
@@ -560,7 +594,10 @@ function present(row, usedBy) {
     name: row.name,
     original_name: row.original_name,
     size_bytes: row.size_bytes,
+    kind: row.kind,
     format: describeFile(row),
+    width: row.width,
+    height: row.height,
     codec: row.codec,
     sample_rate: row.sample_rate,
     channels: row.channels,
@@ -578,13 +615,18 @@ function present(row, usedBy) {
 }
 
 /**
- * Checks the ident and fallback files a station is being given. `owner` is
+ * Checks the ident, fallback and image files a station is being given. `owner` is
  * the account the station belongs to; `slug` is null for a station that does
  * not exist yet. Throws a validation error naming the field and the remedy.
  */
 async function checkAssignment(fields, ownerId, slug) {
-  if (!fields.ident_file_id && !fields.fallback_file_id) return;
+  if (!fields.ident_file_id && !fields.fallback_file_id && !fields.artwork_file_id) return;
   const errors = [];
+  if (fields.artwork_file_id) {
+    const file = await find(fields.artwork_file_id);
+    if (!file || file.user_id !== ownerId) errors.push({ field: 'artwork_file_id', message: "is not a file in this station's account" });
+    else if (file.kind !== 'image') errors.push({ field: 'artwork_file_id', message: `"${file.name}" is an audio file. A station image has to be a ${image.ACCEPTED} image.` });
+  }
   const format = slug ? await streamFormat(slug) : null;
   const identMax = await settings.get('ident_max_seconds');
   for (const [field, use] of [['ident_file_id', 'ident'], ['fallback_file_id', 'fallback']]) {

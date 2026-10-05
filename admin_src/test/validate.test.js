@@ -235,3 +235,10 @@ test('the command for a new server works on an empty machine', () => {
     config.updateRepo = saved.repo; config.updateBranch = saved.branch; config.tlsMode = saved.tls;
   }
 });
+
+test('a station may be given a title, artist and image of its own', () => {
+  const out = v.parseStation({ default_title: '  More music ', default_artist: '', artwork_file_id: 7 }, { partial: true });
+  assert.deepStrictEqual(out, { default_title: 'More music', default_artist: null, artwork_file_id: 7 });
+  const bad = fields(() => v.parseStation({ default_title: 'x'.repeat(201), default_artist: 'two\nlines', artwork_file_id: 'logo.png' }, { partial: true }));
+  assert.deepStrictEqual(bad, ['default_title', 'default_artist', 'artwork_file_id']);
+});

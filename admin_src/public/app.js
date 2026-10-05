@@ -65,7 +65,7 @@ function toast(message) {
 const fail = (err) => toast(err.message);
 
 // How fields are named to the user when the server refuses one.
-const FIELD_LABELS = { ident_file_id: 'Ident:', fallback_file_id: 'Fallback audio:' };
+const FIELD_LABELS = { ident_file_id: 'Ident:', fallback_file_id: 'Fallback audio:', artwork_file_id: 'Station image:', default_title: 'Title:', default_artist: 'Artist:' };
 
 function formatBytes(n) {
   if (!n) return '0 MB';
@@ -197,8 +197,9 @@ function renderStations() {
   $('stationRows').replaceChildren(...state.stations.map((station) => {
     const [kind, label] = statusOf(station);
     const live = station.live;
-    const playing = [live.artist, live.title].filter(Boolean).join(' - ');
-    const art = live.artwork || station.artwork_url;
+    // What is on air, and failing that what the station set for itself.
+    const playing = [live.artist, live.title].filter(Boolean).join(' - ') || [station.default_artist, station.default_title].filter(Boolean).join(' - ');
+    const art = live.artwork || station.artwork_url || station.default_artwork_url;
     return h('tr', {},
       h('td', {}, h('div', { class: 'station-name' }, station.name), h('code', {}, `/${station.slug}`),
         live.stream_format && h('small', { title: `${featureWords(live.stream_format.features)} ${live.stream_format.notes}` }, live.stream_format.summary)),
@@ -256,10 +257,10 @@ async function openStationForm(station) {
   const owner = station && station.user_id !== state.user.id ? `?user_id=${station.user_id}` : '';
   const library = await api('GET', `/files${owner}`).catch(() => ({ files: [], limits: {}, usage: null }));
   // Every file in the account's storage can be chosen; one that does not suit this station is refused on saving, with the reason.
-  for (const field of ['ident_file_id', 'fallback_file_id']) {
+  for (const field of ['ident_file_id', 'fallback_file_id', 'artwork_file_id']) {
     form.elements[field].replaceChildren(
       h('option', { value: '' }, 'None'),
-      ...library.files.map((file) => h('option', { value: file.id }, `${file.name} (${file.format}, ${formatLength(file.duration_seconds)})`))
+      ...library.files.filter((file) => (file.kind === 'image') === (field === 'artwork_file_id')).map(fileOption)
     );
   }
   state.stationFiles = { usage: library.usage, owner: owner.slice(1) };
@@ -290,13 +291,35 @@ async function openStationForm(station) {
   $('stationError').textContent = '';
   form.elements.slug.disabled = Boolean(station);
   if (station) {
-    for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id']) form.elements[field].value = station[field] ?? '';
+    for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id', 'default_title', 'default_artist', 'artwork_file_id']) form.elements[field].value = station[field] ?? '';
     form.elements.silence_detection.checked = station.silence_detection;
     form.elements.noise_detection.checked = station.noise_detection;
     form.elements.silence_threshold_db.value = station.silence_threshold_db ?? '';
   }
+  showStationImage();
   $('stationDialog').showModal();
 }
+
+const fileOption = (file) => h('option', { value: file.id }, file.kind === 'image' ? `${file.name} (${file.format})` : `${file.name} (${file.format}, ${formatLength(file.duration_seconds)})`);
+
+// A picture from the account's storage. Files there are private, so it is fetched with the session rather than by address.
+function storedImage(id, className) {
+  const img = h('img', { class: className, alt: '' });
+  fetch(`${API}/files/${id}/content`, { headers: { Authorization: `Bearer ${state.token}` } })
+    .then((res) => (res.ok ? res.blob() : Promise.reject(new Error('unavailable'))))
+    .then((blob) => {
+      img.src = URL.createObjectURL(blob);
+      img.onload = () => URL.revokeObjectURL(img.src);
+    })
+    .catch(() => img.remove());
+  return img;
+}
+
+function showStationImage() {
+  const id = $('stationForm').elements.artwork_file_id.value;
+  $('stationImage').replaceChildren(...(id ? [storedImage(id, 'preview')] : []));
+}
+$('stationForm').elements.artwork_file_id.addEventListener('change', showStationImage);
 
 // Shows the fields of the chosen kind of plan, and what the plan comes to.
 let planTimer;
@@ -338,7 +361,7 @@ function showStationStorage() {
 
 // Uploading from a station's form: the file goes into the account's storage,
 // is checked for this station, and is selected. Saving the station applies it.
-for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], ['fallback_upload', 'fallback_file_id', 'fallback']]) {
+for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], ['fallback_upload', 'fallback_file_id', 'fallback'], ['artwork_upload', 'artwork_file_id', 'artwork']]) {
   $('stationForm').elements[input].addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -355,11 +378,12 @@ for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], [
     form.querySelector('button.primary').disabled = true;
     try {
       const stored = await uploadFile(file, `${query}${scope ? `&${scope}` : ''}`, state.stationFiles.usage, (text) => { note.textContent = `${file.name}: ${text}`; });
-      for (const name of ['ident_file_id', 'fallback_file_id']) {
+      for (const name of stored.kind === 'image' ? ['artwork_file_id'] : ['ident_file_id', 'fallback_file_id']) {
         if ([...form.elements[name].options].some((option) => option.value === String(stored.id))) continue;
-        form.elements[name].append(h('option', { value: stored.id }, `${stored.name} (${stored.format}, ${formatLength(stored.duration_seconds)})`));
+        form.elements[name].append(fileOption(stored));
       }
       form.elements[field].value = stored.id;
+      if (stored.kind === 'image') showStationImage();
       state.stationFiles.usage = stored.usage;
       showStationStorage();
       note.textContent = `${stored.name} ${stored.already_stored ? 'is already in your storage and has been' : 'uploaded and'} selected. Save the station to use it.${stored.status === 'converting' ? ' It is being converted to the stream\'s format and plays once that is done.' : ''}`;
@@ -392,13 +416,16 @@ $('stationForm').addEventListener('submit', async (event) => {
   body.silence_threshold_db = form.elements.silence_threshold_db.value === '' ? null : Number(form.elements.silence_threshold_db.value);
   body.ident_file_id = Number(form.elements.ident_file_id.value) || null;
   body.fallback_file_id = Number(form.elements.fallback_file_id.value) || null;
+  body.default_title = form.elements.default_title.value.trim() || null;
+  body.default_artist = form.elements.default_artist.value.trim() || null;
+  body.artwork_file_id = Number(form.elements.artwork_file_id.value) || null;
   if (isAdmin()) {
     const owner = Number(form.elements.user_id.value);
     const current = state.stations.find((s) => s.slug === editing);
     if (!current || current.user_id !== owner) {
       body.user_id = owner;
       // The files chosen belong to the account the station is leaving.
-      if (current) { delete body.ident_file_id; delete body.fallback_file_id; }
+      if (current) { delete body.ident_file_id; delete body.fallback_file_id; delete body.artwork_file_id; }
     }
     const optional = (name) => (form.elements[name].value === '' ? null : Number(form.elements[name].value));
     body.billing_bitrate_kbps = optional('billing_bitrate_kbps');
@@ -628,9 +655,9 @@ async function loadFiles() {
   $('fileLimits').textContent = `An ident may be at most ${library.limits.ident_max_seconds} seconds long.`;
   $('filesEmpty').hidden = library.files.length > 0;
   $('fileRows').replaceChildren(...library.files.map((file) => h('tr', {},
-    h('td', {}, h('div', { class: 'station-name' }, file.name), file.original_name && h('small', {}, file.original_name)),
+    h('td', {}, file.kind === 'image' && storedImage(file.id, 'art'), h('div', { class: 'station-name', style: file.kind === 'image' ? 'display:inline-block' : '' }, file.name), file.original_name && h('small', {}, file.original_name)),
     h('td', { class: file.status === 'failed' ? 'wrap' : '' }, fileState(file)),
-    h('td', { class: 'num' }, formatLength(file.duration_seconds)),
+    h('td', { class: 'num' }, file.kind === 'image' ? '' : formatLength(file.duration_seconds)),
     h('td', { class: 'num' }, formatSize(file.size_bytes)),
     h('td', { class: 'wrap' }, file.used_by.length ? file.used_by.map((u) => `${u.station} (${u.as})`).join(', ') : h('span', { class: 'muted' }, 'Not in use')),
     h('td', {}, file.stored_in === 'dropbox' ? 'Dropbox' : 'This server'),
@@ -656,7 +683,9 @@ function showFileStation() {
   $('fileStationLabel').hidden = !form.use.value;
   const station = (state.fileStations || []).find((s) => s.slug === form.station.value);
   const format = station && station.live.stream_format;
+  $('fileForm').elements.convert.closest('label').hidden = form.use.value === 'artwork';
   $('fileStationFormat').textContent = !station ? 'This account has no stations yet.'
+    : form.use.value === 'artwork' ? 'Shown for this station when there is no other artwork, or the artwork address does not work. JPEG, PNG, WebP or GIF, up to 5 MB.'
     : format && !format.features.idents ? `Its stream is ${format.summary}, so idents and fallback audio cannot be used on it.`
       : format ? `Its stream is ${format.summary}. The file must be exactly that.`
       : 'This station has not been on air yet, so its format is not known. The file is checked when it is first needed, and skipped if it does not match.';
@@ -729,7 +758,7 @@ $('fileForm').addEventListener('submit', async (event) => {
 });
 
 async function renameFile(file) {
-  const name = prompt('Name of this file (listeners see it as the title while it plays):', file.name);
+  const name = prompt(file.kind === 'image' ? 'Name of this image:' : 'Name of this file (listeners see it as the title while it plays, unless the station has a title of its own):', file.name);
   if (name === null || !name.trim()) return;
   await api('PATCH', `/files/${file.id}`, { name: name.trim() }).then(loadFiles).catch(fail);
 }

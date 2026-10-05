@@ -11,6 +11,7 @@ const capacity = require('./capacity');
 const cluster = require('./cluster');
 const updates = require('./updates');
 const media = require('./media');
+const image = require('./image');
 const settings = require('./settings');
 const dropbox = require('./dropbox');
 const streamTypes = require('./streamtypes');
@@ -95,12 +96,21 @@ router.get('/public/stations/:slug/now-playing', wrap(async (req, res) => {
     station: row.slug,
     name: row.name,
     online: live.online,
-    title: live.title,
-    artist: live.artist,
-    artwork: live.artwork || row.artwork_url,
+    // What is on air, and for whatever is missing there, what the station set for itself.
+    ...stations.shown(row, live, req),
     stream_url: stream,
     playlist_urls: { m3u: `${stream}.m3u`, pls: `${stream}.pls` },
   });
+}));
+
+// A station's uploaded image. Open to anyone and to any site, because it is
+// what players and web pages show next to the station.
+router.get('/public/stations/:slug/artwork', wrap(async (req, res) => {
+  res.set({ 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' });
+  const row = await stations.findBySlug(req.params.slug);
+  const file = row && row.is_active && row.artwork_file_id ? await media.find(row.artwork_file_id) : null;
+  if (!file || file.kind !== 'image') throw notFound('Station image');
+  await media.send(res, file, { open: { versioned: req.query.v === file.sha256.slice(0, 12) } });
 }));
 
 // Which kinds of stream can be relayed and what is available on each. Open, so
@@ -132,7 +142,7 @@ router.get('/internal/files/:id', wrap(async (req, res) => {
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) throw forbidden('Only streaming servers may fetch files here.');
   }
   const row = /^\d{1,9}$/.test(req.params.id) ? await media.find(Number(req.params.id)) : null;
-  if (!row) throw notFound('File');
+  if (!row || row.kind !== 'audio') throw notFound('File');
   await media.send(res, row, { audioOnly: true });
 }));
 
@@ -240,7 +250,7 @@ async function updateStation(req, current, fields) {
   if (!Object.keys(fields).length) return current;
   // Files belong to an account, so they do not follow a station to another one.
   if (fields.user_id !== undefined && fields.user_id !== current.user_id) {
-    fields = { ident_file_id: null, fallback_file_id: null, ...fields };
+    fields = { ident_file_id: null, fallback_file_id: null, artwork_file_id: null, ...fields };
   }
   checkPlan({ ...current, ...fields });
   await media.checkAssignment(fields, fields.user_id === undefined ? current.user_id : fields.user_id, current.slug);
@@ -430,7 +440,7 @@ router.get('/overview', wrap(async (req, res) => {
   });
 }));
 
-// ── Uploaded audio: idents and fallback files ─────────────────────────────
+// ── Uploaded files: idents, fallback audio and station images ─────────────
 
 const fileId = (req) => v.intParam(req.params.id, { name: 'id', min: 1, max: 2147483647 });
 
@@ -453,7 +463,8 @@ async function fileOwner(req) {
 async function presentFiles(rows) {
   if (!rows.length) return [];
   const used = await db.query(
-    `SELECT slug, ident_file_id, fallback_file_id FROM stations WHERE ident_file_id = ANY($1) OR fallback_file_id = ANY($1) ORDER BY slug`,
+    `SELECT slug, ident_file_id, fallback_file_id, artwork_file_id FROM stations
+     WHERE ident_file_id = ANY($1) OR fallback_file_id = ANY($1) OR artwork_file_id = ANY($1) ORDER BY slug`,
     [rows.map((row) => row.id)]
   );
   return rows.map((row) => media.present(
@@ -461,6 +472,7 @@ async function presentFiles(rows) {
     used.rows.flatMap((s) => [
       ...(s.ident_file_id === row.id ? [{ station: s.slug, as: 'ident' }] : []),
       ...(s.fallback_file_id === row.id ? [{ station: s.slug, as: 'fallback' }] : []),
+      ...(s.artwork_file_id === row.id ? [{ station: s.slug, as: 'artwork' }] : []),
     ])
   ));
 }
@@ -468,14 +480,16 @@ async function presentFiles(rows) {
 router.get('/files', wrap(async (req, res) => {
   const everyone = isAdmin(req) && req.query.user_id === 'all';
   const owner = everyone ? req.user : await fileOwner(req);
+  const kind = req.query.kind === undefined || req.query.kind === '' ? null : req.query.kind;
+  if (kind !== null && kind !== 'audio' && kind !== 'image') throw invalid([{ field: 'kind', message: 'must be "audio" or "image"' }]);
   const { rows } = await db.query(
-    `SELECT ${media.COLUMNS} FROM media_files WHERE ($1::int IS NULL OR user_id = $1) ORDER BY name, id`,
-    [everyone ? null : owner.id]
+    `SELECT ${media.COLUMNS} FROM media_files WHERE ($1::int IS NULL OR user_id = $1) AND ($2::text IS NULL OR kind = $2) ORDER BY name, id`,
+    [everyone ? null : owner.id, kind]
   );
   res.json({
     files: await presentFiles(rows),
     usage: await media.usage(owner),
-    limits: { ident_max_seconds: await settings.get('ident_max_seconds') },
+    limits: { ident_max_seconds: await settings.get('ident_max_seconds'), image_max_bytes: image.MAX_BYTES },
   });
 }));
 
@@ -488,12 +502,12 @@ router.post('/files', wrap(async (req, res) => {
     const name = String(req.query.name || (original || '').replace(/\.[A-Za-z0-9]{1,5}$/, '')).replace(/[\u0000-\u001f]/g, ' ').trim();
     if (!name || name.length > 100) errors.push({ field: 'name', message: 'must be 1-100 characters (pass ?name=, or ?filename= to use the file name)' });
     const use = req.query.use === undefined || req.query.use === '' ? null : req.query.use;
-    if (use !== null && use !== 'ident' && use !== 'fallback') errors.push({ field: 'use', message: 'must be "ident" or "fallback"' });
+    if (use !== null && !['ident', 'fallback', 'artwork'].includes(use)) errors.push({ field: 'use', message: 'must be "ident", "fallback" or "artwork"' });
     let station = null;
     if (req.query.station) {
       station = await stations.findBySlug(String(req.query.station));
       if (!station || station.user_id !== owner.id) errors.push({ field: 'station', message: "is not a station in this file's account" });
-      else if (!use) errors.push({ field: 'use', message: 'is required with "station": say whether the file is its "ident" or its "fallback"' });
+      else if (!use) errors.push({ field: 'use', message: 'is required with "station": say whether the file is its "ident", its "fallback" or its "artwork"' });
     }
     if (errors.length) throw invalid(errors);
 
