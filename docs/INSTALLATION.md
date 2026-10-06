@@ -353,7 +353,9 @@ listener**: the gateway serves plain HTTP only. It accepts the dashboard and API
 without redirecting, treats those requests as HTTPS (so stream URLs and links are
 `https://`), and takes each client's address from the `X-Forwarded-For` header your
 proxy adds. If the proxy is on the same machine and already uses ports 80 and 443,
-add `--http-port 8080`.
+answer the port question with another port such as 8080 (or pass `--http-port 8080`).
+The HTTPS port is not used in this mode; it is published on `127.0.0.1` only, and if
+the proxy holds it, it is set aside to a free one (8443 or above) by itself.
 
 What the thing in front must do:
 
@@ -396,10 +398,28 @@ one healthy server, add a station and open its stream URL in a player.
 
 ## Sharing ports 80 and 443 with another web server
 
-If another web server already uses ports 80 and 443 on this machine, publish the
-gateway on other ports (`HTTP_PORT=8080`, `HTTPS_PORT=8443` in `.env`), let that web
-server keep the certificate, and install with `--tls external`. With nginx in front,
-for example:
+The installer asks which ports to listen on, with 80 and 443 as the defaults: press
+Enter to keep them. It checks that nothing else on the machine (Nginx Proxy Manager,
+Caddy, Apache...) already listens on the port you give, and asks again if something
+does. Without a terminal, pass `--http-port` and `--https-port`; a port already in use
+stops the installer with the name of the program using it. Ports are kept in `.env`
+(`HTTP_PORT`, `HTTPS_PORT`) and offered as the defaults the next time.
+
+If another web server keeps ports 80 and 443, there are two ways to put the gateway
+behind it:
+
+- **It holds the certificate** (simplest): install with `--tls external`, give the
+  gateway an HTTP port such as 8080, and point the web server at it.
+- **The gateway holds the certificate**: give it other ports (e.g. 8080 and 8443) and
+  have the web server pass port 443 through untouched (a TCP / "stream" proxy) to
+  8443. For Let's Encrypt it must also forward `/.well-known/acme-challenge/` on port
+  80 to 8080, because Let's Encrypt only ever checks port 80.
+
+A request that names a port (`http://stream.example.com:8080/admin/`) is redirected to
+HTTPS on `HTTPS_PORT`; one without (arriving on port 80, or through the web server in
+front) goes to HTTPS on 443.
+
+With nginx in front holding the certificate, for example:
 
 ```nginx
 location / {

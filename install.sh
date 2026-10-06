@@ -25,6 +25,8 @@
 #   --http-port PORT, --https-port PORT
 #                            ports to publish instead of 80 and 443, when another
 #                            web server or proxy on this machine already uses them
+#                            (asked when run in a terminal; a port another
+#                            program already listens on is refused)
 #
 # Slave options:
 #   --name NAME          name shown on the master (default: this server's hostname)
@@ -101,6 +103,31 @@ unset_env() { # unset_env KEY: remove the line from .env
 # What get.sh recorded about where this installation came from.
 version_info() { [ -f .version ] && sed -n "s/^$1=//p" .version | head -n1 || true; }
 is_ip() { printf '%s' "$1" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; }
+
+# Ports on this machine. port_taken PORT INNER: true when something other than
+# this gateway's own HAProxy (INNER is its port inside the container) listens on
+# PORT. Unknown (no ss) counts as free; Docker reports a clash when starting.
+port_taken() {
+  command -v ss >/dev/null 2>&1 || return 1
+  ss -ltn "sport = :$1" 2>/dev/null | tail -n +2 | grep -q . || return 1
+  ! $COMPOSE port haproxy_edge "$2" 2>/dev/null | grep -q ":$1\$"
+}
+port_user() { # the program listening on PORT, when ss can tell
+  local who; who="$(ss -ltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n1)"
+  printf '%s' "${who:-another program}"
+}
+valid_port() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+ask_port() { # ask_port KEY LABEL DEFAULT INNER: asks until a free port is given, then stores it
+  local answer
+  while :; do
+    read -r -p "$2 port [$3]: " answer
+    answer="${answer:-$3}"
+    valid_port "$answer" || { echo "  Enter a number from 1 to 65535."; continue; }
+    if port_taken "$answer" "$4"; then echo "  Port $answer is already used on this server by $(port_user "$answer"). Choose another."; continue; fi
+    break
+  done
+  set_env "$1" "$answer"
+}
 # The address other machines use to reach this server: the one its default route leaves from.
 server_ip() {
   local ip=""
@@ -437,12 +464,6 @@ install_master() {
     ensure_env CLUSTER_BIND 127.0.0.1
   fi
   [ -z "$CLUSTER_HOST" ] || set_env CLUSTER_HOST "$CLUSTER_HOST"
-  for pair in "HTTP_PORT:$HTTP_PORT_ARG" "HTTPS_PORT:$HTTPS_PORT_ARG"; do
-    [ -n "${pair#*:}" ] || continue
-    case "${pair#*:}" in *[!0-9]*) fail "Ports must be numbers." ;; esac
-    set_env "${pair%%:*}" "${pair#*:}"
-  done
-
   # Where the domain's certificate comes from.
   [ -z "$CERT" ] || [ -n "$TLS" ] || TLS=provided
   if [ -z "$TLS" ] && [ -z "$(get_env TLS_MODE)" ]; then
@@ -498,6 +519,43 @@ EOF
   fi
   set_env TLS_MODE "$TLS"
 
+  # Ports: 80 and 443 unless another web server or proxy on this machine
+  # (Nginx Proxy Manager, Caddy, Apache...) already has them. With TLS_MODE
+  # external there is no HTTPS listener here, so only the HTTP port is asked.
+  local http_port https_port
+  http_port="$(get_env HTTP_PORT)"; http_port="${http_port:-80}"
+  https_port="$(get_env HTTPS_PORT)"; https_port="${https_port:-443}"
+  # A port external mode set aside (HTTPS_PORT_AUTO; or 8443, from before that
+  # was recorded) starts from 443 again: as HTTPS here, or to be re-checked.
+  if [ "$(get_env HTTPS_PORT_AUTO)" = true ] || { [ "$previous_tls" = external ] && [ "$TLS" != external ] && [ "$https_port" = 8443 ]; }; then
+    https_port=443
+  fi
+  if [ -n "$HTTP_PORT_ARG$HTTPS_PORT_ARG" ] || [ ! -t 0 ]; then
+    http_port="${HTTP_PORT_ARG:-$http_port}"; https_port="${HTTPS_PORT_ARG:-$https_port}"
+    { valid_port "$http_port" && valid_port "$https_port"; } || fail "Ports must be numbers from 1 to 65535."
+    if port_taken "$http_port" 80; then
+      fail "Port $http_port is already used on this server by $(port_user "$http_port"). Choose another with --http-port PORT."
+    fi
+    if [ "$TLS" != external ] && port_taken "$https_port" 443; then
+      fail "Port $https_port is already used on this server by $(port_user "$https_port"). Choose another with --https-port PORT."
+    fi
+    set_env HTTP_PORT "$http_port"
+    set_env HTTPS_PORT "$https_port"
+  else
+    echo
+    echo "Ports this gateway listens on. Keep 80 and 443 unless another web server or"
+    echo "proxy on this machine (for example Nginx Proxy Manager) already uses them."
+    ask_port HTTP_PORT HTTP "$http_port" 80
+    if [ "$TLS" = external ]; then set_env HTTPS_PORT "$https_port"
+    else ask_port HTTPS_PORT HTTPS "$https_port" 443; fi
+  fi
+  unset_env HTTPS_PORT_AUTO
+  if [ "$TLS" = letsencrypt ] && [ "$(get_env HTTP_PORT)" != 80 ]; then
+    echo "Note: Let's Encrypt always checks the domain on port 80. Whatever owns port 80 here must pass"
+    echo "      /.well-known/acme-challenge/ on to port $(get_env HTTP_PORT), or the certificate cannot be issued."
+    echo "      If a proxy in front already holds the certificate, choose 'Elsewhere' (--tls external) instead."
+  fi
+
   # Settings introduced after an older .env was written.
   ensure_env REDIS_PASSWORD "$(random 24)"
   ensure_env ENGINE_SECRET "$(random 24)"
@@ -516,7 +574,16 @@ EOF
     # HTTPS is handled in front of this server: no HTTPS listener here and no
     # certificate for the domain. The unused HTTPS port is kept off the network.
     set_env HTTPS_BIND 127.0.0.1
-    [ "$(get_env HTTPS_PORT)" != 443 ] || set_env HTTPS_PORT 8443
+    # The port is still published (on loopback only), so it must not clash with
+    # the proxy in front, which usually has 443. It is then set aside, and the
+    # next run starts from 443 again (HTTPS_PORT_AUTO).
+    if [ -z "$HTTPS_PORT_ARG" ] && port_taken "$(get_env HTTPS_PORT)" 443; then
+      local spare=8443
+      while port_taken "$spare" 443; do spare=$((spare + 1)); done
+      echo "Port $(get_env HTTPS_PORT) is used by $(port_user "$(get_env HTTPS_PORT)"); this server's unused HTTPS port is set aside to $spare (loopback only)."
+      set_env HTTPS_PORT "$spare"
+      set_env HTTPS_PORT_AUTO true
+    fi
     # Only the encrypted Redis link to slave nodes needs a certificate, and only
     # on a server that takes slave nodes: an internal one, never shown to listeners.
     if [ "$ROLE" = master ] || [ -n "$(get_env CLUSTER_HOST)" ]; then
@@ -528,12 +595,6 @@ EOF
     fi
   else
     set_env HTTPS_BIND 0.0.0.0
-    # TLS_MODE=external moved the unused HTTPS port aside to 8443; with the
-    # certificate back on this server, HTTPS belongs on 443 again.
-    if [ "$previous_tls" = external ] && [ -z "$HTTPS_PORT_ARG" ] && [ "$(get_env HTTPS_PORT)" = 8443 ]; then
-      set_env HTTPS_PORT 443
-      echo "HTTPS is served on port 443 again (it was moved to 8443 while HTTPS was handled elsewhere)."
-    fi
     set_env CLUSTER_CERT /etc/haproxy/certs/stream.pem
     # HAProxy's HTTPS listener needs a certificate to start: a self-signed one
     # stands in until Let's Encrypt has issued, or when none was asked for.
@@ -572,16 +633,17 @@ EOF
 
   echo
   echo "The gateway is running ($ROLE)."
-  local port_suffix=""
+  local port_suffix="" https_suffix=""
   [ "$(get_env HTTP_PORT)" = 80 ] || port_suffix=":$(get_env HTTP_PORT)"
+  [ "$TLS" = external ] || [ "$(get_env HTTPS_PORT)" = 443 ] || https_suffix=":$(get_env HTTPS_PORT)"
   if $by_ip; then
     echo "  Dashboard:  http://$DOMAIN$port_suffix/admin/"
     echo "  API docs:   http://$DOMAIN$port_suffix/api/v1/docs"
     echo "  Streams:    http://$DOMAIN$port_suffix/<station-slug>"
   else
-    echo "  Dashboard:  https://$DOMAIN/admin/"
-    echo "  API docs:   https://$DOMAIN/api/v1/docs"
-    echo "  Streams:    http(s)://$DOMAIN/<station-slug>"
+    echo "  Dashboard:  https://$DOMAIN$https_suffix/admin/"
+    echo "  API docs:   https://$DOMAIN$https_suffix/api/v1/docs"
+    echo "  Streams:    http://$DOMAIN$port_suffix/<station-slug> or https://$DOMAIN$https_suffix/<station-slug>"
     echo "  By address: http://$(server_ip)$port_suffix/admin/  (same service, from the local network)"
   fi
   echo "  Sign in as: $(get_env ADMIN_USERNAME)"
@@ -643,7 +705,7 @@ EOF
     if [ "$TLS" = external ]; then
       echo "Firewall: open TCP $(get_env HTTP_PORT) to the proxy in front, and TCP $(get_env CLUSTER_PORT) to your slave nodes."
     else
-      echo "Firewall: open TCP 80 and 443 to everyone, and TCP $(get_env CLUSTER_PORT) to your slave nodes."
+      echo "Firewall: open TCP $(get_env HTTP_PORT) and $(get_env HTTPS_PORT) to everyone, and TCP $(get_env CLUSTER_PORT) to your slave nodes."
     fi
   else
     echo "To add more servers later, see docs/SCALING.md (in short: scripts/add-server.sh)."
