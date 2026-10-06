@@ -56,6 +56,9 @@ All notable changes to this project are recorded here. The format follows
 - A failed Let's Encrypt attempt no longer stops the installer: it explains the
   reason and leaves the retries to the scheduler.
 - Switching from Let's Encrypt back to `--tls selfsigned` replaces the certificate.
+- Switching from `--tls external` to a certificate on this server moves HTTPS back to
+  port 443; before, it stayed on 8443, so `https://DOMAIN/` did not reach the gateway.
+  `scripts/letsencrypt.sh` warns when HTTPS is not on port 443.
 
 ## [2.13.0] - 2026-10-05
 

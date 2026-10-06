@@ -101,7 +101,13 @@ preflight() {
     [ -n "$addresses" ] || fail "$DOMAIN does not resolve to any address. Create a DNS A (and/or AAAA) record pointing $DOMAIN at this server's public address, wait for it to spread, then try again."
     echo "$DOMAIN resolves to: $addresses"
   fi
-  local port; port="$(get_env HTTP_PORT)"
+  local port; port="$(get_env HTTPS_PORT)"
+  if [ -n "$port" ] && [ "$port" != 443 ]; then
+    echo "Warning: HTTPS is published on port $port (HTTPS_PORT in .env), not 443, so https://$DOMAIN/"
+    echo "         does not reach this gateway. Unless something on port 443 forwards to it, set"
+    echo "         HTTPS_PORT=443 in .env and run: $COMPOSE up -d"
+  fi
+  port="$(get_env HTTP_PORT)"
   if [ -n "$port" ] && [ "$port" != 80 ]; then
     echo "Warning: the gateway's HTTP port is $port (HTTP_PORT), but Let's Encrypt always connects to"
     echo "         port 80. That only works if whatever owns port 80 passes /.well-known/acme-challenge/"
