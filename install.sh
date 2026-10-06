@@ -528,6 +528,12 @@ EOF
     fi
   else
     set_env HTTPS_BIND 0.0.0.0
+    # TLS_MODE=external moved the unused HTTPS port aside to 8443; with the
+    # certificate back on this server, HTTPS belongs on 443 again.
+    if [ "$previous_tls" = external ] && [ -z "$HTTPS_PORT_ARG" ] && [ "$(get_env HTTPS_PORT)" = 8443 ]; then
+      set_env HTTPS_PORT 443
+      echo "HTTPS is served on port 443 again (it was moved to 8443 while HTTPS was handled elsewhere)."
+    fi
     set_env CLUSTER_CERT /etc/haproxy/certs/stream.pem
     # HAProxy's HTTPS listener needs a certificate to start: a self-signed one
     # stands in until Let's Encrypt has issued, or when none was asked for.
