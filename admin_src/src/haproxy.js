@@ -155,4 +155,4 @@ function parseInfo(out) {
   };
 }
 
-module.exports = { sync, status, info, parseInfo, serverName, enabled };
+module.exports = { sync, status, info, parseInfo, serverName, enabled, command };

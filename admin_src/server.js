@@ -11,6 +11,7 @@ const stats = require('./src/stats');
 const haproxy = require('./src/haproxy');
 const cluster = require('./src/cluster');
 const updates = require('./src/updates');
+const certificate = require('./src/certificate');
 const media = require('./src/media');
 const capacity = require('./src/capacity');
 const notify = require('./src/notify');
@@ -67,6 +68,8 @@ app.get('/api/v1/docs', (req, res) => res.sendFile(path.join(__dirname, 'docs', 
 app.use('/api/v1', routes);
 
 app.use('/admin', express.static(path.join(__dirname, 'public')));
+// Let's Encrypt's domain check (HAProxy sends /.well-known/acme-challenge/ here).
+app.get('/.well-known/acme-challenge/:token', certificate.challenge);
 app.get('/', (req, res) => res.redirect('/admin/'));
 
 app.use(errorHandler);

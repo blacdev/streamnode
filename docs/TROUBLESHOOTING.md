@@ -184,7 +184,8 @@ On a slave, the engine's log is `docker compose logs slave_engine`.
 | Dashboard never shows an update notice | `UPDATE_REPO` is empty, the server cannot reach `api.github.com`, or the images were built from source | `GET /api/v1/system/version?refresh` shows the reason in `error` |
 | Automatic updates do not run | The scheduler is not installed, or the chosen time is later than you think (it is on the server's clock) | The Updates tab shows both; `./scripts/update.sh auto status` on the server |
 | `--build-from-source` fails with "source code is not on this server" | Installed without the source and its origin is unknown | Run the one-line install command with `--with-source` |
-| Let's Encrypt fails | DNS not pointing at the server yet, or port 80 blocked | Fix and re-run `./scripts/letsencrypt.sh issue` |
+| Let's Encrypt fails, HTTPS stays self-signed | DNS not pointing at the server yet, or TCP port 80 blocked (server or cloud firewall) | The installer and `./scripts/letsencrypt.sh issue` print the reason. Once fixed, the scheduler retries within the hour, or press **Get the certificate now** under Updates |
+| "The certificate scheduler is not running" in the dashboard | cron is not installed, or the entry was removed | `./scripts/letsencrypt.sh schedule install` on the server |
 
 ## Collecting information for support
 

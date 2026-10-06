@@ -467,7 +467,8 @@ EOF
       TLS=selfsigned
     fi
   fi
-  [ -n "$TLS" ] || TLS="$(get_env TLS_MODE)"
+  local previous_tls; previous_tls="$(get_env TLS_MODE)"
+  [ -n "$TLS" ] || TLS="$previous_tls"
   case "$TLS" in letsencrypt|provided|external|selfsigned) ;; *) fail "--tls must be letsencrypt, provided, external or selfsigned." ;; esac
 
   if [ "$TLS" = letsencrypt ] && [ -z "$(get_env LETSENCRYPT_EMAIL)" ]; then
@@ -530,7 +531,9 @@ EOF
     set_env CLUSTER_CERT /etc/haproxy/certs/stream.pem
     # HAProxy's HTTPS listener needs a certificate to start: a self-signed one
     # stands in until Let's Encrypt has issued, or when none was asked for.
-    if [ ! -s certs/stream.pem ]; then
+    # Going back to self-signed from Let's Encrypt replaces its certificate,
+    # which would otherwise expire unrenewed.
+    if [ ! -s certs/stream.pem ] || { [ "$TLS" = selfsigned ] && [ "$previous_tls" = letsencrypt ]; }; then
       echo "Generating a self-signed certificate for $DOMAIN."
       self_signed certs/stream.pem
     fi
@@ -550,7 +553,16 @@ EOF
   done
   $ready || fail "The management API did not become healthy. Inspect it with: $COMPOSE logs admin_dashboard"
 
-  if [ "$TLS" = letsencrypt ]; then ./scripts/letsencrypt.sh issue; fi
+  # Let's Encrypt: obtained now, and the scheduler renews it (or keeps trying
+  # every hour if it cannot be issued yet, e.g. while DNS is spreading).
+  local le_issued=true le_scheduled=true
+  if [ "$TLS" = letsencrypt ]; then
+    echo
+    ./scripts/letsencrypt.sh issue || le_issued=false
+    ./scripts/letsencrypt.sh schedule install || le_scheduled=false
+  elif command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "# streamnode certificate ($(pwd))"; then
+    ./scripts/letsencrypt.sh schedule remove >/dev/null
+  fi
 
   echo
   echo "The gateway is running ($ROLE)."
@@ -575,6 +587,24 @@ EOF
     echo "  Password and API key are in .env."
   fi
   case "$TLS" in
+    letsencrypt)
+      if ! $le_issued; then
+        echo
+        echo "Let's Encrypt did not issue a certificate yet (the reason is shown above), so HTTPS is"
+        echo "using a temporary self-signed one for now. Most often $DOMAIN does not point at this"
+        echo "server yet, or TCP port 80 is closed in a firewall or cloud security group."
+        if $le_scheduled; then
+          echo "Once that is fixed, nothing else is needed: the server tries again every hour. To try"
+          echo "at once: ./scripts/letsencrypt.sh issue (or Updates > HTTPS certificate in the dashboard)."
+        else
+          echo "Once that is fixed, run: ./scripts/letsencrypt.sh issue"
+        fi
+      fi
+      if ! $le_scheduled; then
+        echo
+        echo "Renewal is NOT automatic: cron is not installed, and Let's Encrypt certificates last 90 days."
+        echo "Install cron, then run: ./scripts/letsencrypt.sh schedule install"
+      fi ;;
     external)
       echo
       echo "HTTPS is handled in front of this server: no certificate was set up here and there"

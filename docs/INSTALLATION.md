@@ -280,15 +280,46 @@ with a different `--tls`.
 ./install.sh --role both --domain stream.example.com --tls letsencrypt --email you@example.com
 ```
 
-The hostname must already resolve to the server and port 80 must be reachable.
-HAProxy forwards the validation request to a short-lived certbot container; nothing
-is stopped and listeners are not interrupted.
+This is a real certificate from Let's Encrypt, trusted by browsers and players, served
+on port 443. To get it:
 
-Renewal is a daily cron entry, which the script prints for you:
+- `stream.example.com` must resolve (DNS A/AAAA record) to this server's public address.
+- TCP port **80** must be open to the internet (server firewall *and* any cloud
+  firewall or security group), and TCP **443** for HTTPS itself. Let's Encrypt only
+  ever checks a domain over port 80; that cannot be changed.
 
+Let's Encrypt fetches a file from `http://stream.example.com/.well-known/acme-challenge/`.
+HAProxy hands those requests to the dashboard service, which serves the files a
+short-lived certbot container writes. Nothing is stopped and listeners are not
+interrupted. Before asking Let's Encrypt, `scripts/letsencrypt.sh` checks that the
+domain resolves and fetches a test file the same way, so a DNS or firewall problem is
+explained instead of using up one of Let's Encrypt's limited attempts.
+
+Until the certificate is issued, HTTPS uses a temporary self-signed one, so the
+gateway starts even if DNS is not ready yet. The installer does not stop on a failed
+attempt: it says why and leaves the rest to the scheduler.
+
+**Renewal is automatic.** The installer adds a cron entry (`scripts/letsencrypt.sh
+schedule install`) that runs every 5 minutes and:
+
+- while there is no Let's Encrypt certificate yet, tries to obtain one every hour;
+- afterwards checks twice a day and renews 30 days before expiry (certificates last
+  90 days), then reloads HAProxy without disconnecting anyone;
+- acts within 5 minutes on **Renew now** / **Get the certificate now** in the
+  dashboard (**Updates → HTTPS certificate**), which also shows the certificate in
+  use, its issuer and expiry, and the last result. API: `GET /api/v1/system/certificate`,
+  `POST /api/v1/system/certificate/renew`.
+
+From the command line:
+
+```bash
+./scripts/letsencrypt.sh issue            # obtain it now
+./scripts/letsencrypt.sh renew [--force]  # renew if due (or now)
+./scripts/letsencrypt.sh status           # what is served, and whether renewal is scheduled
 ```
-17 3 * * * /path/to/streamnode/scripts/letsencrypt.sh renew >> /path/to/streamnode/letsencrypt.log 2>&1
-```
+
+The scheduler needs cron; without it the installer says so, and the certificate must
+be renewed by hand. Its output goes to `letsencrypt.log`.
 
 ### Your own certificate
 

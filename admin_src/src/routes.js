@@ -10,6 +10,7 @@ const haproxy = require('./haproxy');
 const capacity = require('./capacity');
 const cluster = require('./cluster');
 const updates = require('./updates');
+const certificate = require('./certificate');
 const media = require('./media');
 const image = require('./image');
 const settings = require('./settings');
@@ -1065,6 +1066,25 @@ router.post('/system/update', auth.requireAdmin, wrap(async (req, res) => {
   updates.requestInstall();
   audit(req, 'updates.install', now.latest ? now.latest.slice(0, 7) : null);
   res.status(202).json(updates.status());
+}));
+
+// The certificate HTTPS is served with, and how Let's Encrypt is getting on.
+router.get('/system/certificate', auth.requireAdmin, wrap(async (req, res) => {
+  res.json(await certificate.status());
+}));
+
+// Obtains the Let's Encrypt certificate, or renews it now, on the host's next pass (within 5 minutes).
+router.post('/system/certificate/renew', auth.requireAdmin, wrap(async (req, res) => {
+  const now = await certificate.status();
+  if (now.mode !== 'letsencrypt') {
+    throw conflict('not_lets_encrypt', `This server's certificate does not come from Let's Encrypt (TLS_MODE is ${now.mode}). To switch, on the server run: ./install.sh --tls letsencrypt --email you@example.com`);
+  }
+  if (!now.lets_encrypt.scheduler_running) {
+    throw new HttpError(503, 'renewer_unavailable', 'The certificate scheduler is not running on this server, so the request would never be acted on. On the server run: ./scripts/letsencrypt.sh schedule install');
+  }
+  certificate.requestRenewal();
+  audit(req, 'certificate.renew', now.domain);
+  res.status(202).json(await certificate.status());
 }));
 
 // CPU, memory, disk and traffic per server, with a verdict on whether to add another.

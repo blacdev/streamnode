@@ -158,7 +158,7 @@ $('tabs').addEventListener('click', (event) => {
   if (tab === 'keys') loadKeys().catch(fail);
   if (tab === 'users') loadUsers().catch(fail);
   if (tab === 'servers') loadServers().catch(fail);
-  if (tab === 'updates') loadUpdates(true).catch(fail);
+  if (tab === 'updates') { loadUpdates(true).catch(fail); loadCertificate().catch(fail); }
 });
 
 // ── Stations ───────────────────────────────────────────────────────────────
@@ -1234,6 +1234,72 @@ $('checkNow').addEventListener('click', async () => {
   await loadUpdates(false).catch(fail);
   showUpdateNotice().catch(() => {});
   toast('Checked for updates');
+});
+
+// ── HTTPS certificate ─────────────────────────────────────────────────────
+
+const CERT_MODES = { letsencrypt: "Let's Encrypt", provided: 'Your own', external: 'Handled in front of this server', selfsigned: 'Self-signed' };
+const CERT_STATES = { running: 'Working', ok: 'Last run', failed: 'Failed', idle: '' };
+
+async function loadCertificate() {
+  const c = await api('GET', '/system/certificate');
+  const cert = c.certificate;
+  const le = c.lets_encrypt;
+  tiles($('certTiles'), [
+    ['Source', CERT_MODES[c.mode] || c.mode],
+    ['Status', !cert ? (c.mode === 'external' ? 'Not on this server' : 'Unknown') : c.trusted ? 'Trusted' : cert.self_signed ? 'Self-signed' : cert.days_left < 0 ? 'Expired' : 'Not trusted'],
+    ['Issued by', cert ? (cert.self_signed ? 'This server' : cert.issuer.replace(/^.*CN=/, '')) : '—'],
+    ['Expires', cert && cert.expires_at ? `${formatDate(cert.expires_at)} (${cert.days_left} days)` : '—'],
+  ]);
+
+  const lines = [];
+  let alert = false;
+  if (c.error) { lines.push(`Could not read the certificate from HAProxy: ${c.error}`); alert = true; }
+  if (cert && cert.self_signed && c.mode !== 'selfsigned') { lines.push('HTTPS is still using a temporary self-signed certificate, so browsers show a warning.'); alert = true; }
+  if (le) {
+    if (!le.scheduler_running) {
+      lines.push('The certificate scheduler is not running on the server, so the certificate is neither obtained nor renewed by itself. On the server, in the installation directory, run: ./scripts/letsencrypt.sh schedule install');
+      alert = true;
+    }
+    if (le.request_pending) lines.push('Requested; the server acts on it within 5 minutes.');
+    if (le.message && CERT_STATES[le.state]) lines.push(`${CERT_STATES[le.state]}: ${le.message}${le.updated_at ? ` (${formatDate(le.updated_at)})` : ''}`);
+    if (le.state === 'failed') alert = true;
+  }
+  const box = $('certState');
+  box.hidden = lines.length === 0;
+  box.className = `notice${alert ? ' alert' : ''}`;
+  box.replaceChildren(...lines.flatMap((line, i) => (i ? [h('br'), line] : [line])));
+
+  const issued = cert && cert.lets_encrypt && c.trusted;
+  $('certText').textContent = {
+    letsencrypt: issued
+      ? 'Let\'s Encrypt certificates last 90 days. The server checks twice a day and renews 30 days before expiry; listeners are not interrupted.'
+      : `The server asks Let's Encrypt for a certificate for ${c.domain} every hour until one is issued. It needs ${c.domain} to point at this server and TCP ports 80 and 443 open to the internet.`,
+    provided: 'Your own certificate: renew it yourself before it expires, then run ./install.sh --tls provided --cert FILE --key FILE on the server.',
+    external: 'The certificate is held by the load balancer or proxy in front of this server.',
+    selfsigned: 'A self-signed certificate is for testing: browsers warn about it. For a trusted one, on the server run: ./install.sh --tls letsencrypt --email you@example.com',
+  }[c.mode] || '';
+
+  const button = $('renewCert');
+  button.hidden = c.mode !== 'letsencrypt';
+  button.textContent = issued ? 'Renew now' : 'Get the certificate now';
+  button.disabled = !le || !le.scheduler_running || le.request_pending || le.state === 'running';
+  clearTimeout(loadCertificate.timer);
+  if (le && (le.request_pending || le.state === 'running') && !$('tab-updates').hidden) {
+    loadCertificate.timer = setTimeout(() => loadCertificate().catch(() => {}), 10000);
+  }
+}
+
+$('renewCert').addEventListener('click', async () => {
+  const renewing = $('renewCert').textContent === 'Renew now';
+  if (renewing && !confirm('Renew the certificate now, although it is not due? Let\'s Encrypt allows 5 renewals of the same name per week. Listeners are not interrupted.')) return;
+  try {
+    await api('POST', '/system/certificate/renew');
+    toast('Requested; the server acts on it within 5 minutes');
+    await loadCertificate();
+  } catch (err) {
+    fail(err);
+  }
 });
 
 // ── Streaming servers ──────────────────────────────────────────────────────
