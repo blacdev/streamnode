@@ -167,7 +167,10 @@ Also read by the admin service (add under `admin_dashboard` in `docker-compose.y
 
 | Variable | Default | Description |
 |---|---|---|
-| `LETSENCRYPT_EMAIL` | empty | Contact address for expiry notices. Required by `scripts/letsencrypt.sh issue` |
+| `LETSENCRYPT_EMAIL` | empty | Contact address for expiry notices. Required with `TLS_MODE=letsencrypt` |
+
+The certificate is obtained and renewed by a scheduler the installer sets up; see
+[Installation](INSTALLATION.md#lets-encrypt).
 
 ## HAProxy
 

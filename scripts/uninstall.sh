@@ -130,6 +130,11 @@ if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qE "# (s
   echo "Removed the update scheduler."
 fi
 
+if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "# streamnode certificate ($DIR)"; then
+  { crontab -l 2>/dev/null | grep -vF "# streamnode certificate ($DIR)" || true; } | crontab -
+  echo "Removed the certificate renewal scheduler."
+fi
+
 echo
 echo "The gateway has been removed from this server."
 $KEEP_DATA && echo "Its data volumes were kept; a new install with the same settings (.env) will use them."

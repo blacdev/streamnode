@@ -4,6 +4,34 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.14.0] - 2026-10-06
+
+### Added
+
+- **The HTTPS certificate in the dashboard.** Updates → HTTPS certificate shows the
+  certificate HAProxy serves (issuer, names, expiry, whether browsers trust it) and,
+  with Let's Encrypt, what the renewal last did, with a button to obtain or renew it
+  now. `GET /api/v1/system/certificate`, `POST /api/v1/system/certificate/renew`.
+- `scripts/letsencrypt.sh status`, `schedule install|remove`, `tick` and `renew --force`.
+
+### Changed
+
+- **Let's Encrypt renews by itself.** The installer schedules `scripts/letsencrypt.sh`
+  (cron, every 5 minutes): it obtains the certificate, retrying every hour until it
+  is issued (for example while DNS spreads), then checks twice a day and renews 30
+  days before expiry. Before, renewal needed a cron entry added by hand.
+- Let's Encrypt's domain check is answered by the dashboard service from files
+  certbot writes to a shared volume (webroot), instead of by HAProxy forwarding to a
+  certbot container that had only just started, which could make the check fail.
+- Before asking Let's Encrypt, the script checks that the domain resolves and that a
+  test file is reachable at `http://DOMAIN/.well-known/acme-challenge/`, and explains
+  what is wrong if not.
+- A certificate Let's Encrypt had issued before is put in place even when it is not
+  renewed; before, re-running the installer could leave the self-signed one in use.
+- A failed Let's Encrypt attempt no longer stops the installer: it explains the
+  reason and leaves the retries to the scheduler.
+- Switching from Let's Encrypt back to `--tls selfsigned` replaces the certificate.
+
 ## [2.13.0] - 2026-10-05
 
 ### Added

@@ -69,7 +69,7 @@ module.exports = {
     { name: 'Billing', description: 'What stations and accounts cost per month, how close they are to their limits, and the notices sent about that. Prices follow from the measured cost of a listener.' },
     { name: 'Accounts', description: 'Tenant accounts and API keys.' },
     { name: 'Servers', description: 'Streaming servers that listeners are spread across.' },
-    { name: 'Updates', description: 'Version monitoring and installing updates.' },
+    { name: 'Updates', description: 'Version monitoring, installing updates, and the HTTPS certificate.' },
     { name: 'Session', description: 'Dashboard sign-in.' },
     { name: 'Public', description: 'No authentication required.' },
   ],
@@ -316,6 +316,20 @@ module.exports = {
         tags: ['Updates'], summary: 'Install the latest version now',
         description: 'Administrators only. The update starts on the server within five minutes. It backs up the database, downloads the new version and restarts the services that changed; listeners are disconnected for a few seconds and reconnect. Follow progress in `updater.state` and `updater.message` of `GET /system/version`.',
         responses: { 202: ok('Accepted; the update will start shortly.', ref('UpdateStatus')), 409: error('Already on the latest version.'), 503: error('The update scheduler is not running on this server.'), ...AUTH_ERRORS },
+      },
+    },
+    '/system/certificate': {
+      get: {
+        tags: ['Updates'], summary: 'The HTTPS certificate in use, and Let\'s Encrypt renewal',
+        description: 'Administrators only. `certificate` is read from HAProxy, so it is what browsers and players are given; null with `TLS_MODE=external`. `trusted` is true for an unexpired certificate for `domain` from a certificate authority. With `mode` `letsencrypt`, `lets_encrypt` says what the renewal scheduler on the server last did: it obtains the certificate (retrying hourly until it succeeds), checks twice a day and renews 30 days before expiry.',
+        responses: { 200: ok('Certificate and renewal state.', ref('CertificateStatus')), ...AUTH_ERRORS },
+      },
+    },
+    '/system/certificate/renew': {
+      post: {
+        tags: ['Updates'], summary: 'Obtain or renew the Let\'s Encrypt certificate now',
+        description: 'Administrators only. Acted on by the server within five minutes: without a certificate from Let\'s Encrypt yet, one is requested; otherwise the current one is renewed even if not due. Let\'s Encrypt allows 5 certificates for the same name per week. Follow progress in `lets_encrypt.state` and `lets_encrypt.message` of `GET /system/certificate`.',
+        responses: { 202: ok('Accepted.', ref('CertificateStatus')), 409: error('The certificate does not come from Let\'s Encrypt on this server.'), 503: error('The certificate scheduler is not running on this server.'), ...AUTH_ERRORS },
       },
     },
     '/capacity': {
@@ -762,6 +776,35 @@ module.exports = {
               message: { type: 'string', nullable: true, example: 'Updated to 9a1e44f (scheduled).' },
               updated_at: { type: 'string', format: 'date-time', nullable: true },
               install_pending: { type: 'boolean', description: 'An "install now" request is waiting for the next scheduler pass.' },
+            },
+          },
+        },
+      },
+      CertificateStatus: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['letsencrypt', 'provided', 'external', 'selfsigned'] },
+          domain: { type: 'string', nullable: true },
+          trusted: { type: 'boolean', description: 'An unexpired certificate for the domain from a certificate authority (not self-signed).' },
+          error: { type: 'string', nullable: true, description: 'Why the certificate could not be read from HAProxy.' },
+          certificate: {
+            type: 'object', nullable: true,
+            properties: {
+              subject: { type: 'string' }, issuer: { type: 'string', example: "/C=US/O=Let's Encrypt/CN=R11" },
+              names: { type: 'array', items: { type: 'string' } },
+              not_before: { type: 'string', format: 'date-time', nullable: true }, expires_at: { type: 'string', format: 'date-time', nullable: true },
+              days_left: { type: 'integer', nullable: true }, self_signed: { type: 'boolean' }, lets_encrypt: { type: 'boolean' },
+            },
+          },
+          lets_encrypt: {
+            type: 'object', nullable: true, description: 'Only with mode letsencrypt.',
+            properties: {
+              scheduler_running: { type: 'boolean', description: 'false means the certificate is neither obtained nor renewed by itself: the scheduler is not installed on the server.' },
+              last_seen: { type: 'string', format: 'date-time', nullable: true },
+              state: { type: 'string', enum: ['idle', 'running', 'ok', 'failed'] },
+              message: { type: 'string', nullable: true },
+              updated_at: { type: 'string', format: 'date-time', nullable: true },
+              request_pending: { type: 'boolean' },
             },
           },
         },

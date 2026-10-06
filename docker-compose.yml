@@ -72,6 +72,7 @@ services:
       CLUSTER_PORT: ${CLUSTER_PORT:-6380}
       CLUSTER_HOST: ${CLUSTER_HOST:-}
       TLS_MODE: ${TLS_MODE:-selfsigned}
+      DOMAIN: ${DOMAIN:-}
       # Repository watched for new versions ("owner/name"); empty turns the check off.
       UPDATE_REPO: ${UPDATE_REPO:-}
       UPDATE_BRANCH: ${UPDATE_BRANCH:-main}
@@ -90,6 +91,8 @@ services:
       - ./control:/control
       # Uploaded idents and fallback audio.
       - media_files:/files
+      # Let's Encrypt challenge files written by certbot, served on port 80.
+      - acme_challenge:/acme:ro
     depends_on:
       postgres_db:
         condition: service_healthy
@@ -185,12 +188,14 @@ services:
         soft: 65536
         hard: 65536
 
-  # Optional: only started by scripts/letsencrypt.sh.
+  # Optional: only started by scripts/letsencrypt.sh. It writes the challenge
+  # files where the dashboard service serves them to Let's Encrypt.
   certbot:
     image: certbot/certbot:latest
     profiles: ["letsencrypt"]
     volumes:
       - letsencrypt_data:/etc/letsencrypt
+      - acme_challenge:/var/www/acme
       - ./certs:/certs
     networks:
       - dynamic_gateway_fabric
@@ -199,6 +204,7 @@ volumes:
   postgres_data:
   redis_data:
   letsencrypt_data:
+  acme_challenge:
   engine_data:
   media_files:
 

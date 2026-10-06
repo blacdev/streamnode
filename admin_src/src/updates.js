@@ -41,7 +41,7 @@ function readPairs(file) {
 }
 
 // Written to a temporary file and renamed, so the host never reads half a file.
-function writePairs(file, pairs) {
+function writePairs(file, pairs, what = 'Update settings') {
   const tmp = path.join(config.controlDir, `.tmp.${process.pid}.${Date.now()}`);
   try {
     fs.writeFileSync(tmp, Object.entries(pairs).map(([key, value]) => `${key}=${value}\n`).join(''), { mode: 0o666 });
@@ -49,7 +49,7 @@ function writePairs(file, pairs) {
     fs.renameSync(tmp, file);
   } catch (err) {
     fs.rmSync(tmp, { force: true });
-    throw new HttpError(503, 'updater_unavailable', `Update settings cannot be saved on this server (${err.code || err.message}). Run ./install.sh on the server to set the updater up.`);
+    throw new HttpError(503, 'updater_unavailable', `${what} cannot be saved on this server (${err.code || err.message}). Run ./install.sh on the server to set the updater up.`);
   }
 }
 
@@ -134,4 +134,4 @@ async function publishVersion() {
   if (SHA_RE.test(config.version)) await redis.hSet('cluster:update', 'master_sha', config.version);
 }
 
-module.exports = { check, status, enabled, settings, saveSettings, requestInstall, updater, publishVersion };
+module.exports = { check, status, enabled, settings, saveSettings, requestInstall, updater, publishVersion, readPairs, writePairs };

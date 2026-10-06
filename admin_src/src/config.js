@@ -43,6 +43,11 @@ module.exports = {
   clusterHost: text('CLUSTER_HOST'),
   // Where the domain's certificate comes from: letsencrypt | provided | external | selfsigned.
   tlsMode: text('TLS_MODE', 'selfsigned'),
+  domain: text('DOMAIN'),
+  // Let's Encrypt challenge files, written by certbot (scripts/letsencrypt.sh).
+  acmeDir: text('ACME_DIR', '/acme'),
+  // The certificate HTTPS is served with, as HAProxy names it.
+  certFile: text('CERT_FILE', '/etc/haproxy/certs/stream.pem'),
   joinTokenMinutes: int('JOIN_TOKEN_MINUTES', 60),
 
   // The commit this image was built from, and the repository watched for newer ones.

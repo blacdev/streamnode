@@ -169,8 +169,10 @@ their master. `./scripts/update.sh` does the same from the command line. Details
 
 ### Certificate renewal
 
-With Let's Encrypt, the cron entry from [Installation](INSTALLATION.md#option-a-lets-encrypt-optional-automated)
-handles it. With your own certificate, replace `certs/stream.pem` and send HAProxy a
+With Let's Encrypt it is automatic: the scheduler the installer adds renews 30 days
+before expiry and reloads HAProxy (see [Installation](INSTALLATION.md#lets-encrypt)).
+The dashboard's **Updates → HTTPS certificate** shows the expiry and the last result,
+and can renew at once; `./scripts/letsencrypt.sh status` does the same on the server. With your own certificate, replace `certs/stream.pem` and send HAProxy a
 HUP. Check the expiry date with:
 
 ```bash
