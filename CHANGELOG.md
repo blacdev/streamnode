@@ -31,9 +31,17 @@ All notable changes to this project are recorded here. The format follows
 - A failed Let's Encrypt attempt no longer stops the installer: it explains the
   reason and leaves the retries to the scheduler.
 - Switching from Let's Encrypt back to `--tls selfsigned` replaces the certificate.
-- Switching from `--tls external` to a certificate on this server moves HTTPS back to
-  port 443; before, it stayed on 8443, so `https://DOMAIN/` did not reach the gateway.
-  `scripts/letsencrypt.sh` warns when HTTPS is not on port 443.
+- **The installer asks for the HTTP and HTTPS ports** (defaults 80 and 443; Enter
+  keeps them) and refuses a port another program, such as Nginx Proxy Manager,
+  already listens on, naming it. Without a terminal, `--http-port`/`--https-port`
+  are checked the same way.
+- `--tls external` no longer moves the HTTPS port to 8443 whenever it was 443: only
+  when another program holds it, and then it is recorded (`HTTPS_PORT_AUTO`) and put
+  back when HTTPS is served on this server again. Before, switching from external to
+  Let's Encrypt left HTTPS on 8443, so `https://DOMAIN/` did not reach the gateway.
+- With HTTPS on a port other than 443, `http://DOMAIN:PORT/admin/` is redirected to
+  `https://DOMAIN:HTTPS_PORT/admin/` instead of to port 443.
+- `scripts/letsencrypt.sh` warns when HTTPS is not on port 443.
 
 ## [2.13.0] - 2026-10-05
 
