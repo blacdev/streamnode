@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.17.0] - 2026-10-08
+
+### Added
+
+- **Listening addresses are generated.** A new station is given an address made from
+  its name and four random characters (`power-beats-fm-7k2q`). In the form it is filled
+  in as the name is typed and can be changed to anything free; the form says whether an
+  address is free as it is typed. `slug` is now optional on `POST /stations`;
+  `GET /station-addresses/suggest` and `/station-addresses/check`. Existing stations
+  keep the addresses they have.
+- **Duplicate**, beside a station's Stats button: opens the Add station form with that
+  station's settings, waiting for a name. The name, address and plan are not copied,
+  and nothing is added until it is saved.
+
 ## [2.16.0] - 2026-10-07
 
 ### Added

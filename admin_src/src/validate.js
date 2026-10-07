@@ -89,11 +89,12 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     else out.name = body.name.trim();
   } else if (!partial) fail('name', 'is required');
 
-  if (allowSlug && has(body, 'slug')) {
+  // A new station without a slug is given a generated one by the caller.
+  if (allowSlug && has(body, 'slug') && !(blank(body.slug) && !partial)) {
     const problem = checkSlug(body.slug);
     if (problem) fail('slug', problem);
     else out.slug = body.slug;
-  } else if (allowSlug && !partial) fail('slug', 'is required');
+  }
 
   if (has(body, 'primary_url')) {
     const problem = blank(body.primary_url) ? 'is required' : checkUrl(body.primary_url);

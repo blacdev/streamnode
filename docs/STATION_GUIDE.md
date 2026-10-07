@@ -20,11 +20,26 @@ people tune in.
 | Item | Required | Example |
 |---|---|---|
 | Station name | Yes | `Power Beats FM` |
+| Listening address | No: one is made for you | `power-beats-fm-7k2q` |
 | Stream address (primary) | Yes | `https://encoder.example.com/live` |
 | Backup stream address | No | `https://backup.example.com/live` |
 | Title address | No | `https://example.com/nowplaying.json` |
 | Artwork address | No | `https://example.com/logo.png` |
 | Your station's own title, artist and image | No | `More music, less talk`, `Power Beats FM`, your logo |
+
+### Listening address
+
+The address listeners tune in to is your gateway's address followed by the station's
+own: `https://stream.example.com/power-beats-fm-7k2q`.
+
+One is **made for you** when you add a station: your station's name in a form that fits
+in an address, and four random characters that keep it unlike every other station's.
+You may change it before saving to anything that is free; the form says at once
+whether it is. Lower-case letters, digits, `-` and `_`, up to 50 characters.
+
+Once the station is added the address stays as it is, because changing it would cut
+off everyone tuned in and break every link already shared. An administrator can change
+it if it has to be. Stations added before addresses were generated keep theirs.
 
 ### Stream address
 
@@ -218,6 +233,12 @@ One account can hold several stations. Sign in once and you see all of them, eac
 with its own stream address, settings and statistics. Use **Add station** to create
 another; the line beside it shows how many your account allows. One API key works for
 all of your stations.
+
+**Duplicate**, beside a station's Stats button, opens the Add station form filled in
+with that station's settings: its streams, titles and artwork, and what happens when
+audio stops. Give it a name, change what differs, and save. The name, the listening
+address and the plan are not copied, and nothing is added until you save. This is the
+quick way to offer the same stream as a second station.
 
 ## Your statistics
 

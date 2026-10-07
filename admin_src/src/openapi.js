@@ -427,6 +427,12 @@ module.exports = {
       parameters: [slugParam],
       get: { tags: ['Public'], summary: 'What a station is playing', security: [], description: 'For web players and widgets; callable from any origin. Title, artist and artwork are what is on air; where the stream and the metadata URL supply none (or the station has no listeners), the station\'s own `default_title`, `default_artist` and image are given instead.', responses: { 200: ok('Now playing.', ref('NowPlaying')), 404: error('No such station, or it is suspended.') } },
     },
+    '/station-addresses/suggest': {
+      get: { tags: ['Stations'], summary: 'Suggest a listening address', description: 'An address (slug) for a station of the given name that no station has at the moment: the name in a form that fits in an address, and four random characters. Saving the station is what settles it.', parameters: [{ name: 'name', in: 'query', schema: { type: 'string', maxLength: 100 } }], responses: { 200: ok('An address that is free.', { type: 'object', properties: { slug: { type: 'string', example: 'power-beats-fm-7k2q' } } }), ...AUTH_ERRORS } },
+    },
+    '/station-addresses/check': {
+      get: { tags: ['Stations'], summary: 'Check whether a listening address is free', parameters: [{ name: 'slug', in: 'query', required: true, schema: { type: 'string' } }], responses: { 200: ok('Whether a new station could be given this address.', { type: 'object', properties: { slug: { type: 'string' }, available: { type: 'boolean' }, reason: { type: 'string', nullable: true, description: 'Why not: taken, reserved, or not in the allowed form.' } } }), ...AUTH_ERRORS } },
+    },
     '/probe': {
       post: {
         tags: ['Stations'], summary: 'Try a stream or a title address',
@@ -664,8 +670,8 @@ module.exports = {
         },
       },
       StationCreate: {
-        type: 'object', required: ['name', 'slug', 'primary_url'],
-        properties: { slug: { type: 'string', pattern: '^[a-z0-9](?:[a-z0-9_-]{0,48}[a-z0-9])?$', description: 'Becomes the public path of the stream.', example: 'powerbeats' }, ...stationWritable },
+        type: 'object', required: ['name', 'primary_url'],
+        properties: { slug: { type: 'string', pattern: '^[a-z0-9](?:[a-z0-9_-]{0,48}[a-z0-9])?$', description: 'Becomes the public path of the stream. Left out, one is generated from the name with a short random ending, such as `power-beats-fm-7k2q`.', example: 'powerbeats' }, ...stationWritable },
       },
       StationUpsert: { type: 'object', description: '`name` and `primary_url` are required when the station does not exist yet.', properties: stationWritable },
       StationPatch: { type: 'object', properties: { slug: { type: 'string', description: 'Administrators only.' }, ...stationWritable } },
