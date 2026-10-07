@@ -442,6 +442,13 @@ module.exports = {
       parameters: [slugParam],
       get: { tags: ['Public'], summary: 'A station\'s uploaded image', security: [], description: 'The image set as the station\'s `artwork_file_id`, for players and web pages; callable and embeddable from any origin. With the `v` value the gateway hands out, the response may be cached for good; a new image has a new `v`.', parameters: [{ name: 'v', in: 'query', schema: { type: 'string' }, description: 'Names the image\'s content.' }], responses: { 200: { description: 'The image.', content: { 'image/jpeg': {}, 'image/png': {}, 'image/webp': {}, 'image/gif': {} } }, 404: error('No such station, or it has no uploaded image.') } },
     },
+    '/public/converter': {
+      get: { tags: ['Public'], summary: 'Where to get StreamNode Converter', security: [], description: 'StreamNode Converter is a desktop program for Windows and Linux that converts audio and video files into a stream\'s format on the owner\'s own computer. This gives the download addresses and the registry reference the downloads are published under.', responses: { 200: ok('The downloads.', { type: 'object', properties: { image: { type: 'string', example: 'ghcr.io/blacdev/streamnode/converter:latest' }, downloads: { type: 'object', additionalProperties: { type: 'object', properties: { url: { type: 'string' }, file: { type: 'string' } } } } } }) } },
+    },
+    '/public/converter/{platform}': {
+      parameters: [{ name: 'platform', in: 'path', required: true, schema: { type: 'string', enum: ['windows', 'linux'] } }],
+      get: { tags: ['Public'], summary: 'Download StreamNode Converter', security: [], description: 'The gateway fetches the download from the container registry and passes it on under its file name.', responses: { 200: { description: 'The download.', content: { 'application/zip': {}, 'application/gzip': {} } }, 404: error('Not published yet (`converter_not_published`), or an unknown platform.'), 502: error('The registry could not be reached (`converter_unavailable`).'), 503: error('Too many downloads at once (`busy`).') } },
+    },
     '/stream-types': {
       get: { tags: ['Public'], summary: 'Supported stream types', security: [], description: 'The kinds of stream a station can supply and what is available on each: relaying, silence detection, fades, idents and fallback audio, and what uploaded files must be.', responses: { 200: ok('The stream types.', { type: 'object', properties: { stream_types: { type: 'array', items: ref('StreamType') } } }) } },
     },

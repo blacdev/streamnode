@@ -13,6 +13,7 @@ edge/certs/*
 # Build output and dependencies
 node_modules/
 rust_src/target/
+converter_src/target/
 
 # Runtime output
 backups/

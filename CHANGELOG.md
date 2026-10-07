@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.16.0] - 2026-10-07
+
+### Added
+
+- **StreamNode Converter**, a small desktop program for Windows and Linux
+  (`converter_src/`, [docs](docs/CONVERTER.md)). Given a stream's address it learns the
+  stream's format and loudness and converts any audio or video file to match; several
+  streams can be added, each with its own files; an Advanced panel changes the format,
+  bitrate, sample rate, channels, loudness and where files are saved; and it works
+  without a stream at all. One file at a time, on one core, at the lowest priority.
+- Its downloads are built by CI and published to the container registry beside the
+  images (`ghcr.io/<owner>/<repo>/converter`), and attached to releases.
+- The station form (**When audio stops**) and the Files tab point to it, with download
+  buttons. `GET /api/v1/public/converter` and `/public/converter/{windows|linux}`.
+
 ## [2.15.0] - 2026-10-07
 
 ### Added
