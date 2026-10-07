@@ -22,8 +22,9 @@ people tune in.
 | Station name | Yes | `Power Beats FM` |
 | Stream address (primary) | Yes | `https://encoder.example.com/live` |
 | Backup stream address | No | `https://backup.example.com/live` |
-| Title and artwork address | No | `https://example.com/nowplaying.json` |
-| Station artwork address | No | `https://example.com/logo.png` |
+| Title address | No | `https://example.com/nowplaying.json` |
+| Artwork address | No | `https://example.com/logo.png` |
+| Your station's own title, artist and image | No | `More music, less talk`, `Power Beats FM`, your logo |
 
 ### Stream address
 
@@ -83,16 +84,33 @@ stream has audio, so listeners are never left in silence. Files must be in exact
 the same format as your stream, because the gateway does not convert audio. See
 [Failover, idents and fallback audio](FAILOVER.md).
 
-### Song titles
+### Titles, artist and artwork
 
-By default the gateway passes on the titles your encoder embeds in the stream (the
-"metadata" setting in your encoder or automation software). Nothing else is needed.
+Listeners see the title, artist and artwork of **whatever is playing**. Each source
+has its own:
 
-### Title and artwork URL
+| What is playing | Where its title and artist come from |
+|---|---|
+| Primary stream | The stream itself, or a title address if you give one |
+| Backup stream | Its own stream. Or the same title address as the primary, if you say the backup plays the same programme |
+| Fallback audio | Your station's own title and artist |
+| Any of them, when it gives nothing | Your station's own title and artist |
 
-If you would rather supply titles yourself, or want artwork to change with each song,
-give a web address that returns what is playing. The gateway fetches it every 10
-seconds while you have listeners.
+The moment the station changes source, the previous source's title is dropped. Nothing
+from a stream that has stopped stays on show.
+
+#### 1. Titles in the stream (nothing to set up)
+
+Your encoder or automation software embeds titles in the stream (its "metadata"
+setting). The gateway passes them on. A title written as `Artist - Title` is split at
+the first ` - ` into artist and title; a title without one is shown whole.
+
+#### 2. A title address (optional)
+
+If you would rather supply titles yourself, or want artwork that changes with each
+song, give a web address that returns what is playing. While it answers it is used
+instead of the titles in the stream. The gateway fetches it every 10 seconds while you
+have listeners.
 
 It can return **JSON** or **plain text**.
 
@@ -125,49 +143,62 @@ Plain text: the first line is used as the title.
 Miles Davis - Blue in Green
 ```
 
-If the address stops responding, the gateway goes back to the titles embedded in your
-stream until it recovers, and if the stream carries none, to your station's own title
-and artist (below).
+Plain text is read like a title in the stream: `Artist - Title` is split in two.
 
-### Station artwork
+If the address stops answering, the titles in the stream are used until it recovers.
 
-A fixed image (your logo) shown whenever no per-song artwork is available. Use a
-square image of at least 500 by 500 pixels, served over `https`.
+#### 3. The backup stream
 
-### Your station's own title, artist and image
+A backup can be a copy of your primary, or a different programme altogether.
 
-Three optional settings say what listeners see when nothing better is known:
+- **Different programme (the usual setting):** while the backup plays, listeners see
+  the titles inside the backup's own stream. The primary's title address is not
+  consulted, since it describes something that is not on air.
+- **Same programme:** tick *The backup plays the same programme as the primary*. The
+  title address is then used for the backup too.
+
+The choice only matters when the station has both a backup and a title address.
+
+#### 4. Your station's own title, artist and image (optional)
+
+What listeners see when nothing above gives an answer:
 
 | Setting | Example |
 |---|---|
 | Title | `More music, less talk` |
 | Artist | `Power Beats FM` |
-| Station image | An uploaded JPEG, PNG, WebP or GIF, up to 5 MB; a square works best |
+| Image | An uploaded JPEG, PNG, WebP or GIF, up to 5 MB; a square works best |
+
+They are shown:
+
+- while the **fallback audio** plays (in place of the file's name);
+- when the playing source gives **no title**;
+- when the title address **stops answering** and the stream has no title of its own;
+- when there is **no artwork**, or an artwork address **does not work**.
 
 The image is uploaded into your storage, like your audio files, and counts toward the
-same quota. You can upload it from the station's form or choose one you uploaded
-before, and use the same image for several stations.
+same quota. One image can serve several stations. It is also available at a public
+address, `/api/v1/public/stations/<slug>/artwork`, which you may use on your website.
 
-They are used:
+#### Artwork
 
-- **while the fallback audio plays**, in place of the file's name;
-- **when there is no title**: your stream carries none, and there is no title address
-  or it gives none;
-- **when the title address stops answering**, if the stream has no title of its own;
-- **when there is no artwork**: the title address gives none and no artwork address is
-  set, **or an artwork address does not work** (it is not reachable, or what answers
-  is not a picture). The gateway tries each artwork address itself. One that fails is
-  tried again every minute, and used again as soon as it works.
+Artwork is chosen in this order, using the first that works:
 
-What is shown, in order of preference:
+1. the artwork the title address gives for the current song;
+2. your **artwork address**: a fixed picture, such as your logo (a square of at least
+   500 by 500 pixels, served over `https`);
+3. your uploaded **image**.
 
-| | First choice | Then | Then |
-|---|---|---|---|
-| Title and artist | The title address, while it answers | The title in the stream | Your station's own |
-| Artwork | The title address's artwork, if it works | The artwork address, if it works | Your uploaded image |
+The gateway tries each address itself before showing it. One that cannot be reached,
+or that answers with something other than a picture, is passed over, tried again every
+minute, and used again as soon as it works.
 
-Players that show artwork are given your image at a public address on the gateway
-(`/api/v1/public/stations/<slug>/artwork`), which you may also use on your own website.
+#### Checking it
+
+- The **Test** button beside each stream and the title address shows what the gateway
+  reads from it right now, before you save.
+- In the station list, each title says where it came from: *From the title address*,
+  *From the stream*, *The station's own*, or *The fallback file's name*.
 
 ## What you get
 

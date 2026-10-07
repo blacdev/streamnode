@@ -8,6 +8,7 @@ mod detector;
 mod frames;
 mod nowplaying;
 mod playout;
+mod probe;
 mod station;
 mod stats;
 mod sysinfo;
@@ -93,6 +94,7 @@ async fn main() {
     let hub = Hub::new(cfg, redis, cluster.master_url.clone(), cluster.engine_secret.clone(), insecure);
 
     tokio::spawn(stats::run(hub.clone()));
+    tokio::spawn(probe::run(hub.clone()));
     tokio::spawn(flush_on_shutdown(hub.clone()));
 
     let mut app = Router::new()

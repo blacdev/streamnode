@@ -13,6 +13,7 @@ const updates = require('./updates');
 const certificate = require('./certificate');
 const media = require('./media');
 const image = require('./image');
+const probe = require('./probe');
 const settings = require('./settings');
 const dropbox = require('./dropbox');
 const streamTypes = require('./streamtypes');
@@ -269,6 +270,17 @@ async function updateStation(req, current, fields) {
     throw translateStationError(err);
   }
 }
+
+// Tries a stream or a title address and says what the gateway reads from it.
+router.post('/probe', wrap(async (req, res) => {
+  const body = req.body || {};
+  const errors = [];
+  if (body.kind !== 'stream' && body.kind !== 'titles') errors.push({ field: 'kind', message: 'must be "stream" or "titles"' });
+  const problem = typeof body.url === 'string' && body.url ? v.checkUrl(body.url) : 'is required';
+  if (problem) errors.push({ field: 'url', message: problem });
+  if (errors.length) throw invalid(errors);
+  res.json(await probe.run(body.kind, body.url));
+}));
 
 router.post('/stations', wrap(async (req, res) => {
   const fields = v.parseStation(req.body, { isAdmin: isAdmin(req) });

@@ -25,7 +25,7 @@ use crate::{
     config::Config,
     frames::Format,
     health::AudioHealth,
-    nowplaying::NowPlaying,
+    nowplaying::{self, NowPlaying},
     playout::RelayTask,
     station::Station,
     upstream::{Connector, StreamInfo},
@@ -133,24 +133,34 @@ pub(crate) struct Titles {
     pub defaults: Defaults,
     /// The metadata URL's last answer and the Unix second it has to be renewed by.
     pub external: Option<(NowPlaying, u64)>,
+    /// Whether the metadata URL describes what is playing now. It does not
+    /// when the backup is a programme of its own.
+    pub use_external: bool,
     /// The title last carried in the playing stream.
     pub stream: String,
     /// The name of the fallback file, while it is what is playing.
     pub file: Option<String>,
+    /// After a change of source: until when the title on show is kept if the new
+    /// source has named nothing yet.
+    pub settle_until: Option<tokio::time::Instant>,
     /// Artwork addresses that were tried: whether each one worked, and when it was tried.
     pub checked: HashMap<String, (bool, u64)>,
 }
 
 impl Titles {
+    /// Whether an artwork address was tried and answered with a picture.
     fn works(&self, url: &str) -> bool {
-        !url.is_empty() && self.checked.get(url).is_none_or(|(ok, _)| *ok)
+        !url.is_empty() && self.checked.get(url).is_some_and(|(ok, _)| *ok)
     }
 
     fn station_artwork(&self) -> String {
-        if self.works(&self.defaults.artwork_url) {
-            self.defaults.artwork_url.clone()
+        let (url, image) = (&self.defaults.artwork_url, &self.defaults.image);
+        // With an image to use instead, the address is shown only once it is known to work.
+        // Without one it is not tried at all, and is shown as it was given.
+        if self.works(url) || (image.is_empty() && !self.checked.contains_key(url)) {
+            url.clone()
         } else {
-            self.defaults.image.clone()
+            image.clone()
         }
     }
 
@@ -163,18 +173,21 @@ impl Titles {
                 title: if named { defaults.title.clone() } else { file.clone() },
                 artist: defaults.artist.clone(),
                 artwork: self.station_artwork(),
+                from: if named { "station" } else { "file" },
             };
         }
-        if let Some((external, until)) = &self.external {
+        if let Some((external, until)) = self.external.as_ref().filter(|_| self.use_external) {
             if now <= *until && !(external.title.is_empty() && external.artist.is_empty()) {
                 let artwork = if self.works(&external.artwork) { external.artwork.clone() } else { self.station_artwork() };
-                return NowPlaying { title: external.title.clone(), artist: external.artist.clone(), artwork };
+                return NowPlaying { title: external.title.clone(), artist: external.artist.clone(), artwork, from: "metadata_url" };
             }
         }
-        if !self.stream.is_empty() {
-            return NowPlaying { title: self.stream.clone(), artist: String::new(), artwork: self.station_artwork() };
+        let (artist, title) = nowplaying::split_stream_title(&self.stream);
+        if !title.is_empty() {
+            return NowPlaying { title, artist, artwork: self.station_artwork(), from: "stream" };
         }
-        NowPlaying { title: defaults.title.clone(), artist: defaults.artist.clone(), artwork: self.station_artwork() }
+        let named = !defaults.title.is_empty() || !defaults.artist.is_empty();
+        NowPlaying { title: defaults.title.clone(), artist: defaults.artist.clone(), artwork: self.station_artwork(), from: if named { "station" } else { "" } }
     }
 }
 
@@ -357,7 +370,14 @@ impl Relay {
         let shown = {
             let mut titles = self.titles.lock().unwrap();
             change(&mut titles);
-            titles.shown(unix_now())
+            let shown = titles.shown(unix_now());
+            // Only the wait for a source's first title is bridged; a title it gives is shown at once.
+            let waiting = titles.file.is_none() && matches!(shown.from, "station" | "") && titles.settle_until.is_some_and(|until| tokio::time::Instant::now() < until);
+            if waiting {
+                return;
+            }
+            titles.settle_until = None;
+            shown
         };
         if **self.now_playing.borrow() != shown {
             self.now_playing.send_replace(Arc::new(shown));
@@ -551,41 +571,71 @@ impl Hub {
 mod title_tests {
     use super::*;
 
-    fn np(title: &str, artist: &str, artwork: &str) -> NowPlaying {
-        NowPlaying { title: title.into(), artist: artist.into(), artwork: artwork.into() }
+    fn np(title: &str, artist: &str, artwork: &str, from: &'static str) -> NowPlaying {
+        NowPlaying { title: title.into(), artist: artist.into(), artwork: artwork.into(), from }
     }
 
-    fn defaults() -> Defaults {
-        Defaults { title: "Jazz FM".into(), artist: "All day".into(), artwork_url: "http://a/logo.png".into(), image: "http://gw/art".into() }
+    fn external(title: &str, artist: &str, artwork: &str, until: u64) -> Option<(NowPlaying, u64)> {
+        Some((np(title, artist, artwork, "metadata_url"), until))
+    }
+
+    /// A station with everything set, playing its primary, whose artwork address works.
+    fn titles() -> Titles {
+        let defaults = Defaults { title: "Jazz FM".into(), artist: "All day".into(), artwork_url: "http://a/logo.png".into(), image: "http://gw/art".into() };
+        let mut titles = Titles { defaults, use_external: true, ..Titles::default() };
+        titles.checked.insert("http://a/logo.png".into(), (true, 90));
+        titles
     }
 
     #[test]
     fn defaults_are_shown_until_something_better_is_known() {
-        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
-        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png"));
+        let mut titles = titles();
+        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png", "station"));
         titles.stream = "Miles Davis - So What".into();
-        assert_eq!(titles.shown(100), np("Miles Davis - So What", "", "http://a/logo.png"));
-        titles.external = Some((np("So What", "Miles Davis", "http://a/cover.jpg"), 130));
-        assert_eq!(titles.shown(100), np("So What", "Miles Davis", "http://a/cover.jpg"));
+        assert_eq!(titles.shown(100), np("So What", "Miles Davis", "http://a/logo.png", "stream"));
+        titles.stream = "Morning show".into();
+        assert_eq!(titles.shown(100), np("Morning show", "", "http://a/logo.png", "stream"));
+        titles.external = external("So What", "Miles Davis", "http://a/cover.jpg", 130);
+        titles.checked.insert("http://a/cover.jpg".into(), (true, 90));
+        assert_eq!(titles.shown(100), np("So What", "Miles Davis", "http://a/cover.jpg", "metadata_url"));
     }
 
     #[test]
     fn a_metadata_url_that_stopped_answering_gives_way() {
-        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
-        titles.external = Some((np("So What", "Miles Davis", ""), 130));
-        assert_eq!(titles.shown(130), np("So What", "Miles Davis", "http://a/logo.png"));
-        assert_eq!(titles.shown(131), np("Jazz FM", "All day", "http://a/logo.png"));
+        let mut titles = titles();
+        titles.external = external("So What", "Miles Davis", "", 130);
+        assert_eq!(titles.shown(130), np("So What", "Miles Davis", "http://a/logo.png", "metadata_url"));
+        assert_eq!(titles.shown(131), np("Jazz FM", "All day", "http://a/logo.png", "station"));
         titles.stream = "From the stream".into();
         assert_eq!(titles.shown(131).title, "From the stream");
     }
 
     #[test]
-    fn artwork_that_does_not_work_is_passed_over() {
-        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
-        titles.external = Some((np("So What", "", "http://a/cover.jpg"), 130));
+    fn a_backup_with_its_own_programme_shows_its_own_titles() {
+        let mut titles = titles();
+        titles.external = external("Primary song", "Primary artist", "", 500);
+        titles.use_external = false;
+        titles.stream = "Backup artist - Backup song".into();
+        assert_eq!(titles.shown(100), np("Backup song", "Backup artist", "http://a/logo.png", "stream"));
+        // Nothing in the backup's stream: the station's own, never the primary's.
+        titles.stream.clear();
+        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png", "station"));
+        // A backup that mirrors the primary is described by the same address.
+        titles.use_external = true;
+        assert_eq!(titles.shown(100).title, "Primary song");
+    }
+
+    #[test]
+    fn artwork_is_shown_only_once_it_is_known_to_work() {
+        let mut titles = titles();
+        titles.external = external("So What", "", "http://a/cover.jpg", 130);
+        // Not tried yet, then tried and failed: the station's artwork address either way.
+        assert_eq!(titles.shown(100).artwork, "http://a/logo.png");
         titles.checked.insert("http://a/cover.jpg".into(), (false, 90));
         assert_eq!(titles.shown(100).artwork, "http://a/logo.png");
         titles.checked.insert("http://a/logo.png".into(), (false, 90));
+        assert_eq!(titles.shown(100).artwork, "http://gw/art");
+        titles.checked.remove("http://a/logo.png");
         assert_eq!(titles.shown(100).artwork, "http://gw/art");
         titles.checked.insert("http://a/logo.png".into(), (true, 95));
         assert_eq!(titles.shown(100).artwork, "http://a/logo.png");
@@ -593,17 +643,20 @@ mod title_tests {
         titles.defaults.artwork_url.clear();
         titles.external = None;
         assert_eq!(titles.shown(100).artwork, "http://gw/art");
+        // An address and no image to use instead: shown as given, since it is never tried.
+        titles.defaults = Defaults { artwork_url: "http://a/other.png".into(), ..Defaults::default() };
+        assert_eq!(titles.shown(100).artwork, "http://a/other.png");
     }
 
     #[test]
     fn the_fallback_file_shows_the_station_defaults() {
-        let mut titles = Titles { defaults: defaults(), ..Titles::default() };
+        let mut titles = titles();
         titles.stream = "Old stream title".into();
-        titles.external = Some((np("Old", "Old", ""), 500));
+        titles.external = external("Old", "Old", "", 500);
         titles.file = Some("Night mix".into());
-        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png"));
+        assert_eq!(titles.shown(100), np("Jazz FM", "All day", "http://a/logo.png", "station"));
         // With nothing set for the station, the file's name is all there is.
         titles.defaults = Defaults::default();
-        assert_eq!(titles.shown(100), np("Night mix", "", ""));
+        assert_eq!(titles.shown(100), np("Night mix", "", "", "file"));
     }
 }

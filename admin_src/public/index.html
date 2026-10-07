@@ -300,83 +300,140 @@
     </main>
   </div>
 
-  <dialog id="stationDialog">
-    <form id="stationForm" method="dialog">
-      <h2 id="stationDialogTitle">Add station</h2>
-      <label>Station name <input name="name" maxlength="100" required></label>
-      <label>Slug <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" required>
-        <small>The public path of the stream: /slug</small></label>
-      <label>Primary stream URL <input name="primary_url" type="url" required placeholder="https://encoder.example.com/live">
-        <small>The direct address of an MP3 or AAC stream. <span id="stationStream"></span></small></label>
-      <details><summary>Which streams are supported</summary>
-        <div class="tablewrap"><table id="streamTypes"></table></div>
-        <p class="muted">Every listed format is relayed unchanged. What differs is what the gateway can add to it. The type is detected the first time the station plays.</p>
-      </details>
-      <label>Backup stream URL <input name="backup_url" type="url" placeholder="Optional">
-        <small>Used when the primary is unreachable, drops or stalls.</small></label>
-      <label>Title &amp; artwork URL <input name="metadata_url" type="url" placeholder="Optional">
-        <small>A JSON or text endpoint with the current title, artist and artwork. Leave empty to use titles from the stream.</small></label>
-      <label>Station artwork URL <input name="artwork_url" type="url" placeholder="Optional"></label>
-      <fieldset>
-        <legend>Shown when nothing else is known</legend>
-        <p class="muted">Used while the fallback audio plays, when the stream and the title URL give no title or artwork, and when an address above does not work.</p>
-        <label>Title <input name="default_title" maxlength="200" placeholder="Optional, for example the station's slogan"></label>
-        <label>Artist <input name="default_artist" maxlength="200" placeholder="Optional, for example the station's name"></label>
-        <label>Station image <select name="artwork_file_id"></select>
-          <small>A JPEG, PNG, WebP or GIF of up to 5 MB; a square works best. It is kept in your storage. Choose one already there, or upload one:</small>
-          <input name="artwork_upload" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label>
-        <div id="stationImage"></div>
-      </fieldset>
-      <label>Seconds without audio before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
-        <small>How long a stream may be down or silent before the station moves to the next source. When a stream is back the station returns to it at once.</small></label>
-      <label class="check"><input type="checkbox" name="silence_detection" checked> Treat a stream that sends silence as having no audio</label>
-      <label class="check"><input type="checkbox" name="noise_detection" checked> Treat a stream that sends only hiss or other steady noise as having no audio, however loud</label>
-      <label>Silence level, in dB <input name="silence_threshold_db" type="number" min="-90" max="-10" placeholder="The server's setting (-55)">
-        <small>Anything quieter than this counts as silence. Nearer 0 treats more as silence; -70 lets quieter material count as audio.</small></label>
-      <label>Ident <select name="ident_file_id"></select>
-        <small>Played at every change: on leaving a failed stream and on returning to one that is back. Without an ident, MP3 stations fade out and in instead. Choose a file already in your storage, or upload one:</small>
-        <input name="ident_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
-      <label>Fallback audio <select name="fallback_file_id"></select>
-        <small>Played in a loop when neither stream has audio. Choose a file already in your storage, or upload one:</small>
-        <input name="fallback_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
-      <label class="check"><input type="checkbox" name="convert"> Convert uploads that are not in the stream's format. The converted file, matched to the stream's loudness, replaces what I upload.</label>
-      <p class="muted"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
-      <p id="stationUpload" class="muted" role="status"></p>
-      <fieldset data-admin>
-        <legend>Set by the administrator</legend>
-        <label>Account <select name="user_id"></select>
-          <small>Moving a station to another account clears its ident, fallback audio and image, which belong to an account.</small></label>
-        <label>Plan
-          <select name="plan_type">
-            <option value="listeners">By listeners: pays for a number of listeners at once</option>
-            <option value="bandwidth">By bandwidth: pays for data each month, with no limit on listeners</option>
-          </select>
-          <small>The same stream can be set up as several stations, each on its own plan.</small></label>
-        <label id="planListeners">Listeners the plan covers <input name="max_listeners" type="number" min="0" value="0">
-          <small>0 for unlimited; the station is then charged for the most listeners it had in the month.</small></label>
-        <label id="planBandwidth">Data the plan covers each month, in GB <input name="bandwidth_gb" type="number" min="0.01" step="0.01">
-          <small>Starts again on the first of each month. How long it lasts depends on how many listen and for how long.</small></label>
-        <label>When the plan is used up
-          <select name="overage_mode">
-            <option value="capped">Capped: no more until there is room (listeners) or the new month (bandwidth)</option>
-            <option value="pay_as_you_go">Pay as you go: it carries on, and the extra is charged</option>
-          </select></label>
-        <label>Never more listeners at once than <input name="listener_ceiling" type="number" min="1" placeholder="No ceiling">
-          <small>For pay as you go and for bandwidth plans, which have no listener limit of their own. Leave empty for no ceiling.</small></label>
-        <p id="planQuote" class="notice prose" hidden></p>
-        <label>Bitrate to charge at, in kbps <input name="billing_bitrate_kbps" type="number" min="8" max="2000" placeholder="The stream's own">
-          <small>Leave empty to use the bitrate detected on the stream.</small></label>
-        <label>Discount, in percent <input name="discount_percent" type="number" min="0" max="100" step="0.1" value="0"></label>
-        <label>Fixed price per month <input name="price_override" type="number" min="0" step="0.01" placeholder="Calculated">
-          <small>Replaces the calculated price. Leave empty to calculate it.</small></label>
-        <label>Subscription ends on <input name="subscription_ends_on" type="date">
-          <small>The owner is emailed as the date approaches. Leave empty for no end.</small></label>
-      </fieldset>
-      <p id="stationError" class="error" role="alert"></p>
-      <div class="actions">
+  <dialog id="stationDialog" class="tabbed">
+    <form id="stationForm" method="dialog" novalidate>
+      <header class="dialog-head">
+        <h2 id="stationDialogTitle">Add station</h2>
+        <div class="tabs" role="tablist" aria-label="Station settings">
+          <button type="button" role="tab" data-stab="streams" aria-selected="true">Streams</button>
+          <button type="button" role="tab" data-stab="titles">Titles and artwork</button>
+          <button type="button" role="tab" data-stab="failover">When audio stops</button>
+          <button type="button" role="tab" data-stab="plan" data-admin>Plan</button>
+        </div>
+      </header>
+
+      <div class="dialog-body">
+        <section data-spanel="streams" role="tabpanel">
+          <div class="cols">
+            <label>Station name <input name="name" maxlength="100" required></label>
+            <label>Listening address <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" required placeholder="powerbeats">
+              <small>Listeners tune in at <code>/this-name</code>. Lowercase letters, numbers, - and _.</small></label>
+          </div>
+          <label>Primary stream
+            <span class="with-test"><input name="primary_url" type="url" required placeholder="https://encoder.example.com/live"><button type="button" data-test="stream" data-for="primary_url">Test</button></span>
+            <small>The direct address of your MP3 or AAC stream. <span id="stationStream"></span></small>
+            <small class="result" data-result="primary_url" role="status"></small></label>
+          <label>Backup stream <span class="optional">optional</span>
+            <span class="with-test"><input name="backup_url" type="url" placeholder="https://backup.example.com/live"><button type="button" data-test="stream" data-for="backup_url">Test</button></span>
+            <small>Plays when the primary is down or silent. It may carry a different programme.</small>
+            <small class="result" data-result="backup_url" role="status"></small></label>
+          <details><summary>Which streams are supported</summary>
+            <div class="tablewrap"><table id="streamTypes"></table></div>
+            <p class="muted">Every listed format is relayed unchanged. What differs is what the gateway can add to it. The type is detected the first time the station plays.</p>
+          </details>
+        </section>
+
+        <section data-spanel="titles" role="tabpanel" hidden>
+          <p class="lead">Listeners see the title, artist and artwork of <strong>whatever is playing</strong>. If it has none, your station's own are shown.</p>
+          <div class="cols">
+            <div class="group">
+              <h3>Primary stream</h3>
+              <label>Title address <span class="optional">optional</span>
+                <span class="with-test"><input name="metadata_url" type="url" placeholder="https://example.com/nowplaying.json"><button type="button" data-test="titles" data-for="metadata_url">Test</button></span>
+                <small><strong>Empty:</strong> titles are read from the stream itself.<br><strong>Filled in:</strong> titles, artist and artwork come from this address (JSON or plain text).</small>
+                <small class="result" data-result="metadata_url" role="status"></small></label>
+
+              <h3>Backup stream</h3>
+              <label class="check multiline"><input type="checkbox" name="backup_titles_from_primary"> <span>The backup plays the same programme as the primary</span></label>
+              <small id="backupTitlesHint" class="under-check"></small>
+
+              <h3>Artwork</h3>
+              <label>Artwork address <span class="optional">optional</span> <input name="artwork_url" type="url" placeholder="https://example.com/logo.png">
+                <small>A picture shown when the title address gives none.</small></label>
+            </div>
+            <div class="group">
+              <h3>Your station's own</h3>
+              <p class="hint">Shown while the fallback audio plays, when nothing above gives a title or artwork, and when an address stops working.</p>
+              <label>Title <span class="optional">optional</span> <input name="default_title" maxlength="200" placeholder="More music, less talk"></label>
+              <label>Artist <span class="optional">optional</span> <input name="default_artist" maxlength="200" placeholder="Power Beats FM"></label>
+              <label>Image <span class="optional">optional</span>
+                <span class="with-thumb"><span id="stationImage"></span><select name="artwork_file_id"></select></span>
+                <small>JPEG, PNG, WebP or GIF, up to 5 MB. Square is best. Choose one from your storage, or upload:</small>
+                <input name="artwork_upload" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+            </div>
+          </div>
+        </section>
+
+        <section data-spanel="failover" role="tabpanel" hidden>
+          <p class="lead">When a stream has no audio the station moves on: <strong>primary</strong>, then <strong>backup</strong>, then your <strong>fallback audio</strong>. It returns as soon as a stream is back.</p>
+          <div class="cols">
+            <div class="group">
+              <h3>What counts as no audio</h3>
+              <label>Seconds to wait before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
+                <small>How long a stream may be down or silent first.</small></label>
+              <label class="check"><input type="checkbox" name="silence_detection" checked> Silence counts as no audio</label>
+              <label class="check"><input type="checkbox" name="noise_detection" checked> Hiss and steady noise count as no audio</label>
+              <label>Silence level, in dB <span class="optional">optional</span> <input name="silence_threshold_db" type="number" min="-90" max="-10" placeholder="-55 (the server's setting)">
+                <small>Quieter than this is silence. Nearer 0 treats more as silence.</small></label>
+            </div>
+            <div class="group">
+              <h3>What plays instead</h3>
+              <label>Ident <span class="optional">optional</span> <select name="ident_file_id"></select>
+                <small>A short clip played at every change of source. Without one, MP3 stations fade out and in.</small>
+                <input name="ident_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
+              <label>Fallback audio <span class="optional">optional</span> <select name="fallback_file_id"></select>
+                <small>Loops while neither stream has audio.</small>
+                <input name="fallback_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
+              <label class="check multiline"><input type="checkbox" name="convert"> <span>Convert uploads that are not in the stream's format. The converted file replaces what I upload.</span></label>
+            </div>
+          </div>
+          <p class="muted small"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
+          <p id="stationUpload" class="muted small" role="status"></p>
+        </section>
+
+        <section data-spanel="plan" role="tabpanel" data-admin-panel hidden>
+          <p class="lead">Set by the administrator. The same stream can be set up as several stations, each on its own plan.</p>
+          <div class="cols">
+            <div class="group">
+              <h3>Plan</h3>
+              <label>Account <select name="user_id"></select>
+                <small>Moving a station clears its ident, fallback audio and image, which belong to the account.</small></label>
+              <label>Type
+                <select name="plan_type">
+                  <option value="listeners">By listeners: a number of listeners at once</option>
+                  <option value="bandwidth">By bandwidth: data each month, any number of listeners</option>
+                </select></label>
+              <label id="planListeners">Listeners the plan covers <input name="max_listeners" type="number" min="0" value="0">
+                <small>0 is unlimited, charged for the most listeners in the month.</small></label>
+              <label id="planBandwidth">Data each month, in GB <input name="bandwidth_gb" type="number" min="0.01" step="0.01">
+                <small>Starts again on the first of each month.</small></label>
+              <label>When the plan is used up
+                <select name="overage_mode">
+                  <option value="capped">Capped: no more until there is room, or the new month</option>
+                  <option value="pay_as_you_go">Pay as you go: it carries on, and the extra is charged</option>
+                </select></label>
+              <label>Most listeners at once <span class="optional">optional</span> <input name="listener_ceiling" type="number" min="1" placeholder="No ceiling">
+                <small>A ceiling for pay as you go and for bandwidth plans.</small></label>
+            </div>
+            <div class="group">
+              <h3>Price</h3>
+              <p id="planQuote" class="notice prose" hidden></p>
+              <label>Bitrate to charge at, in kbps <span class="optional">optional</span> <input name="billing_bitrate_kbps" type="number" min="8" max="2000" placeholder="The stream's own"></label>
+              <label>Discount, in percent <input name="discount_percent" type="number" min="0" max="100" step="0.1" value="0"></label>
+              <label>Fixed price per month <span class="optional">optional</span> <input name="price_override" type="number" min="0" step="0.01" placeholder="Calculated">
+                <small>Replaces the calculated price.</small></label>
+              <label>Subscription ends on <span class="optional">optional</span> <input name="subscription_ends_on" type="date">
+                <small>The owner is emailed as the date approaches.</small></label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="dialog-foot">
+        <p id="stationError" class="error" role="alert"></p>
         <button type="button" value="cancel" id="stationCancel">Cancel</button>
         <button class="primary" value="save">Save station</button>
-      </div>
+      </footer>
     </form>
   </dialog>
 

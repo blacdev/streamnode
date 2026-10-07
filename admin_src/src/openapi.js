@@ -19,8 +19,9 @@ const stationWritable = {
   name: { type: 'string', maxLength: 100, example: 'Power Beats FM' },
   primary_url: { type: 'string', format: 'uri', description: 'The station\'s own stream. Relayed byte-for-byte: codec and bitrate are never changed.', example: 'https://encoder.example.com/live' },
   backup_url: { type: 'string', format: 'uri', nullable: true, description: 'Used when the primary cannot be reached, drops or stalls. Should carry the same codec as the primary.', example: 'https://backup.example.com/live' },
-  metadata_url: { type: 'string', format: 'uri', nullable: true, description: 'Optional endpoint polled for the current title, artist and artwork (JSON or plain text). When absent, titles embedded in the stream are used.', example: 'https://example.com/nowplaying.json' },
+  metadata_url: { type: 'string', format: 'uri', nullable: true, description: 'Optional endpoint polled for the current title, artist and artwork (JSON or plain text) while the primary plays, and while the backup plays if `backup_titles_from_primary` is true. When absent, titles embedded in the playing stream are used.', example: 'https://example.com/nowplaying.json' },
   artwork_url: { type: 'string', format: 'uri', nullable: true, description: 'Optional station artwork, used whenever the metadata URL supplies none. If it stops answering with an image and the station has an uploaded image (`artwork_file_id`), that image is used instead.', example: 'https://example.com/logo.png' },
+  backup_titles_from_primary: { type: 'boolean', default: false, description: 'The backup stream carries the same programme as the primary, so `metadata_url` describes it too. When false, the titles shown while the backup plays are the ones in the backup\'s own stream. Has no effect without both `backup_url` and `metadata_url`.' },
   default_title: { type: 'string', nullable: true, maxLength: 200, description: 'Shown as the title when neither the stream nor the metadata URL names what is playing (or the metadata URL has stopped answering), and while the fallback file plays.', example: 'More music, less talk' },
   default_artist: { type: 'string', nullable: true, maxLength: 200, description: 'Shown as the artist in the same situations as `default_title`.', example: 'Power Beats' },
   artwork_file_id: { type: 'integer', nullable: true, description: 'An uploaded image (`kind: image`) from the station\'s account, shown when the metadata URL supplies no artwork and `artwork_url` is empty or does not answer with an image. Served to anyone at `default_artwork_url`.' },
@@ -426,6 +427,17 @@ module.exports = {
       parameters: [slugParam],
       get: { tags: ['Public'], summary: 'What a station is playing', security: [], description: 'For web players and widgets; callable from any origin. Title, artist and artwork are what is on air; where the stream and the metadata URL supply none (or the station has no listeners), the station\'s own `default_title`, `default_artist` and image are given instead.', responses: { 200: ok('Now playing.', ref('NowPlaying')), 404: error('No such station, or it is suspended.') } },
     },
+    '/probe': {
+      post: {
+        tags: ['Stations'], summary: 'Try a stream or a title address',
+        description: 'A streaming server connects to the address, through the same checks as any source, and reports what it reads: for `stream`, the format, whether the stream carries titles and the title being sent; for `titles`, the title, artist and artwork found, and whether the artwork loads. Nothing is saved. Takes up to about ten seconds.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['kind', 'url'], properties: { kind: { type: 'string', enum: ['stream', 'titles'] }, url: { type: 'string', format: 'uri' } } }) },
+        responses: {
+          200: ok('What was read, or why it could not be (`ok: false` with `error`).', { type: 'object', properties: { ok: { type: 'boolean' }, error: { type: 'string' }, content_type: { type: 'string' }, format: { type: 'string', nullable: true, example: 'MP3 44100 Hz stereo' }, bitrate_kbps: { type: 'integer', nullable: true }, name: { type: 'string', nullable: true }, carries_titles: { type: 'boolean' }, title: { type: 'string' }, artist: { type: 'string' }, artwork: { type: 'string' }, artwork_works: { type: 'boolean', nullable: true } } }),
+          503: error('No streaming server is running (`no_streaming_server`).'), 504: error('The streaming server did not answer in time (`probe_timeout`).'), ...AUTH_ERRORS,
+        },
+      },
+    },
     '/public/stations/{slug}/artwork': {
       parameters: [slugParam],
       get: { tags: ['Public'], summary: 'A station\'s uploaded image', security: [], description: 'The image set as the station\'s `artwork_file_id`, for players and web pages; callable and embeddable from any origin. With the `v` value the gateway hands out, the response may be cached for good; a new image has a new `v`.', parameters: [{ name: 'v', in: 'query', schema: { type: 'string' }, description: 'Names the image\'s content.' }], responses: { 200: { description: 'The image.', content: { 'image/jpeg': {}, 'image/png': {}, 'image/webp': {}, 'image/gif': {} } }, 404: error('No such station, or it has no uploaded image.') } },
@@ -466,6 +478,7 @@ module.exports = {
           title: { type: 'string', nullable: true },
           artist: { type: 'string', nullable: true },
           artwork: { type: 'string', nullable: true },
+          title_from: { type: 'string', nullable: true, enum: ['metadata_url', 'stream', 'station', 'file', null], description: 'Where the title and artist come from.' },
           content_type: { type: 'string', nullable: true, example: 'audio/mpeg' },
           bitrate: { type: 'integer', nullable: true, description: 'kbps as announced by the source.', example: 96 },
           connected_since: { type: 'string', format: 'date-time', nullable: true },
@@ -714,7 +727,7 @@ module.exports = {
       ApiKeyCreated: { allOf: [ref('ApiKey'), { type: 'object', properties: { key: { type: 'string', description: 'The secret. Shown only once.' } } }] },
       AuditEntry: { type: 'object', properties: { id: { type: 'integer' }, at: { type: 'string', format: 'date-time' }, username: { type: 'string', nullable: true }, action: { type: 'string', example: 'station.suspend' }, target: { type: 'string', nullable: true }, detail: { type: 'object', nullable: true }, ip: { type: 'string' } } },
       Session: { type: 'object', properties: { token: { type: 'string' }, expires_in: { type: 'integer', description: 'Seconds.' }, user: ref('User') } },
-      NowPlaying: { type: 'object', properties: { station: { type: 'string' }, name: { type: 'string' }, online: { type: 'boolean' }, title: { type: 'string', nullable: true }, artist: { type: 'string', nullable: true }, artwork: { type: 'string', nullable: true }, stream_url: { type: 'string' }, playlist_urls: { type: 'object', properties: { m3u: { type: 'string' }, pls: { type: 'string' } } } } },
+      NowPlaying: { type: 'object', properties: { station: { type: 'string' }, name: { type: 'string' }, online: { type: 'boolean' }, title: { type: 'string', nullable: true }, artist: { type: 'string', nullable: true }, title_from: { type: 'string', nullable: true, enum: ['metadata_url', 'stream', 'station', 'file', null], description: 'Where the title and artist come from: the metadata URL, the playing stream, the station\'s own defaults, or the fallback file\'s name.' }, artwork: { type: 'string', nullable: true }, stream_url: { type: 'string' }, playlist_urls: { type: 'object', properties: { m3u: { type: 'string' }, pls: { type: 'string' } } } } },
       Server: {
         type: 'object',
         properties: {

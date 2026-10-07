@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, backup_titles_from_primary, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -48,6 +48,8 @@ function profile(row, media) {
     primary: row.primary_url,
     backup: row.backup_url || '',
     metadata_url: row.metadata_url || '',
+    // Whose titles the backup shows: the metadata URL's, like the primary, or its own stream's.
+    backup_titles: row.backup_titles_from_primary ? 'primary' : 'stream',
     artwork_url: row.artwork_url || '',
     // What the engines enforce. With pay as you go, listeners beyond the subscription's
     // number are let in, up to the ceiling if there is one (0 is no limit at all).
@@ -99,7 +101,7 @@ async function syncAll() {
 }
 
 const OFFLINE = Object.freeze({
-  online: false, listeners: 0, source: null, title: null, artist: null, artwork: null,
+  online: false, listeners: 0, source: null, title: null, artist: null, artwork: null, title_from: null,
   content_type: null, bitrate: null, connected_since: null, servers: 0,
   no_audio_on: [], source_offline: false, stream_format: null,
 });
@@ -127,6 +129,8 @@ function mergeLive(hashes) {
     title: first.title || null,
     artist: first.artist || null,
     artwork: first.artwork || null,
+    // Where the title came from: metadata_url, stream, station (its own) or file.
+    title_from: first.title_from || null,
     content_type: first.content_type || null,
     bitrate: parseInt(first.bitrate, 10) || null,
     connected_since: Number.isFinite(started) ? new Date(started * 1000).toISOString() : null,
@@ -193,6 +197,7 @@ function shown(row, live, req) {
   return {
     title: none ? row.default_title : live.title,
     artist: none ? row.default_artist : live.artist,
+    title_from: none ? (row.default_title || row.default_artist ? 'station' : null) : live.title_from,
     artwork: absolute(live.artwork, req) || row.artwork_url || (row.artwork_file_id ? `${baseUrl(req)}${artworkPath(row.slug)}` : null),
   };
 }
@@ -221,6 +226,7 @@ function present(row, live, req) {
     default_title: row.default_title,
     default_artist: row.default_artist,
     artwork_file_id: row.artwork_file_id,
+    backup_titles_from_primary: row.backup_titles_from_primary,
     // Where the uploaded image can be fetched by anyone, when there is one.
     default_artwork_url: row.artwork_file_id ? `${baseUrl(req)}${artworkPath(row.slug)}` : null,
     billing_bitrate_kbps: row.billing_bitrate_kbps,
