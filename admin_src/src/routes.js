@@ -15,6 +15,7 @@ const media = require('./media');
 const image = require('./image');
 const probe = require('./probe');
 const converter = require('./converter');
+const slugs = require('./slug');
 const settings = require('./settings');
 const dropbox = require('./dropbox');
 const streamTypes = require('./streamtypes');
@@ -70,7 +71,7 @@ function checkPlan(station) {
 }
 
 function translateStationError(err) {
-  if (err.code === UNIQUE_VIOLATION) return conflict('slug_taken', 'A station with this slug already exists.');
+  if (err.code === UNIQUE_VIOLATION) return conflict('slug_taken', 'Another station already has this listening address. Choose another, or leave it empty to be given one.');
   if (err.code === FK_VIOLATION) return invalid([{ field: 'user_id', message: 'does not match an existing user' }]);
   return err;
 }
@@ -246,17 +247,24 @@ async function createStation(req, fields) {
   const row = { user_id: req.user.id, ...fields };
   checkPlan(row);
   await media.checkAssignment(row, row.user_id, null);
-  const keys = Object.keys(row);
-  try {
-    const { rows } = await db.query(
-      `INSERT INTO stations (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING ${stations.COLUMNS}`,
-      keys.map((key) => row[key])
-    );
-    await stations.publish(rows[0]);
-    audit(req, 'station.create', rows[0].slug, fields);
-    return rows[0];
-  } catch (err) {
-    throw translateStationError(err);
+  // Without an address of its own choosing, the station is given one. Two stations made
+  // at the same moment could be given the same one, so a clash is simply tried again.
+  const generated = row.slug === undefined;
+  for (let attempt = 0; ; attempt += 1) {
+    if (generated) row.slug = await slugs.generate(row.name);
+    const keys = Object.keys(row);
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO stations (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING ${stations.COLUMNS}`,
+        keys.map((key) => row[key])
+      );
+      await stations.publish(rows[0]);
+      audit(req, 'station.create', rows[0].slug, { ...fields, slug: rows[0].slug });
+      return rows[0];
+    } catch (err) {
+      if (generated && err.code === UNIQUE_VIOLATION && attempt < 5) continue;
+      throw translateStationError(err);
+    }
   }
 }
 
@@ -292,6 +300,16 @@ router.post('/probe', wrap(async (req, res) => {
   if (problem) errors.push({ field: 'url', message: problem });
   if (errors.length) throw invalid(errors);
   res.json(await probe.run(body.kind, body.url));
+}));
+
+// A listening address for a station that is about to be added: one made from
+// its name, or whether one the owner typed is free. Saving the station is what
+// settles it; these only spare a refused form.
+router.get('/station-addresses/suggest', wrap(async (req, res) => {
+  res.json({ slug: await slugs.generate(String(req.query.name || '').slice(0, 100)) });
+}));
+router.get('/station-addresses/check', wrap(async (req, res) => {
+  res.json(await slugs.check(String(req.query.slug || '')));
 }));
 
 router.post('/stations', wrap(async (req, res) => {

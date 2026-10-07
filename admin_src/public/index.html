@@ -317,8 +317,9 @@
         <section data-spanel="streams" role="tabpanel">
           <div class="cols">
             <label>Station name <input name="name" maxlength="100" required></label>
-            <label>Listening address <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" required placeholder="powerbeats">
-              <small>Listeners tune in at <code>/this-name</code>. Lowercase letters, numbers, - and _.</small></label>
+            <label>Listening address <input name="slug" pattern="[a-z0-9][a-z0-9_\-]*" maxlength="50" placeholder="Made from the name">
+              <small id="slugHelp">Listeners tune in at <code>/this-address</code>. One is made for you; change it to any that is free.</small>
+              <small class="result" id="slugState" role="status"></small></label>
           </div>
           <label>Primary stream
             <span class="with-test"><input name="primary_url" type="url" required placeholder="https://encoder.example.com/live"><button type="button" data-test="stream" data-for="primary_url">Test</button></span>
@@ -402,6 +403,7 @@
 
         <section data-spanel="plan" role="tabpanel" data-admin-panel hidden>
           <p class="lead">Set by the administrator. The same stream can be set up as several stations, each on its own plan.</p>
+          <p id="planNote" class="notice alert" hidden>The plan was not copied. Set it for this station before saving: as it stands it has no listener limit.</p>
           <div class="cols">
             <div class="group">
               <h3>Plan</h3>

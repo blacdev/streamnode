@@ -88,6 +88,24 @@ curl -X PUT $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: appl
 }'
 ```
 
+**Letting the gateway choose the address.** `POST /stations` without a `slug` gives
+the station a generated one: its name in a form that fits in an address, and four
+random characters that keep it unique (`power-beats-fm-7k2q`). The response carries it.
+Send a `slug` to choose your own; `409 slug_taken` means another station has it.
+
+```bash
+curl -X POST $API/stations -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name": "Power Beats FM", "primary_url": "https://encoder.example.com/live"}'
+
+# Before showing a form: an address for a name, or whether a chosen one is free
+curl "$API/station-addresses/suggest?name=Power%20Beats%20FM" -H "X-API-Key: $KEY"   # {"slug": "power-beats-fm-7k2q"}
+curl "$API/station-addresses/check?slug=powerbeats" -H "X-API-Key: $KEY"             # {"slug": "powerbeats", "available": false, "reason": "..."}
+```
+
+Both are a convenience: saving the station is what settles the address. To duplicate a
+station, read it (`GET /stations/{slug}`), drop `slug`, `name` and the fields you do
+not want carried over, and `POST` the rest with a new name.
+
 | Field | Required | Notes |
 |---|---|---|
 | `name` | On create | Shown to listeners as the station name when the source supplies none |

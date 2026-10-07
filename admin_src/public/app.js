@@ -213,9 +213,11 @@ function renderStations() {
           live.source_offline ? (live.no_audio_on[0].reason || '').slice(0, 60) : `No audio on ${live.no_audio_on.map((n) => n.server).join(', ')}`)),
       h('td', { class: 'num' }, formatNumber(live.listeners) + (station.max_listeners ? ` / ${formatNumber(station.max_listeners)}` : '')),
       h('td', { class: 'wrap' }, art && h('img', { class: 'art', src: art, alt: '', loading: 'lazy', onerror: (e) => e.target.remove() }), playing || h('span', { class: 'muted' }, 'No title'), from && h('span', { class: 'from' }, from)),
-      h('td', {}, h('code', {}, station.stream_url)),
+      // A long address is cut short so the buttons stay in view; clicking it copies the whole of it.
+      h('td', { class: 'url' }, h('code', { title: `${station.stream_url}\nClick to copy`, onclick: () => navigator.clipboard.writeText(station.stream_url).then(() => toast('Listening address copied'), () => {}) }, station.stream_url)),
       h('td', { class: 'row-actions' },
         h('button', { onclick: () => openDetail(station).catch(fail) }, 'Stats'),
+        h('button', { title: 'Add a station with the same settings', onclick: () => openStationForm(null, station).catch(fail) }, 'Duplicate'),
         h('button', { onclick: () => openStationForm(station).catch(fail) }, 'Edit'),
         isAdmin() && h('button', { onclick: () => toggleSuspend(station) }, station.is_active ? 'Suspend' : 'Resume'),
         h('button', { class: 'danger', onclick: () => removeStation(station) }, 'Delete'))
@@ -267,11 +269,15 @@ async function showStreamTypes() {
   );
 }
 
-async function openStationForm(station) {
+// Opens the form for a station being edited, a new one, or (`template`) a new
+// one that starts with another station's settings.
+async function openStationForm(station, template = null) {
   const form = $('stationForm');
   form.reset();
+  // Where the form's values come from. A duplicate takes everything but the name, the address and the plan.
+  const source = station || template;
   // The files of the account that owns the station.
-  const owner = station && station.user_id !== state.user.id ? `?user_id=${station.user_id}` : '';
+  const owner = source && source.user_id !== state.user.id ? `?user_id=${source.user_id}` : '';
   const library = await api('GET', `/files${owner}`).catch(() => ({ files: [], limits: {}, usage: null }));
   // Every file in the account's storage can be chosen; one that does not suit this station is refused on saving, with the reason.
   for (const field of ['ident_file_id', 'fallback_file_id', 'artwork_file_id']) {
@@ -283,7 +289,7 @@ async function openStationForm(station) {
   state.stationFiles = { usage: library.usage, owner: owner.slice(1) };
   showStationStorage();
   $('stationUpload').textContent = '';
-  const format = station && station.live.stream_format;
+  const format = source && source.live.stream_format;
   const usable = !format || format.features.idents;
   $('stationFormat').textContent = !format ? 'Files must be in exactly the same format as the stream.'
     : usable ? `This station's stream is ${format.summary}. A file in exactly that format is used as it is, which is best.`
@@ -295,33 +301,89 @@ async function openStationForm(station) {
     // The account the station belongs to, and what it is charged for.
     const { users } = await api('GET', '/users');
     form.elements.user_id.replaceChildren(...users.map((user) => h('option', { value: user.id }, user.username)));
-    form.elements.user_id.value = station ? station.user_id : state.user.id;
+    form.elements.user_id.value = source ? source.user_id : state.user.id;
     for (const field of ['billing_bitrate_kbps', 'discount_percent', 'price_override', 'subscription_ends_on', 'listener_ceiling', 'bandwidth_gb']) {
       form.elements[field].value = station ? station[field] ?? '' : field === 'discount_percent' ? 0 : '';
     }
     form.elements.overage_mode.value = station ? station.overage_mode : 'capped';
     form.elements.plan_type.value = station ? station.plan_type : 'listeners';
-    form.dataset.bitrate = (station && (station.billing_bitrate_kbps || (station.live.stream_format && station.live.stream_format.bitrate_kbps) || station.live.bitrate)) || '';
+    form.dataset.bitrate = (source && ((station && station.billing_bitrate_kbps) || (source.live.stream_format && source.live.stream_format.bitrate_kbps) || source.live.bitrate)) || '';
     showPlan();
   }
   form.dataset.slug = station ? station.slug : '';
   showStationTab('streams');
   for (const el of form.querySelectorAll('.result')) showResult(el, '', '');
   for (const tab of form.querySelectorAll('[data-stab]')) tab.classList.remove('has-error');
-  $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : 'Add station';
+  $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : template ? `Duplicate ${template.name}` : 'Add station';
   $('stationError').textContent = '';
+  // An address is settled when the station is added; only an administrator's API call changes it later.
   form.elements.slug.disabled = Boolean(station);
-  if (station) {
-    for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id', 'default_title', 'default_artist', 'artwork_file_id']) form.elements[field].value = station[field] ?? '';
-    form.elements.silence_detection.checked = station.silence_detection;
-    form.elements.noise_detection.checked = station.noise_detection;
-    form.elements.backup_titles_from_primary.checked = station.backup_titles_from_primary;
-    form.elements.silence_threshold_db.value = station.silence_threshold_db ?? '';
+  $('slugHelp').hidden = Boolean(station);
+  slugTyped = false;
+  showResult($('slugState'), '', '');
+  if (source) {
+    const left = template ? ['name', 'slug', 'max_listeners'] : [];
+    for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id', 'default_title', 'default_artist', 'artwork_file_id']) {
+      if (!left.includes(field)) form.elements[field].value = source[field] ?? '';
+    }
+    form.elements.silence_detection.checked = source.silence_detection;
+    form.elements.noise_detection.checked = source.noise_detection;
+    form.elements.backup_titles_from_primary.checked = source.backup_titles_from_primary;
+    form.elements.silence_threshold_db.value = source.silence_threshold_db ?? '';
   }
+  // A plan is what gets charged, so a duplicate does not inherit one: it has to be set on purpose.
+  const planOpen = Boolean(template) && isAdmin();
+  $('planNote').hidden = !planOpen;
+  form.querySelector('[data-stab="plan"]').classList.toggle('attention', planOpen);
   showStationImage();
   showBackupTitles();
   $('stationDialog').showModal();
+  if (!station) form.elements.name.focus();
 }
+
+// ── The listening address of a station being added ─────────────────────────
+
+// Whether the address in the form was typed by hand; until then it follows the name.
+let slugTyped = false;
+let slugTimer;
+const adding = () => !$('stationForm').dataset.slug && !$('stationForm').elements.slug.disabled;
+
+$('stationForm').elements.name.addEventListener('input', () => {
+  if (!adding() || slugTyped) return;
+  clearTimeout(slugTimer);
+  const form = $('stationForm').elements;
+  const name = form.name.value.trim();
+  if (!name) { form.slug.value = ''; return showResult($('slugState'), '', ''); }
+  slugTimer = setTimeout(async () => {
+    try {
+      const { slug } = await api('GET', `/station-addresses/suggest?name=${encodeURIComponent(name)}`);
+      // Still wanted: the name may have changed, or the address been typed, while this was asked.
+      if (slugTyped || form.name.value.trim() !== name) return;
+      form.slug.value = slug;
+      showResult($('slugState'), 'ok', 'Made for this station, and free. Change it if you like.');
+    } catch { /* the station can still be saved: the server makes one */ }
+  }, 400);
+});
+
+$('stationForm').elements.slug.addEventListener('input', () => {
+  if (!adding()) return;
+  clearTimeout(slugTimer);
+  const form = $('stationForm').elements;
+  const slug = form.slug.value.trim();
+  slugTyped = slug !== '';
+  if (!slug) {
+    showResult($('slugState'), '', 'Left empty, an address is made from the name.');
+    return form.name.dispatchEvent(new Event('input'));
+  }
+  showResult($('slugState'), '', 'Checking…');
+  slugTimer = setTimeout(async () => {
+    try {
+      const found = await api('GET', `/station-addresses/check?slug=${encodeURIComponent(slug)}`);
+      if (form.slug.value.trim() !== slug) return;
+      showResult($('slugState'), found.available ? 'ok' : 'bad', found.available ? 'This address is free.' : found.reason);
+    } catch { showResult($('slugState'), '', ''); }
+  }, 350);
+});
 
 // ── The station form's tabs ────────────────────────────────────────────────
 
@@ -513,6 +575,8 @@ $('stationForm').addEventListener('submit', async (event) => {
       if (isAdmin()) body.max_listeners = Number(form.elements.max_listeners.value) || 0;
     } else body[field] = form.elements[field].value.trim();
   }
+  // Left empty, the address is made by the server.
+  if (!editing && !body.slug) delete body.slug;
   body.failover_delay_secs = Number(form.elements.failover_delay_secs.value);
   body.silence_detection = form.elements.silence_detection.checked;
   body.noise_detection = form.elements.noise_detection.checked;

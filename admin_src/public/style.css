@@ -66,6 +66,8 @@ th { font-size: 12px; color: var(--muted); font-weight: 600; }
 tr:last-child td { border-bottom: 0; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.wrap { white-space: normal; max-width: 260px; }
+td.url { max-width: 250px; }
+td.url code { display: block; margin: 0; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 td.row-actions { text-align: right; }
 td.row-actions button { padding: 3px 8px; margin-left: 4px; }
 td code, .links code, #joinCommand { margin-top: 10px; }
@@ -146,6 +148,7 @@ dialog.tabbed form { display: flex; flex-direction: column; max-height: 90vh; }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 8px 12px; white-space: nowrap; }
 .tabs button:hover { color: var(--text); }
 .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs button.attention::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--warn); vertical-align: middle; }
 .tabs button.has-error::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--bad); vertical-align: middle; }
 .dialog-body { padding: 4px 24px 18px; overflow-y: auto; flex: 1 1 auto; height: 540px; }
 .dialog-foot { display: flex; align-items: center; gap: 8px; padding: 12px 24px; border-top: 1px solid var(--line); }
