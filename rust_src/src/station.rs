@@ -12,6 +12,9 @@ pub struct Station {
     pub backup: Option<String>,
     pub metadata_url: Option<String>,
     pub artwork_url: Option<String>,
+    /// The backup carries the same programme as the primary, so the metadata
+    /// URL describes it too. Otherwise the backup's titles are its own stream's.
+    pub backup_titles_from_primary: bool,
     /// Shown when neither the stream nor the metadata URL names what is playing.
     pub default_title: Option<String>,
     pub default_artist: Option<String>,
@@ -70,6 +73,8 @@ impl Station {
             backup: take("backup"),
             metadata_url: take("metadata_url"),
             artwork_url: take("artwork_url"),
+            // Profiles written before this was a setting used the metadata URL for both streams.
+            backup_titles_from_primary: take("backup_titles").is_none_or(|v| v == "primary"),
             default_title: take("default_title"),
             default_artist: take("default_artist"),
             default_artwork: take("default_artwork"),
@@ -142,6 +147,11 @@ mod tests {
         let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("default_title", " Jazz FM "), ("default_artist", ""), ("default_artwork", "/api/v1/public/stations/jazz/artwork?v=ab")])).unwrap();
         assert_eq!(s.default_title.as_deref(), Some("Jazz FM"));
         assert_eq!(s.default_artist, None);
+        // A profile that does not say is one from before the setting existed.
+        assert!(s.backup_titles_from_primary);
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("backup_titles", "stream")])).unwrap();
+        assert!(!s.backup_titles_from_primary);
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("default_title", " Jazz FM "), ("default_artwork", "/api/v1/public/stations/jazz/artwork?v=ab")])).unwrap();
         assert_eq!(s.default_artwork.as_deref(), Some("/api/v1/public/stations/jazz/artwork?v=ab"));
     }
 

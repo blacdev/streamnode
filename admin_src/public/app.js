@@ -65,7 +65,7 @@ function toast(message) {
 const fail = (err) => toast(err.message);
 
 // How fields are named to the user when the server refuses one.
-const FIELD_LABELS = { ident_file_id: 'Ident:', fallback_file_id: 'Fallback audio:', artwork_file_id: 'Station image:', default_title: 'Title:', default_artist: 'Artist:' };
+const FIELD_LABELS = { ident_file_id: 'Ident:', fallback_file_id: 'Fallback audio:', artwork_file_id: 'Station image:', default_title: 'Title:', default_artist: 'Artist:', primary_url: 'Primary stream:', backup_url: 'Backup stream:', metadata_url: 'Title address:', artwork_url: 'Artwork address:', name: 'Station name:', slug: 'Listening address:' };
 
 function formatBytes(n) {
   if (!n) return '0 MB';
@@ -192,6 +192,8 @@ function statusOf(station) {
   return station.live.source === 'backup' ? ['backup', 'On air (backup)'] : ['live', 'On air'];
 }
 
+const TITLE_FROM = { metadata_url: 'From the title address', stream: 'From the stream', station: "The station's own", file: "The fallback file's name" };
+
 function renderStations() {
   $('stationsEmpty').hidden = state.stations.length > 0;
   $('stationRows').replaceChildren(...state.stations.map((station) => {
@@ -200,6 +202,8 @@ function renderStations() {
     // What is on air, and failing that what the station set for itself.
     const playing = [live.artist, live.title].filter(Boolean).join(' - ') || [station.default_artist, station.default_title].filter(Boolean).join(' - ');
     const art = live.artwork || station.artwork_url || station.default_artwork_url;
+    // Where the title comes from, so that a wrong one can be traced.
+    const from = [live.artist, live.title].some(Boolean) ? TITLE_FROM[live.title_from] : playing ? TITLE_FROM.station : '';
     return h('tr', {},
       h('td', {}, h('div', { class: 'station-name' }, station.name), h('code', {}, `/${station.slug}`),
         live.stream_format && h('small', { title: `${featureWords(live.stream_format.features)} ${live.stream_format.notes}` }, live.stream_format.summary)),
@@ -208,7 +212,7 @@ function renderStations() {
         live.no_audio_on.length > 0 && h('small', { title: live.no_audio_on.map((n) => `${n.server}: ${n.reason || 'no audio'}`).join('\n') },
           live.source_offline ? (live.no_audio_on[0].reason || '').slice(0, 60) : `No audio on ${live.no_audio_on.map((n) => n.server).join(', ')}`)),
       h('td', { class: 'num' }, formatNumber(live.listeners) + (station.max_listeners ? ` / ${formatNumber(station.max_listeners)}` : '')),
-      h('td', { class: 'wrap' }, art && h('img', { class: 'art', src: art, alt: '', loading: 'lazy', onerror: (e) => e.target.remove() }), playing || h('span', { class: 'muted' }, 'No title')),
+      h('td', { class: 'wrap' }, art && h('img', { class: 'art', src: art, alt: '', loading: 'lazy', onerror: (e) => e.target.remove() }), playing || h('span', { class: 'muted' }, 'No title'), from && h('span', { class: 'from' }, from)),
       h('td', {}, h('code', {}, station.stream_url)),
       h('td', { class: 'row-actions' },
         h('button', { onclick: () => openDetail(station).catch(fail) }, 'Stats'),
@@ -287,6 +291,9 @@ async function openStationForm(station) {
     showPlan();
   }
   form.dataset.slug = station ? station.slug : '';
+  showStationTab('streams');
+  for (const el of form.querySelectorAll('.result')) showResult(el, '', '');
+  for (const tab of form.querySelectorAll('[data-stab]')) tab.classList.remove('has-error');
   $('stationDialogTitle').textContent = station ? `Edit ${station.name}` : 'Add station';
   $('stationError').textContent = '';
   form.elements.slug.disabled = Boolean(station);
@@ -294,10 +301,82 @@ async function openStationForm(station) {
     for (const field of [...STATION_FIELDS, 'failover_delay_secs', 'ident_file_id', 'fallback_file_id', 'default_title', 'default_artist', 'artwork_file_id']) form.elements[field].value = station[field] ?? '';
     form.elements.silence_detection.checked = station.silence_detection;
     form.elements.noise_detection.checked = station.noise_detection;
+    form.elements.backup_titles_from_primary.checked = station.backup_titles_from_primary;
     form.elements.silence_threshold_db.value = station.silence_threshold_db ?? '';
   }
   showStationImage();
+  showBackupTitles();
   $('stationDialog').showModal();
+}
+
+// ── The station form's tabs ────────────────────────────────────────────────
+
+function showStationTab(name) {
+  const form = $('stationForm');
+  for (const tab of form.querySelectorAll('[data-stab]')) tab.setAttribute('aria-selected', String(tab.dataset.stab === name));
+  for (const panel of form.querySelectorAll('[data-spanel]')) panel.hidden = panel.dataset.spanel !== name;
+  form.querySelector('.dialog-body').scrollTop = 0;
+}
+for (const tab of $('stationForm').querySelectorAll('[data-stab]')) tab.addEventListener('click', () => showStationTab(tab.dataset.stab));
+
+// Opens the tab a field is on, so that what is wrong with it can be seen.
+function showStationField(name) {
+  const field = $('stationForm').elements[name];
+  const panel = field && field.closest && field.closest('[data-spanel]');
+  if (!panel) return null;
+  $('stationForm').querySelector(`[data-stab="${panel.dataset.spanel}"]`).classList.add('has-error');
+  showStationTab(panel.dataset.spanel);
+  return field;
+}
+
+// Whose titles the backup shows depends on what else is filled in, so the choice explains itself as that changes.
+function showBackupTitles() {
+  const form = $('stationForm').elements;
+  const box = form.backup_titles_from_primary;
+  const hasBackup = Boolean(form.backup_url.value.trim());
+  const hasAddress = Boolean(form.metadata_url.value.trim());
+  box.disabled = !hasBackup || !hasAddress;
+  $('backupTitlesHint').textContent = !hasBackup ? 'This station has no backup stream.'
+    : !hasAddress ? 'Without a title address, the backup shows the titles inside its own stream.'
+      : box.checked ? 'The title address above is used for the backup too.'
+        : 'The backup shows the titles inside its own stream. Tick this only if both streams play the same thing.';
+}
+for (const field of ['backup_url', 'metadata_url', 'backup_titles_from_primary']) $('stationForm').elements[field].addEventListener('input', showBackupTitles);
+
+function showResult(el, kind, text) {
+  el.className = `result ${kind}`.trim();
+  el.textContent = text;
+}
+
+// "Test": a streaming server tries the address and says what it reads from it.
+const describeProbe = {
+  stream(r) {
+    const format = [r.format, r.bitrate_kbps && `${r.bitrate_kbps} kbps`].filter(Boolean).join(', ') || r.content_type || 'a format that is relayed as it is';
+    const playing = [r.artist, r.title].filter(Boolean).join(' - ');
+    const titles = !r.carries_titles ? 'It carries no titles.' : playing ? `Title in the stream now: ${playing}.` : 'It carries titles, but sent none just now.';
+    return `Working. ${format}. ${titles}`;
+  },
+  titles(r) {
+    const art = !r.artwork ? 'No artwork given.' : r.artwork_works ? 'Artwork loads.' : 'Its artwork does not load, so yours will be shown.';
+    return `Working. Read: ${[r.artist, r.title].filter(Boolean).join(' - ')}. ${art}`;
+  },
+};
+for (const button of $('stationForm').querySelectorAll('[data-test]')) {
+  button.addEventListener('click', async () => {
+    const input = $('stationForm').elements[button.dataset.for];
+    const out = $('stationForm').querySelector(`[data-result="${button.dataset.for}"]`);
+    const url = input.value.trim();
+    if (!url) return showResult(out, 'bad', 'Enter an address first.');
+    button.disabled = true;
+    showResult(out, '', 'Trying it…');
+    try {
+      const r = await api('POST', '/probe', { kind: button.dataset.test, url });
+      showResult(out, r.ok ? 'ok' : 'bad', r.ok ? describeProbe[button.dataset.test](r) : r.error);
+    } catch (err) {
+      showResult(out, 'bad', err.message.replace(/^url /, 'This address '));
+    }
+    button.disabled = false;
+  });
 }
 
 const fileOption = (file) => h('option', { value: file.id }, file.kind === 'image' ? `${file.name} (${file.format})` : `${file.name} (${file.format}, ${formatLength(file.duration_seconds)})`);
@@ -403,6 +482,16 @@ $('stationForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
   const editing = form.dataset.slug;
+  for (const tab of form.querySelectorAll('[data-stab]')) tab.classList.remove('has-error');
+  $('stationError').textContent = '';
+  // A field that is not filled in properly may be on another tab: go to it.
+  const admin = isAdmin();
+  const wrong = [...form.elements].find((el) => el.name && el.willValidate && !el.checkValidity() && (admin || !el.closest('[data-admin-panel]')));
+  if (wrong) {
+    showStationField(wrong.name);
+    wrong.reportValidity();
+    return;
+  }
   const body = {};
   for (const field of STATION_FIELDS) {
     if (field === 'slug' && editing) continue;
@@ -419,6 +508,7 @@ $('stationForm').addEventListener('submit', async (event) => {
   body.default_title = form.elements.default_title.value.trim() || null;
   body.default_artist = form.elements.default_artist.value.trim() || null;
   body.artwork_file_id = Number(form.elements.artwork_file_id.value) || null;
+  body.backup_titles_from_primary = form.elements.backup_titles_from_primary.checked && !form.elements.backup_titles_from_primary.disabled;
   if (isAdmin()) {
     const owner = Number(form.elements.user_id.value);
     const current = state.stations.find((s) => s.slug === editing);
@@ -459,6 +549,9 @@ $('stationForm').addEventListener('submit', async (event) => {
     await refresh();
   } catch (err) {
     $('stationError').textContent = err.message;
+    // Show the tab with the first field the server refused, and mark the others.
+    const fields = (Array.isArray(err.details) ? err.details : []).map((d) => d.field).filter((name) => form.elements[name]);
+    for (const name of fields.slice().reverse()) showStationField(name);
   }
 });
 

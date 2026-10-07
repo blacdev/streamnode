@@ -60,6 +60,10 @@ const RECHECK: Duration = Duration::from_secs(2);
 /// How often, in seconds, an artwork address that works is tried again, and one that does not.
 const ARTWORK_RECHECK: u64 = 300;
 const ARTWORK_RETRY: u64 = 60;
+/// How long, after a change of source, the title on show is left alone when the
+/// new source has not named anything yet. Saves a flicker to the station's own
+/// title and back when the source's first title is a moment away.
+const TITLE_SETTLE: Duration = Duration::from_secs(2);
 /// How long a fade out, and a fade in, lasts.
 const FADE: Duration = Duration::from_millis(1500);
 /// How far down a fade goes, in the 1.5 dB steps an MP3 frame states its level
@@ -80,6 +84,9 @@ pub struct LiveSource {
     framer: Option<Framer>,
     /// Frames already read while the source was being checked, to be played first.
     pending: Vec<Frame>,
+    /// The title the source last announced. A stream says it once and then only when it
+    /// changes, so one heard while the source was being checked is kept for when it plays.
+    title: Option<String>,
     /// What has arrived since the last frame was recognised. A stream that is
     /// labelled MP3 or AAC but is not made of frames this engine knows (MPEG
     /// Layer II, say), or that changes format on the way, is relayed as it
@@ -93,7 +100,7 @@ pub struct LiveSource {
 impl LiveSource {
     fn new(upstream: Upstream, source: Source) -> Self {
         let framer = supported(&upstream.info.content_type).then(Framer::new);
-        Self { source, body: upstream.body, demux: upstream.metaint.map(IcyDemux::new), info: upstream.info, framer, pending: Vec::new(), held: Vec::new(), held_bytes: 0, detector: None }
+        Self { source, body: upstream.body, demux: upstream.metaint.map(IcyDemux::new), info: upstream.info, framer, pending: Vec::new(), title: None, held: Vec::new(), held_bytes: 0, detector: None }
     }
 
     /// Reads the next piece. Frames (or raw audio, for formats that are not
@@ -113,6 +120,9 @@ impl LiveSource {
         match self.demux.as_mut() {
             Some(demux) => title = demux.feed(chunk, &mut audio),
             None => audio.push(chunk),
+        }
+        if title.is_some() {
+            self.title.clone_from(&title);
         }
         for piece in audio {
             match self.framer.as_mut() {
@@ -695,10 +705,20 @@ impl RelayTask {
         self.watch(source);
         self.relay.set_live(std::mem::take(&mut live.info), source);
         // Titles start afresh with each stream: until it names something, the station's own are shown.
+        // The metadata URL describes the primary; the backup only if it carries the same programme.
+        let described = source == Source::Primary || self.station.backup_titles_from_primary;
+        self.last_meta_poll = None;
+        let heard = live.title.clone().unwrap_or_default();
         self.relay.update_titles(|titles| {
             titles.file = None;
-            titles.stream.clear();
+            titles.stream = heard;
+            titles.use_external = described;
+            // The new source is given a moment to name what it plays before the station's own is shown.
+            titles.settle_until = Some(Instant::now() + TITLE_SETTLE);
         });
+        if described {
+            self.poll_metadata();
+        }
         tracing::info!(station = %self.relay.slug, source = source.as_str(), "playing the live stream");
 
         let mut tick = interval(Duration::from_millis(250));
@@ -800,7 +820,9 @@ impl RelayTask {
                                 self.describe_stream(vec![("level_db", format!("{level:.1}"))], false);
                             }
                         }
-                        self.poll_metadata();
+                        if source == Source::Primary || self.station.backup_titles_from_primary {
+                            self.poll_metadata();
+                        }
                     }
                 }
 
@@ -1086,7 +1108,16 @@ impl RelayTask {
                         || fresh.noise_detection != self.station.noise_detection
                         || fresh.silence_threshold_db != self.station.silence_threshold_db;
                     self.station = fresh;
-                    self.relay.update_titles(|titles| titles.defaults = Defaults::of(&self.station));
+                    let described = self.relay.source() == Source::Primary || self.station.backup_titles_from_primary;
+                    self.relay.update_titles(|titles| {
+                        titles.defaults = Defaults::of(&self.station);
+                        if self.station.metadata_url.is_none() {
+                            titles.external = None;
+                        }
+                        if titles.file.is_none() {
+                            titles.use_external = described;
+                        }
+                    });
                     self.load_ident();
                     if rewired {
                         tracing::info!(station = %self.relay.slug, "source URLs changed, reconnecting");
@@ -1163,7 +1194,7 @@ async fn check_artwork(hub: &Hub, relay: &Relay, url: &str) {
     }
     let now = unix_now();
     // Marked as it stands while the request is out, so that it is not asked twice at once.
-    let before = relay.artwork_checked(url).is_none_or(|(ok, _)| ok);
+    let before = relay.artwork_checked(url).is_some_and(|(ok, _)| ok);
     relay.update_titles(|titles| {
         titles.checked.insert(url.to_string(), (before, now));
     });

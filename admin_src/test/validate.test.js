@@ -242,3 +242,8 @@ test('a station may be given a title, artist and image of its own', () => {
   const bad = fields(() => v.parseStation({ default_title: 'x'.repeat(201), default_artist: 'two\nlines', artwork_file_id: 'logo.png' }, { partial: true }));
   assert.deepStrictEqual(bad, ['default_title', 'default_artist', 'artwork_file_id']);
 });
+
+test('whether the backup shares the primary\'s titles is a yes or no', () => {
+  assert.deepStrictEqual(v.parseStation({ backup_titles_from_primary: true }, { partial: true }), { backup_titles_from_primary: true });
+  assert.deepStrictEqual(fields(() => v.parseStation({ backup_titles_from_primary: 'yes' }, { partial: true })), ['backup_titles_from_primary']);
+});

@@ -115,6 +115,8 @@ services:
       CLUSTER_CERT: ${CLUSTER_CERT-/etc/haproxy/certs/stream.pem}
       # false serves the dashboard and API over plain HTTP too (local testing only).
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
+      # Where the HTTPS redirect points when a request names a port.
+      HTTPS_PORT: ${HTTPS_PORT:-443}
     ports:
       # Published on every network interface, so the gateway answers on the
       # server's local and public addresses alike. Docker opens these ports in

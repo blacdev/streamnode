@@ -73,7 +73,9 @@ address with the User-Agent `StreamNode/1.0` (configurable with
 |---|---|---|
 | No title at all | The source sends no metadata and no metadata URL is set | Enable metadata in the encoder, or set the station's title and artwork URL |
 | Title is empty while nobody is listening | Titles are only tracked while the station has listeners | Expected |
-| Metadata URL set but stream titles shown | The URL is failing, so the gateway fell back to stream titles | Run the engine with `RUST_LOG=debug` and look for `metadata URL poll failed`; check the format in the [Station guide](STATION_GUIDE.md#title-and-artwork-url) |
+| Metadata URL set but stream titles shown | The URL is failing, so the gateway fell back to stream titles | Run the engine with `RUST_LOG=debug` and look for `metadata URL poll failed`; check the format in the [Station guide](STATION_GUIDE.md#titles-artist-and-artwork) |
+| The backup plays but the titles are the primary's, or the other way round | The station's *backup plays the same programme* setting does not match what the backup really is | Tick it only when both streams carry the same programme; otherwise the backup shows the titles in its own stream |
+| Not sure where a title is coming from | | The station list says under each title: from the title address, from the stream, the station's own, or the fallback file's name (`live.title_from` in the API). The **Test** buttons in the station form show what each address gives right now |
 | Wrong characters in titles | The source sends a legacy encoding other than Latin-1 | Set the encoder to UTF-8 |
 
 ## Uploading audio

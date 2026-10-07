@@ -20,6 +20,19 @@ pub struct NowPlaying {
     pub title: String,
     pub artist: String,
     pub artwork: String,
+    /// Where the title and artist came from: `metadata_url`, `stream`,
+    /// `station` (the station's own) or `file`; empty when there is none.
+    pub from: &'static str,
+}
+
+/// A stream carries one line, usually `Artist - Title`. Splits it at the first
+/// ` - ` so that it has the same two parts a metadata URL gives; a line without
+/// one is all title.
+pub fn split_stream_title(line: &str) -> (String, String) {
+    match line.split_once(" - ") {
+        Some((artist, title)) if !artist.trim().is_empty() && !title.trim().is_empty() => (artist.trim().to_string(), title.trim().to_string()),
+        _ => (String::new(), line.trim().to_string()),
+    }
 }
 
 impl NowPlaying {
@@ -68,11 +81,15 @@ pub fn parse(body: &str, base_url: &str) -> Option<NowPlaying> {
         return None;
     }
     let Ok(json) = serde_json::from_str::<Value>(body) else {
-        if body.starts_with('<') {
+        // A web page, or something that is not text at all (a picture, say), names nothing.
+        let first = body.lines().next().unwrap_or_default();
+        if body.starts_with('<') || first.chars().any(|c| c == '\u{fffd}' || (c.is_control() && c != '\t')) {
             return None;
         }
         let title = limit(body.lines().next().unwrap_or_default().trim().to_string(), 300);
-        return (!title.is_empty()).then(|| NowPlaying { title, ..NowPlaying::default() });
+        // One line of text is read the way a stream's title is.
+        let (artist, title) = split_stream_title(&title);
+        return (!title.is_empty()).then(|| NowPlaying { title, artist, artwork: String::new(), from: "metadata_url" });
     };
 
     let title = find_string(&json, TITLE_KEYS)?;
@@ -83,7 +100,7 @@ pub fn parse(body: &str, base_url: &str) -> Option<NowPlaying> {
         .filter(|url| matches!(url.scheme(), "http" | "https"))
         .map(String::from)
         .unwrap_or_default();
-    Some(NowPlaying { title: limit(title, 300), artist: limit(artist, 300), artwork })
+    Some(NowPlaying { title: limit(title, 300), artist: limit(artist, 300), artwork, from: "metadata_url" })
 }
 
 #[cfg(test)]
@@ -120,7 +137,9 @@ mod tests {
     #[test]
     fn plain_text_uses_first_line() {
         let np = parse("Artist - Track\nsecond line\n", BASE).unwrap();
-        assert_eq!(np.title, "Artist - Track");
+        // Read like a stream's title: split into its two parts, and shown to players as the same line.
+        assert_eq!((np.artist.as_str(), np.title.as_str()), ("Artist", "Track"));
+        assert_eq!(np.stream_title(), "Artist - Track");
     }
 
     #[test]
@@ -128,5 +147,23 @@ mod tests {
         assert_eq!(parse("<html><body>404</body></html>", BASE), None);
         assert_eq!(parse("   ", BASE), None);
         assert_eq!(parse(r#"{"listeners":3}"#, BASE), None);
+    }
+
+    #[test]
+    fn something_that_is_not_text_names_nothing() {
+        assert_eq!(parse("\u{fffd}PNG\r\n\u{1a}\n", BASE), None);
+        assert_eq!(parse("<html><body>Not found</body></html>", BASE), None);
+    }
+
+    #[test]
+    fn a_stream_title_is_split_into_artist_and_title() {
+        let split = |line: &str| split_stream_title(line);
+        assert_eq!(split("Miles Davis - So What"), ("Miles Davis".into(), "So What".into()));
+        // Only the first separator divides: the rest belongs to the title.
+        assert_eq!(split("AC/DC - Back in Black - Live"), ("AC/DC".into(), "Back in Black - Live".into()));
+        assert_eq!(split("Morning show"), (String::new(), "Morning show".into()));
+        assert_eq!(split("Jay-Z"), (String::new(), "Jay-Z".into()));
+        assert_eq!(split(" - Untitled"), (String::new(), "- Untitled".into()));
+        assert_eq!(split(""), (String::new(), String::new()));
     }
 }

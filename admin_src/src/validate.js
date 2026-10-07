@@ -121,6 +121,10 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     if (typeof body.silence_detection !== 'boolean') fail('silence_detection', 'must be true or false');
     else out.silence_detection = body.silence_detection;
   }
+  if (has(body, 'backup_titles_from_primary')) {
+    if (typeof body.backup_titles_from_primary !== 'boolean') fail('backup_titles_from_primary', 'must be true or false');
+    else out.backup_titles_from_primary = body.backup_titles_from_primary;
+  }
   if (has(body, 'noise_detection')) {
     if (typeof body.noise_detection !== 'boolean') fail('noise_detection', 'must be true or false');
     else out.noise_detection = body.noise_detection;

@@ -73,6 +73,7 @@ fn stage(pipe: &mut Pipeline, node: &str, relay: &Arc<Relay>, elapsed: Duration)
             ("title", now_playing.title.clone()),
             ("artist", now_playing.artist.clone()),
             ("artwork", now_playing.artwork.clone()),
+            ("title_from", now_playing.from.to_string()),
             ("content_type", info.as_ref().map(|i| i.content_type.clone()).unwrap_or_default()),
             ("bitrate", header("icy-br")),
             ("started_at", relay.started_at.to_string()),

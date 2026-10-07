@@ -151,7 +151,9 @@ Now-playing information has three possible origins:
 1. **In-stream ICY titles** from the source (the default).
 2. **The station's metadata URL**, polled every `METADATA_POLL_SECS` while the station
    has listeners. When it answers, it takes precedence. If it stops answering for
-   three polls, in-stream titles are used again.
+   three polls, in-stream titles are used again. It describes the primary; it is used
+   for the backup only when the station says the backup carries the same programme
+   (`backup_titles_from_primary`).
 3. **The station's own title, artist and uploaded image**, when neither of the above
    names anything, and while the fallback file plays.
 

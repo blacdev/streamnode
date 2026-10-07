@@ -93,7 +93,8 @@ curl -X PUT $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: appl
 | `name` | On create | Shown to listeners as the station name when the source supplies none |
 | `primary_url` | On create | The station's stream. `http` or `https`, public host |
 | `backup_url` | No | Failover source. Same codec as the primary |
-| `metadata_url` | No | Endpoint for title, artist and artwork; see the [Station guide](STATION_GUIDE.md#title-and-artwork-url) |
+| `metadata_url` | No | Endpoint for title, artist and artwork; see the [Station guide](STATION_GUIDE.md#titles-artist-and-artwork). Used while the primary plays |
+| `backup_titles_from_primary` | No | `true` when the backup carries the same programme, so `metadata_url` describes it too. Default `false`: the backup shows the titles in its own stream |
 | `artwork_url` | No | Station artwork, used when the metadata URL gives none |
 | `default_title`, `default_artist` | No | Up to 200 characters each. Shown when the stream and the metadata URL name nothing, when the metadata URL stops answering, and while the fallback file plays |
 | `artwork_file_id` | No | An uploaded image from the station's account, used when there is no other artwork or `artwork_url` does not answer with a picture. The response gives its public address as `default_artwork_url` |
@@ -139,6 +140,7 @@ The response is the station:
   "live": {
     "online": true, "listeners": 42, "source": "primary",
     "title": "Blue in Green", "artist": "Miles Davis", "artwork": "https://example.com/art/kob.jpg",
+    "title_from": "stream",
     "content_type": "audio/mpeg", "bitrate": 96, "connected_since": "2026-03-01T13:02:11.000Z"
   },
   "created_at": "...", "updated_at": "..."
@@ -595,6 +597,26 @@ curl $API/capacity -H "X-API-Key: $KEY"
 
 A monitoring job can poll this and alert on `add_server_recommended`.
 
+## Trying an address before saving
+
+`POST /probe` has a streaming server connect to a stream or a title address, through
+the same checks as any source, and report what it reads. Nothing is saved.
+
+```bash
+curl -X POST $API/probe -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"kind": "stream", "url": "https://encoder.example.com/live"}'
+```
+
+```json
+{ "ok": true, "content_type": "audio/mpeg", "format": "MP3 44100 Hz stereo", "bitrate_kbps": 96,
+  "name": "Power Beats FM", "carries_titles": true, "artist": "Miles Davis", "title": "Blue in Green" }
+```
+
+With `"kind": "titles"` the answer is what was found at a title address:
+`title`, `artist`, `artwork` and `artwork_works`. An address that cannot be used
+answers `{"ok": false, "error": "..."}` with the reason. It takes up to about ten
+seconds; `503 no_streaming_server` means no engine is running to try it with.
+
 ## Public endpoint: now playing
 
 No authentication, callable from any web page:
@@ -611,6 +633,10 @@ curl https://stream.example.com/api/v1/public/stations/powerbeats/now-playing
   "playlist_urls": { "m3u": "https://stream.example.com/powerbeats.m3u", "pls": "https://stream.example.com/powerbeats.pls" }
 }
 ```
+
+`title_from` says where the title and artist come from: `metadata_url`, `stream`
+(the playing stream, split at the first ` - ` into artist and title), `station` (the
+station's own defaults) or `file` (the fallback file's name).
 
 Responses may be cached for 5 seconds. `title`, `artist` and `artwork` are what is on
 air; whatever is missing there (or everything, while nobody is listening) is filled

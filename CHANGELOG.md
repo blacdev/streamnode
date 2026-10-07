@@ -4,6 +4,31 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.15.0] - 2026-10-07
+
+### Added
+
+- **Titles follow the source that is playing.** The title address (`metadata_url`)
+  describes the primary. While the backup plays, the titles in the backup's own stream
+  are shown, unless the station says the backup carries the same programme
+  (`backup_titles_from_primary`). Stations that already had both a backup and a title
+  address keep the old behaviour (the setting is turned on for them).
+- **Artist and title in the same shape from every source.** A title from a stream, or
+  a line of plain text from a title address, is split at the first ` - ` into artist
+  and title. Players are sent the same single line as before.
+- **Where a title came from** is reported (`title_from`: `metadata_url`, `stream`,
+  `station`, `file`) in the API and under each title in the station list.
+- **Test buttons** in the station form, and `POST /probe`: a streaming server tries a
+  stream or a title address and says what it reads from it, before anything is saved.
+
+### Changed
+
+- **The station form has tabs** (Streams, Titles and artwork, When audio stops, Plan)
+  in a wider dialog with the Save button always in view, and its wording was rewritten.
+  A field that is wrong is shown on its tab.
+- An artwork address is shown only once the engine has found it to work, when the
+  station has an uploaded image to show in the meantime.
+
 ## [2.14.0] - 2026-10-06
 
 ### Added
@@ -31,6 +56,17 @@ All notable changes to this project are recorded here. The format follows
 - A failed Let's Encrypt attempt no longer stops the installer: it explains the
   reason and leaves the retries to the scheduler.
 - Switching from Let's Encrypt back to `--tls selfsigned` replaces the certificate.
+- **The installer asks for the HTTP and HTTPS ports** (defaults 80 and 443; Enter
+  keeps them) and refuses a port another program, such as Nginx Proxy Manager,
+  already listens on, naming it. Without a terminal, `--http-port`/`--https-port`
+  are checked the same way.
+- `--tls external` no longer moves the HTTPS port to 8443 whenever it was 443: only
+  when another program holds it, and then it is recorded (`HTTPS_PORT_AUTO`) and put
+  back when HTTPS is served on this server again. Before, switching from external to
+  Let's Encrypt left HTTPS on 8443, so `https://DOMAIN/` did not reach the gateway.
+- With HTTPS on a port other than 443, `http://DOMAIN:PORT/admin/` is redirected to
+  `https://DOMAIN:HTTPS_PORT/admin/` instead of to port 443.
+- `scripts/letsencrypt.sh` warns when HTTPS is not on port 443.
 
 ## [2.13.0] - 2026-10-05
 
