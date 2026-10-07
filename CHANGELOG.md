@@ -19,6 +19,12 @@ All notable changes to this project are recorded here. The format follows
 - The station form (**When audio stops**) and the Files tab point to it, with download
   buttons. `GET /api/v1/public/converter` and `/public/converter/{windows|linux}`.
 
+### Fixed
+
+- StreamNode Converter failed to start on Windows computers without the Visual C++
+  Redistributable ("vcruntime140.dll missing"). The runtime is now built into the
+  program, and the build fails if it is not.
+
 ## [2.15.0] - 2026-10-07
 
 ### Added

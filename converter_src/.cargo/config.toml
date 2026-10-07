@@ -1,0 +1,8 @@
+# On Windows the C runtime is built into the program. Otherwise it needs
+# vcruntime140.dll, which is only on computers where the Visual C++
+# Redistributable happens to be installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

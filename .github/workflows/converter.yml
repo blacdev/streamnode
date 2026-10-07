@@ -65,6 +65,15 @@ jobs:
       - name: Build
         working-directory: converter_src
         run: cargo build --release
+      # The program must start on a computer with nothing else installed.
+      - name: Check that the Windows program needs no extra runtime
+        if: matrix.name == 'windows'
+        working-directory: converter_src
+        run: |
+          if grep -a -i -q "vcruntime140" target/release/streamnode-converter.exe; then
+            echo "The program still needs vcruntime140.dll: the C runtime was not built in." >&2
+            exit 1
+          fi
       - name: Fetch FFmpeg
         run: |
           name="${FFMPEG_BUILD}-${{ matrix.ffmpeg }}-${FFMPEG_VERSION}"
