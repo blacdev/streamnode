@@ -152,7 +152,7 @@ $('tabs').addEventListener('click', (event) => {
     button.setAttribute('aria-selected', String(button === event.target));
     $(`tab-${button.dataset.tab}`).hidden = button !== event.target;
   }
-  if (tab === 'files') loadFiles().catch(fail);
+  if (tab === 'files') { loadFiles().catch(fail); showConverter(null).catch(() => {}); }
   if (tab === 'billing') loadBilling().catch(fail);
   if (tab === 'settings') Promise.all([loadSettings(), loadRates()]).catch(fail);
   if (tab === 'keys') loadKeys().catch(fail);
@@ -242,6 +242,19 @@ function featureWords(features) {
   return `Available: ${on.join(', ')}. Not available: ${off.join(', ')}.`;
 }
 
+// Where to get StreamNode Converter, loaded once, and this station's address to give it.
+async function showConverter(station) {
+  if (!state.converter) state.converter = await api('GET', '/public/converter');
+  const c = state.converter;
+  for (const [platform, ids] of [['windows', ['converterWindows', 'filesConverterWindows']], ['linux', ['converterLinux', 'filesConverterLinux']]]) {
+    for (const id of ids) $(id).href = c.downloads[platform].url;
+  }
+  $('converterImage').textContent = c.image;
+  $('converterStream').hidden = !station;
+  $('converterUrl').textContent = station ? station.stream_url : '';
+}
+$('converterCopy').addEventListener('click', () => navigator.clipboard.writeText($('converterUrl').textContent).then(() => toast('Address copied'), () => {}));
+
 // The table of supported stream types, loaded once.
 async function showStreamTypes() {
   if (state.streamTypes) return;
@@ -277,6 +290,7 @@ async function openStationForm(station) {
       : `This station's stream is ${format.summary}, so idents and fallback audio cannot be used on it.`;
   $('stationStream').textContent = format ? `Detected: ${format.summary}. ${featureWords(format.features)} ${format.features.fallback_audio && !Object.values(format.features).every(Boolean) ? format.notes : ''}` : '';
   showStreamTypes().catch(() => {});
+  showConverter(station).catch(() => {});
   if (isAdmin()) {
     // The account the station belongs to, and what it is charged for.
     const { users } = await api('GET', '/users');

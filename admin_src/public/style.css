@@ -173,4 +173,15 @@ label.check.multiline input { margin-top: 3px; }
 .result.ok { border-left: 3px solid var(--good); }
 .result.bad { border-left: 3px solid var(--bad); }
 .small { font-size: 12px; }
+/* A highlighted pointer to something worth knowing about. */
+.callout { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.callout strong { display: block; margin-bottom: 2px; }
+.callout > span { color: var(--muted); font-size: 13px; }
+.callout small { margin-top: 6px; overflow-wrap: anywhere; }
+.callout code { color: var(--text); }
+.callout-actions { display: flex; gap: 8px; margin-top: 8px; }
+.callout-actions a { flex: 1; }
+a.button { display: inline-block; text-align: center; text-decoration: none; white-space: nowrap; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
+a.button:hover { border-color: var(--muted); }
+a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .from { display: block; font-size: 12px; color: var(--muted); }

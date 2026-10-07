@@ -14,6 +14,7 @@ const certificate = require('./certificate');
 const media = require('./media');
 const image = require('./image');
 const probe = require('./probe');
+const converter = require('./converter');
 const settings = require('./settings');
 const dropbox = require('./dropbox');
 const streamTypes = require('./streamtypes');
@@ -121,6 +122,17 @@ router.get('/stream-types', (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600');
   res.json({ stream_types: streamTypes.TYPES });
 });
+
+// StreamNode Converter, the desktop program that converts files into a
+// stream's format: where to get it, and the downloads themselves. Open, since
+// the program is public and is run on the owner's own computer.
+router.get('/public/converter', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json(converter.describe(stations.baseUrl(req)));
+});
+router.get('/public/converter/:platform', wrap(async (req, res) => {
+  await converter.send(res, req.params.platform);
+}));
 
 router.post('/auth/login', wrap(async (req, res) => {
   const { username, password } = req.body || {};

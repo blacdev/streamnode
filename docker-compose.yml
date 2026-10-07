@@ -75,6 +75,8 @@ services:
       DOMAIN: ${DOMAIN:-}
       # Repository watched for new versions ("owner/name"); empty turns the check off.
       UPDATE_REPO: ${UPDATE_REPO:-}
+      # Where StreamNode Converter's downloads are published; empty follows UPDATE_REPO.
+      CONVERTER_IMAGE: ${CONVERTER_IMAGE:-}
       UPDATE_BRANCH: ${UPDATE_BRANCH:-main}
       DEFAULT_MAX_STATIONS: ${DEFAULT_MAX_STATIONS:-5}
       # Local copies of uploaded audio that is also kept in Dropbox, in megabytes.

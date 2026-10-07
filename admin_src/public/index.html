@@ -63,7 +63,8 @@
         <p class="notice prose"><strong>It is best to upload a file that is already in the station's stream format</strong>
           (the same format, bitrate, sample rate and mono or stereo; MP3 at a constant bitrate; AAC as an .aac file): it is then played exactly as you made it.
           A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be converted for you, if you agree to it: it is re-encoded, which costs a little quality when the upload was already compressed, its loudness is matched to the stream, and the converted file takes the place of the one you uploaded. <span id="fileLimits"></span>
-          Station images (JPEG, PNG, WebP or GIF) are kept here too and count toward the same storage.</p>
+          Station images (JPEG, PNG, WebP or GIF) are kept here too and count toward the same storage.
+          To prepare files yourself, <strong>StreamNode Converter</strong> (Windows and Linux) converts any audio or video file to a stream's format on your own computer: <a id="filesConverterWindows" download>download for Windows</a> or <a id="filesConverterLinux" download>for Linux</a>.</p>
         <form id="fileForm" class="card wide-card">
           <h3>Upload a file</h3>
           <label>Audio file or image <input name="file" type="file" accept="audio/*,image/jpeg,image/png,image/webp,image/gif,.mp3,.aac,.wav,.flac,.m4a,.ogg" required></label>
@@ -365,16 +366,24 @@
         </section>
 
         <section data-spanel="failover" role="tabpanel" hidden>
-          <p class="lead">When a stream has no audio the station moves on: <strong>primary</strong>, then <strong>backup</strong>, then your <strong>fallback audio</strong>. It returns as soon as a stream is back.</p>
+          <p class="lead">With no audio the station moves on: <strong>primary</strong>, <strong>backup</strong>, then <strong>fallback audio</strong>. It returns when a stream is back.</p>
           <div class="cols">
             <div class="group">
               <h3>What counts as no audio</h3>
-              <label>Seconds to wait before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required>
-                <small>How long a stream may be down or silent first.</small></label>
+              <label>Seconds a stream may be silent before switching <input name="failover_delay_secs" type="number" min="1" max="300" value="6" required></label>
               <label class="check"><input type="checkbox" name="silence_detection" checked> Silence counts as no audio</label>
               <label class="check"><input type="checkbox" name="noise_detection" checked> Hiss and steady noise count as no audio</label>
               <label>Silence level, in dB <span class="optional">optional</span> <input name="silence_threshold_db" type="number" min="-90" max="-10" placeholder="-55 (the server's setting)">
                 <small>Quieter than this is silence. Nearer 0 treats more as silence.</small></label>
+              <div class="callout" id="converterBox">
+                <strong>Need a file in this station's format?</strong>
+                <span>StreamNode Converter, a free program for Windows and Linux, converts any audio or video file to match your stream.</span>
+                <div class="callout-actions">
+                  <a class="button primary" id="converterWindows" download>Download for Windows</a>
+                  <a class="button" id="converterLinux" download>Download for Linux</a>
+                </div>
+                <small><code id="converterImage"></code><span id="converterStream"><br>Paste this into it: <code id="converterUrl"></code> <button type="button" class="link" id="converterCopy">Copy</button></span></small>
+              </div>
             </div>
             <div class="group">
               <h3>What plays instead</h3>
@@ -385,10 +394,10 @@
                 <small>Loops while neither stream has audio.</small>
                 <input name="fallback_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
               <label class="check multiline"><input type="checkbox" name="convert"> <span>Convert uploads that are not in the stream's format. The converted file replaces what I upload.</span></label>
+              <p class="muted small"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
+              <p id="stationUpload" class="muted small" role="status"></p>
             </div>
           </div>
-          <p class="muted small"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
-          <p id="stationUpload" class="muted small" role="status"></p>
         </section>
 
         <section data-spanel="plan" role="tabpanel" data-admin-panel hidden>

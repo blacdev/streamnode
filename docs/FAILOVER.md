@@ -145,6 +145,14 @@ ffmpeg -i input.wav -c:a libmp3lame -b:a 96k -ar 44100 -ac 2 output.mp3         
 ffmpeg -i input.wav -c:a aac -b:a 96k -ar 44100 -ac 2 -f adts output.aac         # AAC
 ```
 
+### Converting files yourself
+
+[StreamNode Converter](CONVERTER.md) is a free program for Windows and Linux that does
+this on your own computer: give it your stream's address and it converts any audio or
+video file to the stream's exact format and loudness. Download it from the station
+form (**When audio stops**) or the Files tab. A file prepared this way is used by the
+gateway exactly as it is.
+
 ### Letting the gateway convert a file
 
 A file in another format (WAV, FLAC, M4A, Ogg, or MP3/AAC with other settings) can be

@@ -1,0 +1,136 @@
+# Builds StreamNode Converter, the desktop program that converts files into a
+# stream's format, for Linux and Windows, and publishes the two downloads to
+# the GitHub container registry beside the engine and admin images:
+#
+#   ghcr.io/<owner>/<repo>/converter
+#
+# It is a file package there, not something to "docker run": the dashboard
+# hands the right download to whoever asks for it (GET
+# /api/v1/public/converter/{windows|linux}), and `oras pull` fetches both.
+# Release tags also get the two files attached to the GitHub release.
+#
+# Tags: "latest" for the default branch, "vX.Y.Z" for release tags, and
+# "sha-<commit>" for every build.
+name: Converter
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+    paths: ["converter_src/**", ".github/workflows/converter.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # The FFmpeg that ships beside the program: an LGPL build of a release branch.
+  FFMPEG_BUILD: ffmpeg-n8.1-latest
+  FFMPEG_VERSION: "8.1"
+
+jobs:
+  build:
+    name: Build for ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            # An older Ubuntu, so the program runs on older Linux systems too.
+            runner: ubuntu-22.04
+            ffmpeg: linux64-lgpl
+            archive: tar.xz
+            binary: streamnode-converter
+            package: streamnode-converter-linux-x86_64.tar.gz
+          - name: windows
+            runner: windows-latest
+            ffmpeg: win64-lgpl
+            archive: zip
+            binary: streamnode-converter.exe
+            package: streamnode-converter-windows-x86_64.zip
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: converter_src
+      - name: Test
+        working-directory: converter_src
+        run: cargo test --release
+      - name: Build
+        working-directory: converter_src
+        run: cargo build --release
+      - name: Fetch FFmpeg
+        run: |
+          name="${FFMPEG_BUILD}-${{ matrix.ffmpeg }}-${FFMPEG_VERSION}"
+          curl -fsSL -o "ffmpeg.${{ matrix.archive }}" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${name}.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = zip ]; then unzip -q ffmpeg.zip; else tar -xf ffmpeg.tar.xz; fi
+          mv "$name" ffmpeg-build
+      - name: Package
+        run: |
+          out=streamnode-converter
+          mkdir -p "$out/licenses"
+          cp "converter_src/target/release/${{ matrix.binary }}" "$out/"
+          # Only ffmpeg itself is needed; ffprobe and ffplay are left out to keep the download small.
+          cp ffmpeg-build/bin/ffmpeg* "$out/" && rm -f "$out"/ffprobe* "$out"/ffplay*
+          cp ffmpeg-build/LICENSE.txt "$out/licenses/FFmpeg-LICENSE.txt"
+          cp converter_src/assets/fonts/*-OFL.txt "$out/licenses/"
+          cp converter_src/package/README.txt "$out/"
+          if [ "${{ matrix.name }}" = windows ]; then
+            7z a -tzip -mx=9 "${{ matrix.package }}" "$out" > /dev/null
+          else
+            chmod +x "$out/streamnode-converter" "$out/ffmpeg"
+            tar -czf "${{ matrix.package }}" "$out"
+          fi
+          ls -l "${{ matrix.package }}"
+      - name: Check that the packaged program starts its converter
+        if: matrix.name == 'linux'
+        run: ./streamnode-converter/ffmpeg -hide_banner -encoders | grep -E "libmp3lame|libopus|libvorbis| aac "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: converter-${{ matrix.name }}
+          path: ${{ matrix.package }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to ghcr.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: converter-*
+          merge-multiple: true
+      - uses: oras-project/setup-oras@v1
+      - name: Push the downloads to the registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/converter"
+          echo "$GITHUB_TOKEN" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          tags="sha-${GITHUB_SHA::7}"
+          if [ "$GITHUB_REF" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then tags="$tags,latest"; fi
+          case "$GITHUB_REF" in refs/tags/v*) tags="$tags,${GITHUB_REF#refs/tags/}" ;; esac
+          # Each file is a layer named by its file name; that name is how the dashboard finds the right one.
+          oras push "$image:$tags" \
+            --artifact-type application/vnd.streamnode.converter \
+            --annotation "org.opencontainers.image.title=StreamNode Converter" \
+            --annotation "org.opencontainers.image.description=Desktop program that converts audio and video files into a stream's format (Linux and Windows downloads)" \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            streamnode-converter-linux-x86_64.tar.gz:application/gzip \
+            streamnode-converter-windows-x86_64.zip:application/zip
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            streamnode-converter-linux-x86_64.tar.gz
+            streamnode-converter-windows-x86_64.zip

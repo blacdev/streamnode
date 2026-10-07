@@ -55,6 +55,10 @@ module.exports = {
   updateRepo: text('UPDATE_REPO'),
   updateBranch: text('UPDATE_BRANCH', 'main'),
   updateCheckMs: int('UPDATE_CHECK_HOURS', 6) * 3600 * 1000,
+  // Where StreamNode Converter's downloads are published: beside the images of the
+  // repository this install follows, unless CONVERTER_IMAGE names another place.
+  converterImage: text('CONVERTER_IMAGE', `ghcr.io/${text('UPDATE_REPO', 'blacdev/streamnode').toLowerCase()}/converter`).replace(/:[^/:]*$/, ''),
+  converterTag: text('CONVERTER_TAG', 'latest'),
   // Directory shared with the host, through which the dashboard steers the updater.
   controlDir: text('CONTROL_DIR', '/control'),
 

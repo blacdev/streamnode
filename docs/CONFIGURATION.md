@@ -17,6 +17,7 @@ Only the services whose settings changed are restarted.
 | `IMAGE_PREFIX` | your repository's registry | Where the images are, e.g. `ghcr.io/acme/streamnode`. The images are `<prefix>/engine` and `<prefix>/admin` |
 | `IMAGE_TAG` | `latest` | Version to run: `latest`, or a release such as `v2.4.0` (`--image-tag`) |
 
+| `CONVERTER_IMAGE` | `ghcr.io/<UPDATE_REPO>/converter` | Where [StreamNode Converter](CONVERTER.md)'s downloads are published. `CONVERTER_TAG` (default `latest`) picks the version handed out |
 | `UPDATE_REPO` | the repository installed from | Repository watched for new versions, as `owner/name`. Empty turns the dashboard's update notice off |
 | `UPDATE_BRANCH` | `main` | Branch whose latest commit counts as the newest version |
 | `UPDATE_FOLLOW_MASTER` | `true` | On a slave node: follow the version the master runs. `false` leaves the slave to be updated by hand |

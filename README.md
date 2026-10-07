@@ -122,6 +122,7 @@ the other commands.
 | [Station guide](docs/STATION_GUIDE.md) | Station owners | What to provide, title and artwork URL formats |
 | [Costs, capacity, billing and limits](docs/BILLING.md) | Operators, developers | What a listener costs, the add-a-server calculator, prices per station, email notices |
 | [Failover, idents and fallback audio](docs/FAILOVER.md) | Station owners, operators | What plays when a stream stops, uploading files, quotas, Dropbox |
+| [StreamNode Converter](docs/CONVERTER.md) | Station owners | The desktop program (Windows, Linux) that converts files into a stream's format |
 | [Listener and player guide](docs/PLAYERS.md) | Station owners, support | Stream URLs, player compatibility, web player embed |
 | [Changelog](CHANGELOG.md) | Everyone | Release history |
 
@@ -140,6 +141,7 @@ demo/                 Demo radio source used by scripts/try-local.sh
 haproxy.cfg           Edge proxy: TLS, routing, rate limiting
 rust_src/             Audio relay engine (Rust)
 admin_src/            Management API, dashboard, statistics (Node.js)
+converter_src/        StreamNode Converter: desktop program that converts files to a stream's format (Rust)
   migrations/         Database schema, applied automatically on start
   public/             Dashboard
 scripts/              update, add-server, uninstall, backup, restore, Let's Encrypt, local test
@@ -151,4 +153,5 @@ docs/                 Documentation
 ```bash
 cd rust_src && cargo test       # relay engine
 cd admin_src && npm install && npm test   # management API
+cd converter_src && cargo test   # StreamNode Converter (runs real conversions when ffmpeg is installed)
 ```
