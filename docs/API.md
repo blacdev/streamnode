@@ -248,6 +248,10 @@ SHA-256 with the station:
 - A file that is not in the stream's format is refused (`ident_url` in the error
   details) and never converted: converting needs the owner's agreement, which an
   address cannot give.
+- If the server's copy of such a file is missing (a lost disk, a cleared cache), it is
+  fetched again from its address when it is next needed or when the station is next
+  updated, and checked against the same SHA-256. Uploaded files cannot be fetched
+  again and still answer `file_missing`.
 - Choosing an uploaded file with `ident_file_id` clears `ident_url`; the station
   response shows `ident_url`, `ident_sha256`, `fallback_url` and `fallback_sha256`.
 

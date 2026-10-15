@@ -129,13 +129,18 @@ async function apply(fields, given, { owner, station, current, name }) {
     }
     fields[`${use}_url`] = spec.url;
     fields[`${use}_sha256`] = spec.sha256;
-    // Already in use: nothing to fetch.
-    if (current && current[`${use}_sha256`] === spec.sha256 && current[idKey]) {
-      if (!has(fields, idKey)) continue;
-    }
-    const same = await db.query("SELECT id FROM media_files WHERE user_id = $1 AND sha256 = $2 AND status = 'ready' ORDER BY id LIMIT 1", [owner.id, spec.sha256]);
+    // A file with this checksum already in the library is used, as long as its
+    // content is still here; if its copy has gone, it is fetched again.
+    const same = await db.query(`SELECT ${media.COLUMNS} FROM media_files WHERE user_id = $1 AND sha256 = $2 AND status = 'ready' ORDER BY id LIMIT 1`, [owner.id, spec.sha256]);
     if (same.rows[0]) {
-      fields[idKey] = same.rows[0].id;
+      if (!(await media.available(same.rows[0]))) {
+        try {
+          await media.restoreCopy(same.rows[0], await download(spec.url, spec.sha256));
+        } catch (err) {
+          throw invalid([{ field: `${use}_url`, message: `cannot be used: the stored copy is missing and ${err.message}` }]);
+        }
+      }
+      if (!(current && current[idKey] === same.rows[0].id)) fields[idKey] = same.rows[0].id;
       continue;
     }
     let buffer;

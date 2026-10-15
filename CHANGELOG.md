@@ -14,6 +14,9 @@ All notable changes to this project are recorded here. The format follows
   station's `ident_file_id` / `fallback_file_id`. For systems that keep station files
   themselves, such as Airwave OS. Uploads, Dropbox storage and stations that use them
   are unchanged. Migration `014_remote_files.sql` (additive). [API](docs/API.md#files-given-by-address)
+- A file given by address whose copy on the server has gone is fetched again from its
+  address (and checked against its SHA-256) when it is next read or the station is next
+  updated, instead of failing with `file_missing`.
 - `GET /api/v1/capabilities` (open): the features this server supports, so a client
   can check before using one.
 - `docs/contracts/airwave-station-sync.json`: the payload Airwave OS sends, tested in

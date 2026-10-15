@@ -99,3 +99,9 @@ test('contract: Airwave OS station payload', () => {
   const routes = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes.js'), 'utf8');
   for (const feature of contract.capabilities_response.features) assert.ok(routes.includes(`'${feature}'`), `capability ${feature} is not advertised`);
 });
+
+test('a missing copy is put back only from content that matches its checksum', async () => {
+  const media = require('../src/media');
+  const row = { id: 999999, name: 'x', sha256: sha(Buffer.from('right')) };
+  await assert.rejects(media.restoreCopy(row, Buffer.from('wrong')), /does not match/);
+});
