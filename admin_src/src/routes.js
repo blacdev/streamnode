@@ -12,6 +12,7 @@ const cluster = require('./cluster');
 const updates = require('./updates');
 const certificate = require('./certificate');
 const media = require('./media');
+const remoteFiles = require('./remote_files');
 const image = require('./image');
 const probe = require('./probe');
 const converter = require('./converter');
@@ -27,6 +28,9 @@ const v = require('./validate');
 const { wrap, badRequest, invalid, forbidden, notFound, conflict, HttpError } = require('./errors');
 
 const router = express.Router();
+
+// Features a client may check for at GET /capabilities. Only ever added to.
+const CAPABILITIES = ['ident_url', 'fallback_url'];
 const isAdmin = (req) => req.user.role === 'admin';
 const UNIQUE_VIOLATION = '23505';
 const FK_VIOLATION = '23503';
@@ -53,6 +57,18 @@ async function loadStation(req) {
 async function presentOne(req, row) {
   const live = await stations.liveFor([row.slug]);
   return stations.present(row, live.get(row.slug), req);
+}
+
+// Idents and fallback audio given by address (ident_url, fallback_url): fetched
+// into the owner's library and set as the station's files. See remote_files.js.
+async function withRemoteFiles(req, fields, current = null) {
+  const given = remoteFiles.parse(req.body);
+  const choosesFile = current && ['ident', 'fallback'].some((use) => fields[`${use}_file_id`] !== undefined && current[`${use}_url`]);
+  if (!Object.keys(given).length && !choosesFile) return fields;
+  const ownerId = fields.user_id !== undefined ? fields.user_id : current ? current.user_id : req.user.id;
+  const { rows } = await db.query('SELECT id, role, storage_quota_mb FROM users WHERE id = $1', [ownerId]);
+  if (!rows[0]) throw invalid([{ field: 'user_id', message: 'is not a user' }]);
+  return remoteFiles.apply(fields, given, { owner: rows[0], station: current, current, name: fields.name || (current && current.name) });
 }
 
 function assignments(fields, startAt = 1) {
@@ -119,6 +135,14 @@ router.get('/public/stations/:slug/artwork', wrap(async (req, res) => {
 
 // Which kinds of stream can be relayed and what is available on each. Open, so
 // that it can be read before an account exists.
+// What this server supports beyond the base API, so that systems driving it
+// (Airwave OS, for one) can check before using a newer feature. Open: it says
+// nothing about any station or account.
+router.get('/capabilities', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ features: CAPABILITIES });
+});
+
 router.get('/stream-types', (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600');
   res.json({ stream_types: streamTypes.TYPES });
@@ -313,7 +337,7 @@ router.get('/station-addresses/check', wrap(async (req, res) => {
 }));
 
 router.post('/stations', wrap(async (req, res) => {
-  const fields = v.parseStation(req.body, { isAdmin: isAdmin(req) });
+  const fields = await withRemoteFiles(req, v.parseStation(req.body, { isAdmin: isAdmin(req) }));
   const row = await createStation(req, fields);
   res.status(201).json(await presentOne(req, row));
 }));
@@ -334,10 +358,10 @@ router.put('/stations/:slug', wrap(async (req, res) => {
     throw conflict('slug_taken', 'A station with this slug already exists.');
   }
   if (existing) {
-    const fields = v.parseStation(req.body, { partial: true, isAdmin: isAdmin(req), allowSlug: false });
+    const fields = await withRemoteFiles(req, v.parseStation(req.body, { partial: true, isAdmin: isAdmin(req), allowSlug: false }), existing);
     return res.json(await presentOne(req, await updateStation(req, existing, fields)));
   }
-  const fields = v.parseStation({ ...req.body, slug }, { isAdmin: isAdmin(req) });
+  const fields = await withRemoteFiles(req, v.parseStation({ ...req.body, slug }, { isAdmin: isAdmin(req) }));
   res.status(201).json(await presentOne(req, await createStation(req, fields)));
 }));
 
@@ -347,6 +371,7 @@ router.patch('/stations/:slug', wrap(async (req, res) => {
   if (!isAdmin(req) && req.body && req.body.slug !== undefined) {
     throw invalid([{ field: 'slug', message: 'can only be changed by an administrator' }]);
   }
+  await withRemoteFiles(req, fields, current);
   res.json(await presentOne(req, await updateStation(req, current, fields)));
 }));
 

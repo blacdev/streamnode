@@ -124,6 +124,8 @@ not want carried over, and `POST` the rest with a new name.
 | `silence_threshold_db` | No | How quiet counts as silent for this station, -90 to -10. `null` (default) uses the server's setting, -55 |
 | `ident_file_id` | No | An [uploaded file](#audio-files) played once at every change of source: on leaving a failed stream and on returning to one that is back. `null` clears |
 | `fallback_file_id` | No | An uploaded file looped while neither stream has audio. `null` clears |
+| `ident_url`, `ident_sha256` | No | The ident given by address instead of `ident_file_id`, with its SHA-256 (64 hex characters). See [Files given by address](#files-given-by-address). `ident_url: null` clears |
+| `fallback_url`, `fallback_sha256` | No | The same for the fallback file. `fallback_url: null` clears |
 | `user_id` | No | Administrators only. Owning account; defaults to the caller |
 | `is_active` | No | Administrators only. `false` suspends |
 
@@ -225,6 +227,38 @@ curl -X DELETE $API/stations/powerbeats -H "X-API-Key: $KEY"
   Configuration and history are kept.
 - Deleting removes the station **and all of its statistics**. Read final usage first.
   Tenants can delete their own stations; suspending is administrator-only.
+
+### Files given by address
+
+For systems that keep a station's files themselves (Airwave OS, for one). Instead
+of uploading an ident or fallback file and passing its id, send its address and
+SHA-256 with the station:
+
+```json
+{ "ident_url": "https://files.example.com/stations/7/ident.mp3", "ident_sha256": "1a2e…de38" }
+```
+
+- The file is downloaded once (no redirects, at most 20 MB, the address must be
+  public unless `ALLOW_PRIVATE_SOURCES=true`), its SHA-256 is checked, and it goes
+  through exactly the checks of an [upload](#audio-files) for that use and station.
+  It is then kept in the station account's library and becomes the station's
+  `ident_file_id` / `fallback_file_id`.
+- The checksum names the file: when the account already holds a file with that
+  SHA-256, nothing is downloaded. Sending the same fields on every update is free.
+- A file that is not in the stream's format is refused (`ident_url` in the error
+  details) and never converted: converting needs the owner's agreement, which an
+  address cannot give.
+- Choosing an uploaded file with `ident_file_id` clears `ident_url`; the station
+  response shows `ident_url`, `ident_sha256`, `fallback_url` and `fallback_sha256`.
+
+Check that a server supports this before using it:
+
+```
+GET /api/v1/capabilities          (no authentication)
+{ "features": ["ident_url", "fallback_url"] }
+```
+
+An older server answers 404 and ignores these fields. Features are only ever added.
 
 ## Audio files
 

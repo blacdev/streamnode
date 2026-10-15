@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Idents and fallback audio by address.** `ident_url` / `fallback_url` with their
+  SHA-256 on a station: the file is downloaded once, checked against the checksum and
+  the stream's format like an upload, kept in the account's library and set as the
+  station's `ident_file_id` / `fallback_file_id`. For systems that keep station files
+  themselves, such as Airwave OS. Uploads, Dropbox storage and stations that use them
+  are unchanged. Migration `014_remote_files.sql` (additive). [API](docs/API.md#files-given-by-address)
+- `GET /api/v1/capabilities` (open): the features this server supports, so a client
+  can check before using one.
+- `docs/contracts/airwave-station-sync.json`: the payload Airwave OS sends, tested in
+  this repository and in Airwave OS.
+
 ## [2.17.0] - 2026-10-08
 
 ### Added
