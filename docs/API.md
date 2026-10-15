@@ -126,6 +126,8 @@ not want carried over, and `POST` the rest with a new name.
 | `fallback_file_id` | No | An uploaded file looped while neither stream has audio. `null` clears |
 | `ident_url`, `ident_sha256` | No | The ident given by address instead of `ident_file_id`, with its SHA-256 (64 hex characters). See [Files given by address](#files-given-by-address). `ident_url: null` clears |
 | `fallback_url`, `fallback_sha256` | No | The same for the fallback file. `fallback_url: null` clears |
+| `geo_mode` | No | Which countries may tune in: `off` (default), `block` (all but `geo_countries`), `allow` (only `geo_countries`). Needs `GEO_ENABLED=true` on the server; the response's `geo_status` says whether it is in force. See [GEO.md](GEO.md) |
+| `geo_countries` | No | Two-letter country codes for `geo_mode` |
 | `user_id` | No | Administrators only. Owning account; defaults to the caller |
 | `is_active` | No | Administrators only. `false` suspends |
 

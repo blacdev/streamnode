@@ -6,6 +6,10 @@ const DEFAULTS = Object.freeze({
   ident_max_seconds: 5,
   // Upload space for an account that has no quota of its own, in megabytes.
   default_storage_quota_mb: 500,
+  // Country database for listener countries (GEO_ENABLED). {YYYY} and {MM} are
+  // filled in; DB-IP's free "IP to Country Lite" is licensed CC BY 4.0, which
+  // asks for "IP geolocation by DB-IP" (https://db-ip.com) to be shown.
+  geo_database_url: 'https://download.db-ip.com/free/dbip-country-lite-{YYYY}-{MM}.csv.gz',
 });
 
 let cache = null;

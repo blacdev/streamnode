@@ -4,7 +4,7 @@ const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, backup_titles_from_primary, ident_url, ident_sha256, fallback_url, fallback_sha256, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, backup_titles_from_primary, ident_url, ident_sha256, fallback_url, fallback_sha256, geo_mode, geo_countries, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -228,6 +228,10 @@ function present(row, live, req) {
     ident_sha256: row.ident_sha256 || null,
     fallback_url: row.fallback_url || null,
     fallback_sha256: row.fallback_sha256 || null,
+    // Countries the station may be heard in; geo_status says whether the rule is in force on this server.
+    geo_mode: row.geo_mode || 'off',
+    geo_countries: row.geo_countries || [],
+    geo_status: require('./geo').statusFor(row),
     default_title: row.default_title,
     default_artist: row.default_artist,
     artwork_file_id: row.artwork_file_id,

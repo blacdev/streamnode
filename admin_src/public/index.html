@@ -329,6 +329,16 @@
             <span class="with-test"><input name="backup_url" type="url" placeholder="https://backup.example.com/live"><button type="button" data-test="stream" data-for="backup_url">Test</button></span>
             <small>Plays when the primary is down or silent. It may carry a different programme.</small>
             <small class="result" data-result="backup_url" role="status"></small></label>
+          <div class="cols">
+            <label>Countries <select name="geo_mode">
+                <option value="off">Everywhere</option>
+                <option value="block">Everywhere except the countries listed</option>
+                <option value="allow">Only the countries listed</option>
+              </select>
+              <small id="geoStatus">Where listeners may tune in, by the country of their address.</small></label>
+            <label>Country codes <span class="optional">optional</span> <input name="geo_countries" placeholder="NG, GH, GB" maxlength="1000" autocomplete="off">
+              <small>Two-letter codes, separated by commas. Refused listeners are told the station is not available in their country.</small></label>
+          </div>
           <details><summary>Which streams are supported</summary>
             <div class="tablewrap"><table id="streamTypes"></table></div>
             <p class="muted">Every listed format is relayed unchanged. What differs is what the gateway can add to it. The type is detected the first time the station plays.</p>
@@ -490,6 +500,11 @@
     <h3>Data sent to listeners</h3>
     <div id="chartBytes" class="chart"></div>
     <details><summary>View as table</summary><div class="tablewrap"><table id="detailTable"></table></div></details>
+    <div id="detailAudience" hidden>
+      <h3>Countries and devices</h3>
+      <div class="cols"><div class="tablewrap"><table id="detailCountries"></table></div><div class="tablewrap"><table id="detailDevices"></table></div></div>
+      <small class="muted">Sessions that ended in the period, by the country of the listener's address. IP geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener">DB-IP</a>.</small>
+    </div>
     <h3>Listen</h3>
     <div id="detailLinks" class="links"></div>
   </dialog>

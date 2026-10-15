@@ -17,6 +17,14 @@ All notable changes to this project are recorded here. The format follows
 - A file given by address whose copy on the server has gone is fetched again from its
   address (and checked against its SHA-256) when it is next read or the station is next
   updated, instead of failing with `file_missing`.
+- **Listener countries and devices, and country rules per station** (`GEO_ENABLED=true`,
+  off by default; [docs](docs/GEO.md)). HAProxy looks up each listener's country (DB-IP
+  country database, downloaded monthly, CC BY 4.0) and refuses a station's blocked
+  countries with 451; finished sessions are counted per day by country and device.
+  Station fields `geo_mode` and `geo_countries`, `GET /stations/{slug}/audience`,
+  `GET /geo` and `POST /geo/refresh`; dashboard: country rule on the station form,
+  countries and devices in station stats. Migration `015_geo.sql` (additive). With
+  `GEO_ENABLED` unset, HAProxy reads none of the new configuration.
 - `GET /api/v1/capabilities` (open): the features this server supports, so a client
   can check before using one.
 - `docs/contracts/airwave-station-sync.json`: the payload Airwave OS sends, tested in

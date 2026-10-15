@@ -206,6 +206,12 @@ setup_updater() {
   mkdir -p control
   # Written by the services too, which run as unprivileged users.
   chmod 777 control
+  # Map files for listener countries (GEO_ENABLED), written by the dashboard
+  # service and read by HAProxy. Empty ones are enough for HAProxy to start.
+  mkdir -p geo
+  chmod 777 geo
+  for map in country blocked allowlist allowed; do [ -f "geo/$map.map" ] || : > "geo/$map.map"; done
+  chmod 666 geo/*.map 2>/dev/null || true
   [ -x scripts/update.sh ] && [ -f .version ] || return 0
   if ./scripts/update.sh schedule install >/dev/null 2>&1; then
     UPDATER_NOTE="Updates: the dashboard shows when a new version is out and can install it, or do so automatically (Updates tab)."

@@ -16,6 +16,8 @@ const media = require('./src/media');
 const capacity = require('./src/capacity');
 const notify = require('./src/notify');
 const billing = require('./src/billing');
+const geo = require('./src/geo');
+const settings = require('./src/settings');
 const routes = require('./src/routes');
 const openapi = require('./src/openapi');
 const { errorHandler } = require('./src/errors');
@@ -107,6 +109,17 @@ async function main() {
   }
   await updates.publishVersion();
   every(config.stationSyncMs, 'version-publish', updates.publishVersion);
+  if (geo.enabled()) {
+    // Listener countries (GEO_ENABLED): map files for HAProxy, the country database, the rules, the session counter.
+    await geo.ensureFiles();
+    geo.listen();
+    every(60 * 1000, 'geo-audience', () => geo.flush(db));
+    const refresh = () => geo.refreshCountries({ settings }).then(() => geo.syncRules(db, { force: true }));
+    refresh().catch((err) => console.error('[geo]', err.message));
+    every(24 * 3600 * 1000, 'geo-countries', refresh);
+    // Re-applied regularly: HAProxy forgets runtime changes when it restarts.
+    every(config.stationSyncMs, 'geo-rules', () => geo.syncRules(db, { force: true }));
+  }
   if (haproxy.enabled()) {
     haproxy.sync().catch(() => {});
     // Failures are already logged once by the sync itself.

@@ -35,6 +35,8 @@ const stationWritable = {
   ident_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', nullable: true, description: 'SHA-256 of the file at `ident_url`. Required with it; a file with this checksum already in the account is used without downloading.' },
   fallback_url: { type: 'string', format: 'uri', nullable: true, description: 'The fallback file given by address, as `ident_url`.' },
   fallback_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', nullable: true, description: 'SHA-256 of the file at `fallback_url`.' },
+  geo_mode: { type: 'string', enum: ['off', 'block', 'allow'], default: 'off', description: 'Which countries may tune in: everywhere, everywhere except `geo_countries`, or only `geo_countries`. Refused listeners get 451. Needs GEO_ENABLED=true on the server (docs/GEO.md).' },
+  geo_countries: { type: 'array', items: { type: 'string', pattern: '^[A-Z]{2}$' }, description: 'Two-letter country codes for `geo_mode`.', example: ['NG', 'GH'] },
   max_listeners: { type: 'integer', minimum: 0, description: 'Concurrent listener cap, 0 for unlimited. Also the number of listeners the station is charged for; an unlimited station is charged for its highest concurrent listeners in the month. Administrators only.', example: 500 },
   billing_bitrate_kbps: { type: 'integer', nullable: true, minimum: 8, maximum: 2000, description: 'The bitrate the station is charged at. null uses the bitrate detected on its stream. Administrators only.' },
   discount_percent: { type: 'number', minimum: 0, maximum: 100, description: 'Taken off this station\'s calculated price. Administrators only.' },

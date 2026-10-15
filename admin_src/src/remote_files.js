@@ -117,7 +117,7 @@ async function apply(fields, given, { owner, station, current, name }) {
     const spec = given[use];
     if (!spec) {
       // An uploaded file chosen directly: the address no longer describes it.
-      if (has(fields, idKey) && current && current[`${use}_url`]) {
+      if (has(fields, idKey) && current && current[`${use}_url`] && fields[idKey] !== current[idKey]) {
         fields[`${use}_url`] = null;
         fields[`${use}_sha256`] = null;
       }
