@@ -58,6 +58,9 @@ ensure_control() {
   mkdir -p "$CONTROL"
   # Written by the services too, which run as unprivileged users.
   chmod 777 "$CONTROL" 2>/dev/null || true
+  # Map files for listener countries (GEO_ENABLED); see install.sh.
+  mkdir -p "$DIR/geo" && chmod 777 "$DIR/geo" 2>/dev/null || true
+  for map in country blocked allowlist allowed; do [ -f "$DIR/geo/$map.map" ] || : > "$DIR/geo/$map.map"; done
   [ -f "$SETTINGS" ] || { printf 'AUTO=false\nTIME=04:15\nREQUEST=0\n' > "$SETTINGS"; chmod 666 "$SETTINGS" 2>/dev/null || true; }
 }
 report() { # report STATE MESSAGE

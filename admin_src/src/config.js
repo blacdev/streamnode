@@ -76,6 +76,15 @@ module.exports = {
   haproxyBackend: text('HAPROXY_BACKEND', 'streaming_engine_backend'),
   haproxySyncMs: int('HAPROXY_SYNC_SECS', 5) * 1000,
 
+  // Listener countries and devices, and per-station country rules, done by
+  // HAProxy (haproxy.cfg, GEO_ENABLED block). Off unless GEO_ENABLED=true.
+  geoEnabled: bool('GEO_ENABLED'),
+  // The map files, as this service and as HAProxy see the same directory.
+  geoDir: text('GEO_DIR', '/geo'),
+  geoHaproxyDir: text('GEO_HAPROXY_DIR', '/etc/haproxy/geo'),
+  // HAProxy sends a log line here when a listening session ends.
+  audiencePort: int('AUDIENCE_PORT', 5140),
+
   // CPU, memory or disk use (percent) at which a server is flagged.
   capacityWarningPercent: int('CAPACITY_WARNING_PERCENT', 75),
   capacityCriticalPercent: int('CAPACITY_CRITICAL_PERCENT', 90),

@@ -1,0 +1,50 @@
+{
+  "description": "What Airwave OS sends when it sets up or syncs a station (PUT /api/v1/stations/{slug}, then PATCH with differences). Kept identical in blacdev/streamnode and blacdev/open-aiir; both repositories test against it. Fields may be added; none may be removed or change meaning.",
+  "version": 2,
+  "capabilities_required": {
+    "ident_url": [
+      "ident_url",
+      "ident_sha256",
+      "fallback_url",
+      "fallback_sha256"
+    ],
+    "geo_blocking": [
+      "geo_mode",
+      "geo_countries"
+    ]
+  },
+  "example": {
+    "name": "Lagos Hits FM",
+    "external_id": "airwave:5b0a3c1e-2f4d-4c55-9d1e-0a1b2c3d4e5f",
+    "primary_url": "https://engine.example.com/listen/lagos_hits_fm/radio.mp3",
+    "backup_url": "https://engine2.example.com/listen/lagos_hits_fm/radio.mp3",
+    "metadata_url": "https://airwave.example.com/public/feeds/4CWe0n0dDTgMLJOt6jO9hIRTSKOjz9AJ/now-playing",
+    "backup_titles_from_primary": true,
+    "artwork_url": "https://airwave.example.com/public/station-files/83ed35e4-9f97-43b7-b815-9694e46f95bc?v=e64dd2956013",
+    "default_title": "Lagos Hits FM",
+    "default_artist": "Live from Lagos",
+    "failover_delay_secs": 6,
+    "silence_detection": true,
+    "noise_detection": true,
+    "silence_threshold_db": -55,
+    "max_listeners": 500,
+    "ident_url": "https://airwave.example.com/public/station-files/e804b9a0-bd9f-4011-b0d2-10b9ce0f70ab?v=1a2ea6d6538e",
+    "ident_sha256": "1a2ea6d6538e3f0c1b7c9a6f2d4e5b8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f",
+    "fallback_url": "https://airwave.example.com/public/station-files/603c0272-7ae4-4db4-95ba-5988f01a4753?v=9f8e7d6c5b4a",
+    "fallback_sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a0918273645546372819a0b1c2d3e4f5a6",
+    "geo_mode": "allow",
+    "geo_countries": [
+      "GH",
+      "NG"
+    ]
+  },
+  "capabilities_response": {
+    "features": [
+      "ident_url",
+      "fallback_url",
+      "listener_audience",
+      "geo_blocking"
+    ]
+  },
+  "notes": "listener_audience and geo_blocking are reported only by a StreamNode with GEO_ENABLED=true; Airwave OS sends geo_mode/geo_countries only when geo_blocking is reported."
+}

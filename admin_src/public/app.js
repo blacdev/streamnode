@@ -330,7 +330,15 @@ async function openStationForm(station, template = null) {
     form.elements.noise_detection.checked = source.noise_detection;
     form.elements.backup_titles_from_primary.checked = source.backup_titles_from_primary;
     form.elements.silence_threshold_db.value = source.silence_threshold_db ?? '';
+    form.elements.geo_mode.value = source.geo_mode || 'off';
+    form.elements.geo_countries.value = (source.geo_countries || []).join(', ');
+  } else {
+    form.elements.geo_mode.value = 'off';
+    form.elements.geo_countries.value = '';
   }
+  $('geoStatus').textContent = station && station.geo_status && station.geo_status !== 'off' && station.geo_status !== 'active'
+    ? `Not in force: ${station.geo_status.replace(/^inactive: /, '')}.`
+    : 'Where listeners may tune in, by the country of their address.';
   // A plan is what gets charged, so a duplicate does not inherit one: it has to be set on purpose.
   const planOpen = Boolean(template) && isAdmin();
   $('planNote').hidden = !planOpen;
@@ -587,6 +595,8 @@ $('stationForm').addEventListener('submit', async (event) => {
   body.default_artist = form.elements.default_artist.value.trim() || null;
   body.artwork_file_id = Number(form.elements.artwork_file_id.value) || null;
   body.backup_titles_from_primary = form.elements.backup_titles_from_primary.checked && !form.elements.backup_titles_from_primary.disabled;
+  body.geo_mode = form.elements.geo_mode.value;
+  body.geo_countries = form.elements.geo_countries.value.split(/[\s,;]+/).map((c) => c.trim()).filter(Boolean);
   if (isAdmin()) {
     const owner = Number(form.elements.user_id.value);
     const current = state.stations.find((s) => s.slug === editing);
@@ -781,6 +791,34 @@ async function loadDetail() {
       h('td', { class: 'num' }, formatNumber(p.sessions)),
       h('td', { class: 'num' }, formatBytes(p.bytes)))))
   );
+  showAudience(station, from, to).catch(() => { $('detailAudience').hidden = true; });
+}
+
+// Countries and devices, where this server records them (GEO_ENABLED).
+async function showAudience(station, from, to) {
+  const day = (d) => d.toISOString().slice(0, 10);
+  const data = await api('GET', `/stations/${station.slug}/audience?from=${day(from)}&to=${day(to)}`);
+  $('detailAudience').hidden = !data.enabled;
+  if (!data.enabled) return;
+  const totals = { country: {}, device: {} };
+  for (const d of data.days) {
+    for (const dim of ['country', 'device']) {
+      for (const [key, f] of Object.entries(d[dim])) {
+        const t = totals[dim][key] || (totals[dim][key] = { sessions: 0, hours: 0 });
+        t.sessions += f.sessions;
+        t.hours += f.listener_hours;
+      }
+    }
+  }
+  const table = (el, title, items) => el.replaceChildren(
+    h('thead', {}, h('tr', {}, [title, 'Sessions', 'Listening hours'].map((t, i) => h('th', { class: i ? 'num' : '' }, t)))),
+    h('tbody', {}, items.length ? items.sort((a, b) => b[1].hours - a[1].hours || b[1].sessions - a[1].sessions).map(([key, f]) => h('tr', {},
+      h('td', {}, key === 'ZZ' ? 'Unknown' : key),
+      h('td', { class: 'num' }, formatNumber(f.sessions)),
+      h('td', { class: 'num' }, f.hours.toFixed(1)))) : [h('tr', {}, h('td', { colspan: 3, class: 'muted' }, 'No sessions recorded yet.'))])
+  );
+  table($('detailCountries'), 'Country', Object.entries(totals.country));
+  table($('detailDevices'), 'Device', Object.entries(totals.device));
 }
 
 $('rangeButtons').addEventListener('click', (event) => {

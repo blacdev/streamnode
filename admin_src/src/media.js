@@ -442,13 +442,48 @@ async function ensureLocal(row) {
     fs.promises.utimes(target, now, now).catch(() => {});
     return target;
   } catch {
-    if (row.storage !== 'dropbox') throw refuse(410, 'file_missing', 'This file is no longer on the server. Upload it again.');
+    if (row.storage !== 'dropbox') {
+      // A file that came from an address (ident_url / fallback_url) is fetched from it again.
+      if (!fetching.has(row.id)) fetching.set(row.id, refetch(row).finally(() => fetching.delete(row.id)));
+      if (await fetching.get(row.id).catch(() => false)) return target;
+      throw refuse(410, 'file_missing', 'This file is no longer on the server. Upload it again.');
+    }
   }
   if (!fetching.has(row.id)) {
     fetching.set(row.id, dropbox.download(row.storage_path, target).finally(() => fetching.delete(row.id)));
   }
   await fetching.get(row.id);
   return target;
+}
+
+// Whether the file's content can be read: a local copy, or a copy in Dropbox.
+async function available(row) {
+  if (row.storage === 'dropbox') return true;
+  return fs.promises.access(localPath(row.id)).then(() => true, () => false);
+}
+
+// Puts back the local copy of a file from content already checked against its SHA-256.
+async function restoreCopy(row, buffer) {
+  if (crypto.createHash('sha256').update(buffer).digest('hex') !== row.sha256) throw new Error('the content does not match the file');
+  const tmp = path.join(tmpDir(), `restore-${row.id}-${crypto.randomBytes(6).toString('hex')}`);
+  await fs.promises.writeFile(tmp, buffer);
+  await fs.promises.rename(tmp, localPath(row.id));
+  console.log(`[files] "${row.name}" (file ${row.id}) was missing and has been fetched again from its address`);
+}
+
+// Fetches a missing file again from the address a station was given it by. False when there is none.
+async function refetch(row) {
+  const { rows } = await db.query(
+    `SELECT ident_url AS url FROM stations WHERE user_id = $1 AND ident_sha256 = $2 AND ident_url IS NOT NULL
+     UNION ALL
+     SELECT fallback_url FROM stations WHERE user_id = $1 AND fallback_sha256 = $2 AND fallback_url IS NOT NULL
+     LIMIT 1`,
+    [row.user_id, row.sha256]
+  );
+  if (!rows[0]) return false;
+  const remoteFiles = require('./remote_files');
+  await restoreCopy(row, await remoteFiles.download(rows[0].url, row.sha256));
+  return true;
 }
 
 async function find(id) {
@@ -645,5 +680,5 @@ async function checkAssignment(fields, ownerId, slug) {
 
 module.exports = {
   COLUMNS, init, create, convertExisting, capBytes, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
-  stationsUsing, bringHome, present, size,
+  stationsUsing, bringHome, present, size, available, restoreCopy, refetch,
 };

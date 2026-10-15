@@ -141,6 +141,16 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     else if (typeof body[field] !== 'string' || body[field].trim().length > 200 || /[\u0000-\u001f\u007f]/.test(body[field])) fail(field, 'must be text of at most 200 characters on one line');
     else out[field] = body[field].trim();
   }
+  if (has(body, 'geo_mode')) {
+    if (!['off', 'block', 'allow'].includes(body.geo_mode)) fail('geo_mode', 'must be "off", "block" (refuse the listed countries) or "allow" (only the listed countries)');
+    else out.geo_mode = body.geo_mode;
+  }
+  if (has(body, 'geo_countries')) {
+    const list = body.geo_countries;
+    if (!Array.isArray(list) || list.length > 250 || list.some((c) => typeof c !== 'string' || !/^[A-Za-z]{2}$/.test(c))) {
+      fail('geo_countries', 'must be a list of two-letter country codes (ISO 3166-1), such as ["NG", "GH"]');
+    } else out.geo_countries = [...new Set(list.map((c) => c.toUpperCase()))].sort();
+  }
   // Whether the files exist, belong to the account and fit the stream is checked by the caller.
   for (const field of ['ident_file_id', 'fallback_file_id', 'artwork_file_id']) {
     if (!has(body, field)) continue;
@@ -301,6 +311,17 @@ function parseSettings(body) {
     if (!Number.isInteger(body.default_storage_quota_mb) || body.default_storage_quota_mb < 0 || body.default_storage_quota_mb > 10000000) {
       fail('default_storage_quota_mb', 'must be an integer from 0 to 10000000 (megabytes)');
     } else out.default_storage_quota_mb = body.default_storage_quota_mb;
+  }
+  if (has(body, 'geo_database_url')) {
+    const value = body.geo_database_url;
+    let ok = typeof value === 'string' && value.length <= 500;
+    try {
+      ok = ok && ['http:', 'https:'].includes(new URL(value.replace('{YYYY}', '2000').replace('{MM}', '01')).protocol);
+    } catch {
+      ok = false;
+    }
+    if (!ok) fail('geo_database_url', 'must be an http(s) address of a country CSV (start,end,country), optionally gzipped; {YYYY} and {MM} are filled in');
+    else out.geo_database_url = value;
   }
   // The machine the master runs on, when no engine beside it reports its size.
   for (const [field, min, max] of [['master_port_mbps', 1, 400000], ['master_vcpus', 1, 1024], ['master_memory_gb', 1, 16384]]) {
