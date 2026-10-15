@@ -1,8 +1,17 @@
 {
   "description": "What Airwave OS sends when it sets up or syncs a station (PUT /api/v1/stations/{slug}, then PATCH with differences). Kept identical in blacdev/streamnode and blacdev/open-aiir; both repositories test against it. Fields may be added; none may be removed or change meaning.",
-  "version": 1,
+  "version": 2,
   "capabilities_required": {
-    "ident_url": ["ident_url", "ident_sha256", "fallback_url", "fallback_sha256"]
+    "ident_url": [
+      "ident_url",
+      "ident_sha256",
+      "fallback_url",
+      "fallback_sha256"
+    ],
+    "geo_blocking": [
+      "geo_mode",
+      "geo_countries"
+    ]
   },
   "example": {
     "name": "Lagos Hits FM",
@@ -22,7 +31,20 @@
     "ident_url": "https://airwave.example.com/public/station-files/e804b9a0-bd9f-4011-b0d2-10b9ce0f70ab?v=1a2ea6d6538e",
     "ident_sha256": "1a2ea6d6538e3f0c1b7c9a6f2d4e5b8a9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f",
     "fallback_url": "https://airwave.example.com/public/station-files/603c0272-7ae4-4db4-95ba-5988f01a4753?v=9f8e7d6c5b4a",
-    "fallback_sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a0918273645546372819a0b1c2d3e4f5a6"
+    "fallback_sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a0918273645546372819a0b1c2d3e4f5a6",
+    "geo_mode": "allow",
+    "geo_countries": [
+      "GH",
+      "NG"
+    ]
   },
-  "capabilities_response": { "features": ["ident_url", "fallback_url"] }
+  "capabilities_response": {
+    "features": [
+      "ident_url",
+      "fallback_url",
+      "listener_audience",
+      "geo_blocking"
+    ]
+  },
+  "notes": "listener_audience and geo_blocking are reported only by a StreamNode with GEO_ENABLED=true; Airwave OS sends geo_mode/geo_countries only when geo_blocking is reported."
 }

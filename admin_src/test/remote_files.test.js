@@ -96,8 +96,8 @@ test('contract: Airwave OS station payload', () => {
   } finally {
     config.allowPrivateSources = previous;
   }
-  const routes = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes.js'), 'utf8');
-  for (const feature of contract.capabilities_response.features) assert.ok(routes.includes(`'${feature}'`), `capability ${feature} is not advertised`);
+  const source = ['routes.js', 'geo.js'].map((f) => fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8')).join('\n');
+  for (const feature of contract.capabilities_response.features) assert.ok(source.includes(`'${feature}'`), `capability ${feature} is not advertised`);
 });
 
 test('a missing copy is put back only from content that matches its checksum', async () => {
