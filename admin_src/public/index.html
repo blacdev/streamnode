@@ -30,6 +30,7 @@
         <button role="tab" data-tab="servers" data-admin>Servers</button>
         <button role="tab" data-tab="settings" data-admin>Settings</button>
         <button role="tab" data-tab="updates" data-admin>Updates</button>
+        <button role="tab" data-tab="logs" data-admin>Logs</button>
         <a href="/api/v1/docs" target="_blank" rel="noopener">API docs ↗</a>
       </nav>
       <span class="who"><span id="whoami"></span> <button id="logout" class="link">Sign out</button></span>
@@ -265,6 +266,50 @@
             <div class="tablewrap"><table id="estimateTable"></table></div>
           </div>
         </form>
+      </section>
+
+      <section id="tab-logs" hidden>
+        <div class="bar"><h2>Logs</h2>
+          <a id="logsCsv" class="button" href="#" download>Download CSV</a>
+          <button id="logsRefresh">Refresh</button>
+        </div>
+        <p class="muted">What happened across the service: every switch between a station's streams and fallback file and why, streams failing and coming back, stations starting and stopping, streaming servers coming and going, certificate and update runs, background tasks that failed, and changes made in this dashboard.</p>
+        <form id="logsFilter" class="bar">
+          <select name="level" aria-label="Level">
+            <option value="">Everything</option>
+            <option value="warning">Warnings and errors</option>
+            <option value="error">Errors only</option>
+          </select>
+          <select name="category" aria-label="Kind">
+            <option value="">All kinds</option>
+            <option value="switch">Switches</option>
+            <option value="source">Streams</option>
+            <option value="station">Stations</option>
+            <option value="file">Idents and fallback files</option>
+            <option value="server">Streaming servers</option>
+            <option value="certificate">Certificate</option>
+            <option value="update">Updates</option>
+            <option value="admin">Dashboard changes</option>
+            <option value="system">Background tasks</option>
+          </select>
+          <input name="station" placeholder="Station address" aria-label="Station address">
+          <input name="q" type="search" placeholder="Search messages" aria-label="Search messages">
+          <label class="check"><input type="checkbox" name="live" checked> Update by itself</label>
+        </form>
+        <div class="tablewrap"><table>
+          <thead><tr><th>Time</th><th>Level</th><th>Station</th><th>Server</th><th>What happened</th></tr></thead>
+          <tbody id="logRows"></tbody>
+        </table></div>
+        <div class="actions left"><button id="logsMore" hidden>Show older</button></div>
+        <div class="card wide-card">
+          <h3>Keeping logs</h3>
+          <form id="logsRetention">
+            <label>Keep entries for <input name="days" type="number" min="7" max="365" required class="short"> days
+              <small>At least 7 and at most 365. Older entries are removed every hour.</small></label>
+            <p id="logsRetentionError" class="error" role="alert"></p>
+            <div class="actions left"><button class="primary">Save</button></div>
+          </form>
+        </div>
       </section>
 
       <section id="tab-updates" hidden>

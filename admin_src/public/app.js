@@ -159,6 +159,7 @@ $('tabs').addEventListener('click', (event) => {
   if (tab === 'users') loadUsers().catch(fail);
   if (tab === 'servers') loadServers().catch(fail);
   if (tab === 'updates') { loadUpdates(true).catch(fail); loadCertificate().catch(fail); }
+  if (tab === 'logs') loadLogs().catch(fail);
 });
 
 // ── Stations ───────────────────────────────────────────────────────────────
@@ -456,11 +457,33 @@ for (const button of $('stationForm').querySelectorAll('[data-test]')) {
     try {
       const r = await api('POST', '/probe', { kind: button.dataset.test, url });
       showResult(out, r.ok ? 'ok' : 'bad', r.ok ? describeProbe[button.dataset.test](r) : r.error);
+      if (r.ok && button.dataset.test === 'stream') offerSwitch(out, button.dataset.for, url);
     } catch (err) {
       showResult(out, 'bad', err.message.replace(/^url /, 'This address '));
     }
     button.disabled = false;
   });
+}
+
+// After a good test of a station's saved stream: a button to switch the station
+// to it now, rather than waiting for the streaming servers' own checks. It only
+// ever moves a station up (fallback file to a stream, backup to primary).
+function offerSwitch(out, field, url) {
+  const slug = $('stationForm').dataset.slug;
+  const saved = slug && state.stations.find((s) => s.slug === slug);
+  if (!saved || (saved[field] || '') !== url) return;
+  const source = field === 'primary_url' ? 'primary' : 'backup';
+  const button = h('button', { type: 'button', class: 'link' }, `Switch the station to the ${source} stream now`);
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const r = await api('POST', `/stations/${encodeURIComponent(slug)}/switch`, { source });
+      showResult(out, r.outcome === 'requested' ? 'ok' : '', r.message);
+    } catch (err) {
+      showResult(out, 'bad', err.message);
+    }
+  });
+  out.append(' ', button);
 }
 
 const fileOption = (file) => h('option', { value: file.id }, file.kind === 'image' ? `${file.name} (${file.format})` : `${file.name} (${file.format}, ${formatLength(file.duration_seconds)})`);
@@ -1443,6 +1466,81 @@ $('checkNow').addEventListener('click', async () => {
   await loadUpdates(false).catch(fail);
   showUpdateNotice().catch(() => {});
   toast('Checked for updates');
+});
+
+// ── Logs ───────────────────────────────────────────────────────────────────
+
+const LOG_LEVELS = { info: ['live', 'Info'], warning: ['backup', 'Warning'], error: ['off', 'Error'] };
+
+function logQuery(extra = {}) {
+  const form = $('logsFilter').elements;
+  const params = new URLSearchParams();
+  for (const name of ['level', 'category', 'station', 'q']) if (form[name].value.trim()) params.set(name, form[name].value.trim());
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
+  return params.toString();
+}
+
+function logRow(entry) {
+  const [kind, label] = LOG_LEVELS[entry.level] || ['', entry.level];
+  return h('tr', {},
+    h('td', { class: 'nowrap' }, new Date(entry.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' })),
+    h('td', {}, h('span', { class: `status ${kind}` }, label)),
+    h('td', {}, entry.station || ''),
+    h('td', {}, entry.node || 'gateway'),
+    h('td', { class: 'message' }, entry.message));
+}
+
+async function loadLogs({ older = false } = {}) {
+  const rows = $('logRows');
+  const last = older ? rows.lastElementChild && rows.lastElementChild.dataset.id : null;
+  const r = await api('GET', `/logs?${logQuery(last ? { before: last } : {})}`);
+  const made = r.entries.map((entry) => {
+    const row = logRow(entry);
+    row.dataset.id = entry.id;
+    return row;
+  });
+  if (older) rows.append(...made);
+  else rows.replaceChildren(...(made.length ? made : [h('tr', {}, h('td', { colspan: 5, class: 'muted' }, 'Nothing logged that matches.'))]));
+  $('logsMore').hidden = !r.more;
+  $('logsRetention').elements.days.value = r.retention_days;
+  $('logsCsv').href = `${API}/logs?${logQuery({ format: 'csv' })}`;
+  clearTimeout(loadLogs.timer);
+  if (!older && $('logsFilter').elements.live.checked) {
+    loadLogs.timer = setTimeout(() => { if (!$('tab-logs').hidden) loadLogs().catch(() => {}); }, 10000);
+  }
+}
+
+// The CSV is fetched with the session, then handed to the browser as a file.
+$('logsCsv').addEventListener('click', async (event) => {
+  event.preventDefault();
+  try {
+    const res = await fetch($('logsCsv').href, { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const link = h('a', { href: URL.createObjectURL(await res.blob()), download: `streamnode-log-${new Date().toISOString().slice(0, 10)}.csv` });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (err) {
+    fail(err);
+  }
+});
+$('logsRefresh').addEventListener('click', () => loadLogs().catch(fail));
+$('logsMore').addEventListener('click', () => loadLogs({ older: true }).catch(fail));
+let logFilterTimer;
+$('logsFilter').addEventListener('input', () => {
+  clearTimeout(logFilterTimer);
+  logFilterTimer = setTimeout(() => loadLogs().catch(fail), 300);
+});
+$('logsFilter').addEventListener('submit', (event) => event.preventDefault());
+$('logsRetention').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('logsRetentionError').textContent = '';
+  const days = Number(event.target.elements.days.value);
+  try {
+    await api('PUT', '/settings', { log_retention_days: days });
+    toast(`Log entries are kept for ${days} days`);
+  } catch (err) {
+    $('logsRetentionError').textContent = err.message;
+  }
 });
 
 // ── HTTPS certificate ─────────────────────────────────────────────────────

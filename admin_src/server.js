@@ -11,6 +11,7 @@ const stats = require('./src/stats');
 const haproxy = require('./src/haproxy');
 const cluster = require('./src/cluster');
 const updates = require('./src/updates');
+const events = require('./src/events');
 const certificate = require('./src/certificate');
 const media = require('./src/media');
 const capacity = require('./src/capacity');
@@ -78,7 +79,10 @@ app.use(errorHandler);
 
 // Runs a periodic job without letting one failure stop the next run.
 function every(ms, name, job) {
-  const run = () => job().catch((err) => console.error(`[${name}]`, err.message));
+  const run = () => job().then(() => events.jobResult(name, null), (err) => {
+    console.error(`[${name}]`, err.message);
+    events.jobResult(name, err);
+  });
   setInterval(run, ms).unref();
 }
 
@@ -95,6 +99,16 @@ async function main() {
   await cluster.publishOverrides();
   every(config.stationSyncMs, 'audio-overrides', cluster.publishOverrides);
   every(3600 * 1000, 'retention', stats.prune);
+  // The service log: events the streaming servers queued, servers coming and
+  // going, what the host's scripts did, and old entries removed.
+  events.record('info', 'system', `Management service started${config.version ? ` (version ${config.version.slice(0, 7)})` : ''}`);
+  every(2000, 'log-collect', events.drain);
+  every(3600 * 1000, 'log-retention', events.prune);
+  await events.watchNodes(stations.activeNodes).catch(() => {});
+  every(15 * 1000, 'log-servers', () => events.watchNodes(stations.activeNodes));
+  const controlFiles = { certificate: path.join(config.controlDir, 'cert-status'), update: path.join(config.controlDir, 'update-status') };
+  events.watchControl(updates.readPairs, controlFiles);
+  every(30 * 1000, 'log-host', async () => events.watchControl(updates.readPairs, controlFiles));
   // What a listener costs is learned from the running servers, a little at a time.
   every(30 * 1000, 'costs', capacity.sample);
   every(10 * 60 * 1000, 'notices', notify.run);

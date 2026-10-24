@@ -247,3 +247,11 @@ test('whether the backup shares the primary\'s titles is a yes or no', () => {
   assert.deepStrictEqual(v.parseStation({ backup_titles_from_primary: true }, { partial: true }), { backup_titles_from_primary: true });
   assert.deepStrictEqual(fields(() => v.parseStation({ backup_titles_from_primary: 'yes' }, { partial: true })), ['backup_titles_from_primary']);
 });
+
+test('the service log is kept for 7 to 365 days', () => {
+  assert.deepStrictEqual(v.parseSettings({ log_retention_days: 7 }), { log_retention_days: 7 });
+  assert.deepStrictEqual(v.parseSettings({ log_retention_days: 365 }), { log_retention_days: 365 });
+  for (const wrong of [6, 0, 366, 30.5, '30']) {
+    assert.deepStrictEqual(fields(() => v.parseSettings({ log_retention_days: wrong })), ['log_retention_days']);
+  }
+});

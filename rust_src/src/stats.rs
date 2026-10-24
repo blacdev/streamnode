@@ -221,8 +221,14 @@ async fn heartbeat(hub: &Arc<Hub>, sampler: &mut Sampler, started_at: u64) {
 
     if let Some(change) = hub.audio.evaluate(audio_evidence(hub, live_relays).await) {
         match &change {
-            Some(state) => tracing::error!(reason = %state.reason, forced = state.forced, "NO AUDIO: leaving the rotation"),
-            None => tracing::info!("audio is back: rejoining the rotation"),
+            Some(state) => {
+                tracing::error!(reason = %state.reason, forced = state.forced, "NO AUDIO: leaving the rotation");
+                crate::events::record(hub, crate::events::Level::Error, "server", None, format!("This server has no audio and has left the rotation: {}", state.reason));
+            }
+            None => {
+                tracing::info!("audio is back: rejoining the rotation");
+                crate::events::record(hub, crate::events::Level::Info, "server", None, "Audio is back on this server: it has rejoined the rotation".to_string());
+            }
         }
     }
     if hub.audio.probe_due() {

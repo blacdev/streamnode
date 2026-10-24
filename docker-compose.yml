@@ -20,8 +20,17 @@ x-engine-tuning: &engine-tuning
   METADATA_POLL_SECS: ${METADATA_POLL_SECS:-10}
   BURST_BYTES: ${BURST_BYTES:-65536}
 
+# Container output (docker compose logs) is rotated: at most 5 files of 10 MB
+# per service. The service log of what happened is in the dashboard (Logs).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres_db:
+    logging: *logging
     profiles: ["master"]
     image: postgres:16-alpine
     restart: always
@@ -40,6 +49,7 @@ services:
       - dynamic_gateway_fabric
 
   redis_cache:
+    logging: *logging
     profiles: ["master"]
     image: redis:7-alpine
     restart: always
@@ -58,6 +68,7 @@ services:
       - dynamic_gateway_fabric
 
   admin_dashboard:
+    logging: *logging
     profiles: ["master"]
     image: ${IMAGE_PREFIX:-streamnode}/admin:${IMAGE_TAG:-latest}
     restart: always
@@ -108,6 +119,7 @@ services:
       - dynamic_gateway_fabric
 
   haproxy_edge:
+    logging: *logging
     profiles: ["master"]
     image: haproxy:2.8-alpine
     restart: always
@@ -153,6 +165,7 @@ services:
   # The engine on the same server as the master ("both"). Reached only over
   # the internal network.
   audio_engine:
+    logging: *logging
     profiles: ["local-engine"]
     image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     restart: always
@@ -176,6 +189,7 @@ services:
   # The engine on a slave node. It enrols with the master and keeps the
   # result in its volume; the master's HAProxy then sends it listeners.
   slave_engine:
+    logging: *logging
     profiles: ["slave"]
     image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     restart: always
@@ -203,6 +217,7 @@ services:
   # Optional: only started by scripts/letsencrypt.sh. It writes the challenge
   # files where the dashboard service serves them to Let's Encrypt.
   certbot:
+    logging: *logging
     image: certbot/certbot:latest
     profiles: ["letsencrypt"]
     volumes:

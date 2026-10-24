@@ -3,8 +3,17 @@
 # and listeners are shared between the servers. See docs/SCALING.md.
 name: streamnode-edge
 
+# Container output (docker compose logs) is rotated: at most 5 files of 10 MB
+# per service. The service log of what happened is in the dashboard (Logs).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   audio_engine:
+    logging: *logging
     image: ${IMAGE_PREFIX:-streamnode}/engine:${IMAGE_TAG:-latest}
     build: ../rust_src
     restart: always
@@ -28,6 +37,7 @@ services:
       - edge_fabric
 
   haproxy_edge:
+    logging: *logging
     image: haproxy:2.8-alpine
     restart: always
     user: root

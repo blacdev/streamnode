@@ -438,6 +438,16 @@ pub struct Hub {
     /// Stations this engine has given up on for now because their sources
     /// deliver no audio here. They are refused without touching the source.
     silent: Mutex<HashMap<String, Silent>>,
+    /// "Switch to this stream" requests from the dashboard, by station (see `switching`).
+    switches: Mutex<HashMap<String, SwitchRequest>>,
+}
+
+/// A request from the dashboard to switch a station to one of its streams.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SwitchRequest {
+    pub source: Source,
+    /// Unique per request, so each is acted on once.
+    pub id: u64,
 }
 
 /// One station with no audio on this engine.
@@ -469,7 +479,17 @@ impl Hub {
             peers: Mutex::new(Vec::new()),
             audio: AudioHealth::new(),
             silent: Mutex::new(HashMap::new()),
+            switches: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn set_switch_requests(&self, requests: HashMap<String, SwitchRequest>) {
+        *self.switches.lock().unwrap() = requests;
+    }
+
+    /// The latest switch request for a station, if one is outstanding.
+    pub fn switch_request(&self, slug: &str) -> Option<SwitchRequest> {
+        self.switches.lock().unwrap().get(slug).copied()
     }
 
     pub(crate) fn mark_silent(&self, station: &Station, reason: String) {

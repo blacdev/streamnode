@@ -8,6 +8,32 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **Service log** (dashboard: Logs; `GET /logs`, CSV download). What happened across
+  the service: every switch between a station's streams and fallback file and why,
+  streams failing and returning, stations starting and stopping on each server,
+  unusable idents and fallback files, streaming servers coming and going or losing
+  audio, certificate and update runs, failing background tasks, and every change made
+  in the dashboard or API. Kept 30 days by default; **Keeping logs** sets 7 to 365
+  (`log_retention_days`). Migration `016_service_events.sql` (additive).
+- **Switch to a stream by hand.** After a passing **Test** of a station's saved
+  primary or backup stream, a button switches the station to it at once
+  (`POST /stations/{slug}/switch`). Only ever up: fallback file to a stream, backup
+  to primary; asking for the backup while the primary plays changes nothing.
+- Container output is rotated (5 files of 10 MB per service) instead of growing
+  without limit.
+
+### Changed
+
+- **Returning to a stream that failed is steadier.** It needs 5 seconds of audio
+  without a break (as before) and to have failed at least 30 seconds ago. A stream
+  that fails again within 3 minutes of a return is held off twice as long each time,
+  up to 5 minutes, and needs 15 seconds of audio. Before, a stream that came and went
+  every few seconds could switch listeners back and forth indefinitely.
+- The background checks of a failed stream restart themselves if they ever stop, so
+  a station can no longer stay on its fallback file while its stream is back. A
+  stream that cannot be reached is tried every 2 seconds at first, then less often,
+  up to every 15 seconds.
+
 - **Idents and fallback audio by address.** `ident_url` / `fallback_url` with their
   SHA-256 on a station: the file is downloaded once, checked against the checksum and
   the stream's format like an upload, kept in the account's library and set as the
