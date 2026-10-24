@@ -134,6 +134,18 @@ module.exports = {
       parameters: [slugParam],
       get: { tags: ['Statistics'], summary: 'Live status of one station', description: 'Current listener count, which source is on air and what is playing. Updated every two seconds.', responses: { 200: ok('Live state.', ref('StationStatus')), 404: error('No such station.'), ...AUTH_ERRORS } },
     },
+    '/stations/{slug}/switch': {
+      parameters: [slugParam],
+      post: {
+        tags: ['Stations'], summary: 'Switch the station to one of its streams now',
+        description: 'Instead of waiting for the streaming servers\' own checks. Only ever moves a station up: from its fallback file to a stream, or from the backup to the primary; asking for the backup while the primary plays changes nothing (`already_better`). The switch happens on every server playing the station within a few seconds, once the stream has two seconds of audio; the service log (`GET /logs`) records when. `not_playing`: nobody is listening, so nothing plays.',
+        requestBody: { required: true, content: json({ type: 'object', required: ['source'], properties: { source: { type: 'string', enum: ['primary', 'backup'] } } }) },
+        responses: {
+          202: ok('Requested.', ref('SwitchResult')), 200: ok('Nothing to do.', ref('SwitchResult')),
+          404: error('No such station.'), 409: error('No backup stream, or the station is switched off.'), 422: error('Validation failed.'), ...AUTH_ERRORS,
+        },
+      },
+    },
     '/stations/{slug}/stats': {
       parameters: [slugParam],
       get: {
@@ -417,6 +429,24 @@ module.exports = {
       parameters: [idParam],
       delete: { tags: ['Accounts'], summary: 'Revoke an API key', responses: { 204: { description: 'Revoked. The key stops working immediately.' }, 404: error('No such key.'), ...AUTH_ERRORS } },
     },
+    '/logs': {
+      get: {
+        tags: ['Accounts'], summary: 'The service log',
+        description: 'Administrators only. What happened across the service, newest first: switches between a station\'s streams and fallback file and why, streams failing and returning, stations starting and stopping, streaming servers coming and going, certificate and update runs, failed background tasks, and changes made through the API. Kept for `log_retention_days` (Settings). Page back with `before` (the last `id` seen); `format=csv` downloads up to 50,000 entries.',
+        parameters: [
+          { name: 'level', in: 'query', schema: { type: 'string', enum: ['info', 'warning', 'error'] }, description: '`warning` includes errors.' },
+          { name: 'category', in: 'query', schema: { type: 'string', enum: ['switch', 'source', 'station', 'file', 'server', 'certificate', 'update', 'admin', 'system'] } },
+          { name: 'station', in: 'query', schema: { type: 'string' } },
+          { name: 'q', in: 'query', schema: { type: 'string' }, description: 'Text in the message.' },
+          { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' } },
+          { name: 'before', in: 'query', schema: { type: 'integer' } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 200, maximum: 500 } },
+          { name: 'format', in: 'query', schema: { type: 'string', enum: ['json', 'csv'] } },
+        ],
+        responses: { 200: ok('Newest first.', { type: 'object', properties: { entries: { type: 'array', items: ref('LogEntry') }, retention_days: { type: 'integer' }, more: { type: 'boolean' } } }), 422: error('Validation failed.'), ...AUTH_ERRORS },
+      },
+    },
     '/audit-log': {
       get: { tags: ['Accounts'], summary: 'Recent changes', description: 'Administrators only. Who created, changed, suspended or deleted what.', parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', default: 100, maximum: 500 } }], responses: { 200: ok('Newest first.', { type: 'object', properties: { entries: { type: 'array', items: ref('AuditEntry') } } }), ...AUTH_ERRORS } },
     },
@@ -638,18 +668,37 @@ module.exports = {
       },
       StorageUsage: { type: 'object', properties: { used_bytes: { type: 'integer' }, quota_bytes: { type: 'integer', nullable: true, description: 'null for administrators, who are not limited.' }, free_bytes: { type: 'integer', nullable: true } } },
       FileList: { type: 'object', properties: { files: { type: 'array', items: ref('File') }, usage: ref('StorageUsage'), limits: { type: 'object', properties: { ident_max_seconds: { type: 'integer' }, image_max_bytes: { type: 'integer' } } } } },
+      LogEntry: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' }, at: { type: 'string', format: 'date-time' },
+          level: { type: 'string', enum: ['info', 'warning', 'error'] },
+          category: { type: 'string', enum: ['switch', 'source', 'station', 'file', 'server', 'certificate', 'update', 'admin', 'system'] },
+          station: { type: 'string', nullable: true }, node: { type: 'string', nullable: true, description: 'The streaming server it happened on; null for the gateway itself.' },
+          message: { type: 'string', example: 'Switched from the backup stream to the primary stream (it has had audio again without a break)' },
+        },
+      },
+      SwitchResult: {
+        type: 'object',
+        properties: {
+          outcome: { type: 'string', enum: ['requested', 'already_better', 'not_playing'] },
+          source: { type: 'string', enum: ['primary', 'backup'] }, playing: { type: 'string', nullable: true, enum: ['primary', 'backup', 'fallback', null] },
+          message: { type: 'string' },
+        },
+      },
       SettingsUpdate: {
         type: 'object',
         properties: {
           ident_max_seconds: { type: 'integer', minimum: 1, maximum: 30, default: 5, description: 'Longest ident a station may use.' },
           default_storage_quota_mb: { type: 'integer', minimum: 0, default: 500, description: 'Upload space, in megabytes, for accounts without a quota of their own.' },
+          log_retention_days: { type: 'integer', minimum: 7, maximum: 365, default: 30, description: 'How long entries of the service log (`GET /logs`) are kept.' },
           dropbox_app_key: { type: 'string', nullable: true }, dropbox_app_secret: { type: 'string', nullable: true, description: 'Write-only.' },
         },
       },
       Settings: {
         type: 'object',
         properties: {
-          ident_max_seconds: { type: 'integer' }, default_storage_quota_mb: { type: 'integer' },
+          ident_max_seconds: { type: 'integer' }, default_storage_quota_mb: { type: 'integer' }, log_retention_days: { type: 'integer' },
           storage: {
             type: 'object',
             properties: {

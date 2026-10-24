@@ -323,6 +323,11 @@ function parseSettings(body) {
     if (!ok) fail('geo_database_url', 'must be an http(s) address of a country CSV (start,end,country), optionally gzipped; {YYYY} and {MM} are filled in');
     else out.geo_database_url = value;
   }
+  // How long the service log is kept: at least a week, at most a year.
+  if (has(body, 'log_retention_days')) {
+    if (!Number.isInteger(body.log_retention_days) || body.log_retention_days < 7 || body.log_retention_days > 365) fail('log_retention_days', 'must be an integer from 7 to 365 (days)');
+    else out.log_retention_days = body.log_retention_days;
+  }
   // The machine the master runs on, when no engine beside it reports its size.
   for (const [field, min, max] of [['master_port_mbps', 1, 400000], ['master_vcpus', 1, 1024], ['master_memory_gb', 1, 16384]]) {
     if (!has(body, field)) continue;

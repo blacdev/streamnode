@@ -29,7 +29,7 @@ backup stream                   (if the station has one and it answers;
         ▼
 fallback file, looping          (if the station has one)
         │
-        ▼  the moment the primary, or else the backup, has audio again:
+        ▼  once the primary, or else the backup, is reliably back (below):
      ident, then the live stream
 ```
 
@@ -37,11 +37,62 @@ Listeners stay connected throughout, and players carry on without a reconnect.
 
 ### Returning to a live stream
 
-The delay is only for leaving a stream. Coming back needs no such wait, only proof
-that the stream is really back: a stream that is down is tried again every 2 seconds,
-and once it has delivered **five seconds** of real audio the station returns to it. A
-stream that bursts into life for a moment and drops again does not pull listeners
-back. How the change sounds depends on the station:
+A stream that is down is checked in the background all the time (every few seconds
+while it cannot be reached at all, less often the longer that lasts, up to every 15
+seconds). The station returns to it when **both** of these hold:
+
+- **It is really back:** it has delivered real audio without a break for **5 seconds**
+  (15 seconds for a stream that has let the station down soon after a return).
+- **It has had time to settle:** it failed at least **30 seconds** ago.
+
+A stream that fails again within **3 minutes** of the station returning to it is held
+off twice as long the next time: 60 seconds, then 2, 4 and at most 5 minutes. Once it
+has stayed up for 3 minutes, it is back to 30 seconds. This is what keeps a stream
+that comes and goes from pulling listeners back and forth between it and the backup
+(or the fallback file): at most one return every 30 seconds, and fewer the more it
+misbehaves. Each step is written to the [service log](#the-service-log), so it is
+clear afterwards what happened and why.
+
+These numbers are built in rather than settings: they are what works for the streams
+the gateway is used with, and the wait never needs adjusting by hand. When you know a
+stream is fine and want listeners on it at once, use **Switch** (below).
+
+### Switching by hand
+
+In the station form, **Test** next to the primary or backup stream tries it, as
+before. When the test passes and the address is the one saved on the station, a
+**Switch the station to the … stream now** button appears below the result. It skips
+the wait: every streaming server playing the station switches as soon as the stream
+has 2 seconds of audio, normally within 3 to 5 seconds.
+
+A switch only ever moves a station **up**: from the fallback file to a stream, or from
+the backup to the primary. Asking for the backup while the primary plays changes
+nothing; the answer says so, and listeners hear no switch. API:
+`POST /stations/{slug}/switch` with `{"source": "primary"}` or `"backup"`.
+
+### The service log
+
+**Logs** (administrators) lists what happened across the service, newest first:
+
+- every switch between a station's streams and its fallback file, with the reason
+  (no audio for the failover delay, back with audio, held off after failing again,
+  asked for from the dashboard);
+- streams that dropped and reconnected within the delay, and why a stream was judged
+  silent or gone;
+- stations starting and stopping on each streaming server, and stations with nothing
+  to play;
+- idents and fallback files that could not be used;
+- streaming servers coming online, going offline, losing or regaining audio;
+- certificate and update runs, background tasks that failed, and every change made in
+  the dashboard or through the API.
+
+Filter it by level, kind, station or text, page back with **Show older**, and
+**Download CSV** for a copy. Entries are kept for **30 days** unless you change it
+under **Keeping logs** on the same page (7 to 365 days); older ones are removed every
+hour. API: `GET /logs`. The containers' own output (`docker compose logs`) is
+rotated separately, at 5 files of 10 MB per service.
+
+How the change sounds depends on the station:
 
 | The station has | What listeners hear |
 |---|---|
@@ -115,7 +166,8 @@ streams, so that they are judged on the new terms.
 One number per station, 1 to 300 seconds, **6 by default**: how long a stream may be
 without audio before the station moves on. It is there to be sure the stream is really
 down. A stream that comes back within the delay is simply carried on with, and nothing
-else happens. The delay does not apply to coming back, which is immediate.
+else happens. The delay does not apply to coming back, which follows the rules in
+[Returning to a live stream](#returning-to-a-live-stream).
 
 A short delay reacts faster but moves on during brief network hiccups. A long delay
 rides those out but leaves listeners in silence for longer.

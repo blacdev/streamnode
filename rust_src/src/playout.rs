@@ -8,10 +8,22 @@
 //!
 //! "Fails" means no audio for the station's failover delay (6 seconds unless
 //! changed): the source is gone, sends nothing, or sends digital silence. A
-//! source that drops is retried for that long before it is given up on. The
-//! delay applies to leaving a source only: a source that is back is returned to
-//! once it has delivered five seconds of real audio, so that a stream which
-//! only bursts into life for a moment does not pull listeners back.
+//! source that drops is retried for that long before it is given up on.
+//!
+//! A stream that has failed is checked in the background all along, but the
+//! station returns to it only when both hold:
+//!
+//! - it has delivered real audio without a break for a while (5 seconds; 15
+//!   once it has let the station down soon after a return), and
+//! - it failed at least 30 seconds ago. A stream that fails again within three
+//!   minutes of being returned to is held off twice as long the next time, up
+//!   to five minutes, and back to 30 seconds once it has stayed up.
+//!
+//! So a stream that comes and goes cannot pull listeners back and forth: at
+//! most one return every 30 seconds, and fewer the more it misbehaves. "Switch
+//! to this stream" in the dashboard skips the wait (see `switching`), and only
+//! ever moves a station up: from the fallback file to a stream, or from the
+//! backup to the primary. Every move, and why, goes to the service log (`events`).
 //!
 //! Nothing is decoded or re-encoded. Every switch happens between whole audio
 //! frames, which is why idents and fallback files must be in the same format
@@ -19,12 +31,13 @@
 
 use std::{
     collections::VecDeque,
+    panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use tokio::{
     sync::mpsc,
     time::{interval, sleep, sleep_until, timeout, timeout_at, Instant, MissedTickBehavior},
@@ -32,6 +45,7 @@ use tokio::{
 
 use crate::{
     detector::{Decoded, Detector, Verdict},
+    events::{self, Level},
     frames::{attenuate, supported, Codec, Entry, Frame, Framer},
     hub::{unix_now, Defaults, Hub, Relay, Source, Status},
     icy::IcyDemux,
@@ -43,9 +57,25 @@ use crate::{
 
 /// How much of a file is read ahead of what has been played.
 const FILE_LEAD: Duration = Duration::from_secs(2);
-/// How long a stream that was down must deliver real audio before the station
-/// returns to it: long enough to know it is really back, short enough to be at once.
+/// How long a stream that was down must deliver real audio, without a break,
+/// before the station returns to it: long enough to know it is really back.
 const RETURN_CONFIRM: Duration = Duration::from_secs(5);
+/// The same, for a stream that has let the station down soon after a return.
+const RETURN_CONFIRM_REPEAT: Duration = Duration::from_secs(15);
+/// The same, when switching to it was asked for from the dashboard.
+const MANUAL_CONFIRM: Duration = Duration::from_secs(2);
+/// How long a stream that failed is left before the station returns to it.
+const HOLD_FIRST: Duration = Duration::from_secs(30);
+/// The longest it is ever left, after failing again and again.
+const HOLD_MAX: Duration = Duration::from_secs(300);
+/// A stream that fails again within this long of being returned to is held off
+/// twice as long the next time.
+const STABLE_AFTER: Duration = Duration::from_secs(180);
+/// While a stream cannot be reached at all, how long the background check
+/// waits between attempts: from `RECHECK`, doubling up to this.
+const RECHECK_MAX: Duration = Duration::from_secs(15);
+/// How long a connected stream that is being checked may send nothing.
+const CHECK_STALL: Duration = Duration::from_secs(5);
 /// How often a stream that is down is tried again while something else plays.
 /// This much audio without one recognisable frame means the stream is not
 /// what its label says. A real stream never goes a tenth as long without one.
@@ -211,57 +241,180 @@ impl LiveSource {
     }
 }
 
-/// Watches a source in the background and hands it over as soon as it is
-/// delivering real audio again, so the relay can cut to it without a gap.
-fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, listening: Listening) -> mpsc::Receiver<LiveSource> {
+/// How a source is named in the service log.
+fn name(source: Source) -> &'static str {
+    match source {
+        Source::Primary => "primary stream",
+        Source::Backup => "backup stream",
+        Source::Fallback => "fallback file",
+        Source::None => "nothing",
+    }
+}
+
+/// Lower is better: primary, backup, fallback file, nothing.
+fn rank(source: Source) -> u8 {
+    match source {
+        Source::Primary => 0,
+        Source::Backup => 1,
+        Source::Fallback => 2,
+        Source::None => 3,
+    }
+}
+
+/// What has been learned about one stream's reliability, to decide when the
+/// station may return to it after it failed.
+#[derive(Default)]
+struct Recovery {
+    failed_at: Option<Instant>,
+    /// How long it is left after failing; doubles while it keeps failing soon after returns.
+    hold: Duration,
+    returned_at: Option<Instant>,
+    /// Failures in a row that came soon after a return.
+    strikes: u32,
+}
+
+impl Recovery {
+    /// The stream failed. Returns whether it failed soon after being returned to.
+    fn failed(&mut self, now: Instant) -> bool {
+        let repeat = self.returned_at.is_some_and(|at| now.saturating_duration_since(at) < STABLE_AFTER);
+        if repeat {
+            self.strikes += 1;
+            self.hold = (self.hold * 2).clamp(HOLD_FIRST, HOLD_MAX);
+        } else {
+            self.strikes = 0;
+            self.hold = HOLD_FIRST;
+        }
+        self.failed_at = Some(now);
+        self.returned_at = None;
+        repeat
+    }
+
+    fn returned(&mut self, now: Instant) {
+        self.returned_at = Some(now);
+    }
+
+    /// Switching to it was asked for: no waiting, and its record starts afresh.
+    fn forgive(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The earliest the station may return to it.
+    fn not_before(&self, now: Instant) -> Instant {
+        self.failed_at.map_or(now, |at| at + self.hold)
+    }
+
+    /// How long it must have audio without a break before it is returned to.
+    fn confirm(&self) -> Duration {
+        if self.strikes > 0 { RETURN_CONFIRM_REPEAT } else { RETURN_CONFIRM }
+    }
+}
+
+/// When a background check hands a stream back.
+#[derive(Clone, Copy)]
+struct Terms {
+    /// Not before this, however good it sounds.
+    not_before: Instant,
+    /// After this long with audio and no break.
+    confirm: Duration,
+    /// Asked for from the dashboard.
+    manual: bool,
+}
+
+/// Watches a source in the background and hands it over once it is
+/// delivering real audio again, on `terms`, so the relay can cut to it without
+/// a gap. The watch looks after itself: if it ever crashes it is started again,
+/// so a station can never be left on its fallback file for want of a check.
+fn watch_source(hub: Arc<Hub>, slug: String, url: String, source: Source, listening: Listening, terms: Terms) -> mpsc::Receiver<LiveSource> {
     let (tx, rx) = mpsc::channel(1);
     tokio::spawn(async move {
-        let hold = RETURN_CONFIRM;
-        let retry = hub.cfg.primary_retry.min(RECHECK);
         loop {
-            let attempt = tokio::select! {
-                _ = tx.closed() => return,
-                result = hub.connector.connect(&url) => result,
-            };
-            if let Ok(upstream) = attempt {
-                let mut live = LiveSource::new(upstream, source);
-                let mut good_since: Option<Instant> = None;
-                let (mut frames, mut raw) = (Vec::new(), Vec::new());
-                loop {
-                    frames.clear();
-                    raw.clear();
-                    let read = tokio::select! {
-                        _ = tx.closed() => return,
-                        read = timeout(hold.max(Duration::from_secs(2)), live.next(&mut frames, &mut raw)) => read,
-                    };
-                    if !matches!(read, Ok(Ok(_))) {
-                        break;
-                    }
-                    if frames.is_empty() && raw.is_empty() {
-                        continue;
-                    }
-                    match live.heard(&frames, &raw, listening) {
-                        Heard::Sound => {
-                            if good_since.get_or_insert_with(Instant::now).elapsed() >= hold {
-                                // What was just read is the first thing listeners hear of it.
-                                live.pending = std::mem::take(&mut frames);
-                                tracing::info!(station = %slug, source = source.as_str(), "source has audio again");
-                                let _ = tx.send(live).await;
-                                return;
-                            }
-                        }
-                        Heard::Silence | Heard::Noise => good_since = None,
-                        Heard::Unknown => {}
-                    }
-                }
+            let run = AssertUnwindSafe(check_source(&hub, &slug, &url, source, listening, terms, &tx)).catch_unwind().await;
+            if run.is_ok() || tx.is_closed() {
+                return;
             }
-            tokio::select! {
-                _ = tx.closed() => return,
-                _ = sleep(retry) => {}
-            }
+            tracing::error!(station = %slug, source = source.as_str(), "the background check of a source crashed: starting it again");
+            events::record(&hub, Level::Error, "source", Some(&slug), format!("The background check of the {} stopped unexpectedly and was started again", name(source)));
+            sleep(RECHECK).await;
         }
     });
     rx
+}
+
+/// One run of a background check. Returns once the source has been handed
+/// over, or nobody wants it any more.
+async fn check_source(hub: &Arc<Hub>, slug: &str, url: &str, source: Source, listening: Listening, terms: Terms, tx: &mpsc::Sender<LiveSource>) {
+    // A stream that cannot be reached at all is tried less and less often, to spare its server.
+    let first_retry = hub.cfg.primary_retry.min(RECHECK);
+    let max_retry = hub.cfg.primary_retry.min(RECHECK_MAX).max(first_retry);
+    let mut retry = first_retry;
+    let mut said_held = false;
+    loop {
+        let attempt = tokio::select! {
+            _ = tx.closed() => return,
+            result = hub.connector.connect(url) => result,
+        };
+        if let Ok(upstream) = attempt {
+            retry = first_retry;
+            let mut live = LiveSource::new(upstream, source);
+            let mut good_since: Option<Instant> = None;
+            let (mut frames, mut raw) = (Vec::new(), Vec::new());
+            loop {
+                frames.clear();
+                raw.clear();
+                let read = tokio::select! {
+                    _ = tx.closed() => return,
+                    read = timeout(CHECK_STALL, live.next(&mut frames, &mut raw)) => read,
+                };
+                if !matches!(read, Ok(Ok(_))) {
+                    break;
+                }
+                if frames.is_empty() && raw.is_empty() {
+                    continue;
+                }
+                match live.heard(&frames, &raw, listening) {
+                    Heard::Sound => {
+                        let since = *good_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() < terms.confirm {
+                            continue;
+                        }
+                        let now = Instant::now();
+                        if now < terms.not_before {
+                            // Kept connected and listened to: if it stays good, it is taken at once when the wait is over.
+                            if !said_held {
+                                said_held = true;
+                                let wait = terms.not_before - now;
+                                tracing::info!(station = %slug, source = source.as_str(), wait = ?wait, "source has audio again, but is held off");
+                                events::record(hub, Level::Info, "source", Some(slug), format!("The {} has audio again; it failed recently, so the station returns to it in {} if it stays up", name(source), human(wait)));
+                            }
+                            continue;
+                        }
+                        // What was just read is the first thing listeners hear of it.
+                        live.pending = std::mem::take(&mut frames);
+                        tracing::info!(station = %slug, source = source.as_str(), manual = terms.manual, "source has audio again");
+                        let _ = tx.send(live).await;
+                        return;
+                    }
+                    Heard::Silence | Heard::Noise => good_since = None,
+                    Heard::Unknown => {}
+                }
+            }
+        }
+        tokio::select! {
+            _ = tx.closed() => return,
+            _ = sleep(retry) => {}
+        }
+        retry = (retry * 2).min(max_retry);
+    }
+}
+
+/// "45 seconds", "2 minutes".
+fn human(duration: Duration) -> String {
+    let secs = duration.as_secs_f64().round() as u64;
+    match secs {
+        0..=1 => "a moment".into(),
+        2..=119 => format!("{secs} seconds"),
+        _ => format!("{} minutes", (secs + 30) / 60),
+    }
 }
 
 /// Waits, reading and discarding `incoming` meanwhile so that it stays live.
@@ -345,6 +498,12 @@ pub struct RelayTask {
     decoded: Option<Decoded>,
     /// The stream level last published, and when.
     level: Option<(f32, Instant)>,
+    /// What has been learned about the primary and the backup stream.
+    recovery: [Recovery; 2],
+    /// The last "switch to this stream" request acted on.
+    handled_switch: Option<u64>,
+    /// A switch asked for from the dashboard is under way, to this source.
+    manual: Option<Source>,
 }
 
 impl RelayTask {
@@ -367,12 +526,18 @@ impl RelayTask {
             quiet: false,
             decoded: None,
             level: None,
+            recovery: Default::default(),
+            handled_switch: None,
+            manual: None,
         }
     }
 
     pub async fn run(mut self) {
         let slug = self.relay.slug.clone();
         tracing::info!(station = %slug, "relay starting");
+        self.event(Level::Info, "station", "Station started on this server (a listener connected)".into());
+        // A request made before the station started here is not acted on.
+        self.handled_switch = self.hub.switch_request(&slug).map(|request| request.id);
         self.load_ident();
         let mut backoff = Duration::from_secs(1);
         let mut failed_rounds = 0u32;
@@ -403,29 +568,41 @@ impl RelayTask {
                 Outcome::Switch(mut live) => {
                     // A stream is back. With an ident, the ident announces the return;
                     // without one, what was playing has already been faded out.
+                    let from = self.relay.source();
                     self.prefer_primary(&mut live);
                     self.play_ident(Some(&mut live)).await;
                     // The primary may have come back at the same moment, or while the
                     // ident played. One ident covers both: go straight to the primary.
                     self.prefer_primary(&mut live);
+                    let why = if self.manual == Some(live.source) { "asked for from the dashboard" } else { "it has had audio again without a break" };
+                    self.manual = None;
+                    self.recovery_of(live.source).returned(Instant::now());
+                    self.event(Level::Info, "switch", format!("Switched from the {} to the {} ({why})", name(from), name(live.source)));
                     current = Some(live);
                 }
                 Outcome::Lost(source) => {
                     // Listeners hear nothing while it is retried; their players' buffers cover part of it.
                     let deadline = Instant::now() + self.station.failover_delay;
                     match self.reconnect_until(source, deadline).await {
-                        Ok(Some(live)) => current = Some(live),
-                        Ok(None) => match self.fail_over(source).await {
-                            Ok(next) => current = next,
-                            Err(Flow::Stop) => break,
-                            Err(Flow::Reconfigured) => current = self.connect_initial().await,
-                        },
+                        Ok(Some(live)) => {
+                            self.event(Level::Info, "source", format!("The {} reconnected within the failover delay; listeners stayed on it", name(source)));
+                            current = Some(live);
+                        }
+                        Ok(None) => {
+                            self.event(Level::Warning, "source", format!("The {} dropped and could not be reconnected within {} s ({})", name(source), self.station.failover_delay.as_secs(), self.last_error));
+                            match self.fail_over(source).await {
+                                Ok(next) => current = next,
+                                Err(Flow::Stop) => break,
+                                Err(Flow::Reconfigured) => current = self.connect_initial().await,
+                            }
+                        }
                         Err(Flow::Stop) => break,
                         Err(Flow::Reconfigured) => current = self.connect_initial().await,
                     }
                 }
                 Outcome::Dead(source, why) => {
                     tracing::warn!(station = %slug, source = source.as_str(), reason = why, delay = ?self.station.failover_delay, "no audio from the source for the failover delay");
+                    self.event(Level::Warning, "source", format!("No audio from the {} for {} s: {why}", name(source), self.station.failover_delay.as_secs()));
                     match self.fail_over(source).await {
                         Ok(next) => current = next,
                         Err(Flow::Stop) => break,
@@ -438,11 +615,15 @@ impl RelayTask {
                     urls.extend(self.station.backup.clone());
                     self.hub.audio.record_failure(&slug, urls);
                     failed_rounds += 1;
+                    if failed_rounds == 1 {
+                        self.event(Level::Error, "station", format!("Nothing to play: {}", self.last_error));
+                    }
                     if failed_rounds >= self.hub.cfg.station_fail_rounds {
                         // Stop spending anything on it: release its listeners (their
                         // players reconnect, and HAProxy tries them on another server)
                         // and refuse it for a while. Other stations are untouched.
                         tracing::error!(station = %slug, reason = %self.last_error, retry_in = ?self.hub.cfg.station_retry, "no audio for this station: releasing its listeners and resources");
+                        self.event(Level::Error, "station", format!("No audio at all (neither stream, nor a usable fallback file): listeners released, tried again in {}. Last problem: {}", human(self.hub.cfg.station_retry), self.last_error));
                         self.hub.mark_silent(&self.station, self.last_error.clone());
                         break 'relay;
                     }
@@ -468,6 +649,28 @@ impl RelayTask {
         self.relay.close();
         stats::retire(&self.hub, &self.relay).await;
         tracing::info!(station = %slug, "relay stopped");
+        self.event(Level::Info, "station", "Station stopped on this server".into());
+    }
+
+    /// Adds to the service log, for this station.
+    fn event(&self, level: Level, category: &'static str, message: String) {
+        events::record(&self.hub, level, category, Some(&self.relay.slug), message);
+    }
+
+    fn recovery_of(&mut self, source: Source) -> &mut Recovery {
+        &mut self.recovery[usize::from(source == Source::Backup)]
+    }
+
+    /// When a background check of `source` may hand it over.
+    fn terms_for(&mut self, source: Source) -> Terms {
+        let manual = self.manual == Some(source);
+        let recovery = self.recovery_of(source);
+        let now = Instant::now();
+        if manual {
+            Terms { not_before: now, confirm: MANUAL_CONFIRM, manual }
+        } else {
+            Terms { not_before: recovery.not_before(now), confirm: recovery.confirm(), manual }
+        }
     }
 
     fn url_of(&self, source: Source) -> Option<String> {
@@ -484,7 +687,12 @@ impl RelayTask {
         for source in [Source::Primary, Source::Backup] {
             let Some(url) = self.url_of(source) else { continue };
             match self.hub.connector.connect(&url).await {
-                Ok(upstream) => return Some(LiveSource::new(upstream, source)),
+                Ok(upstream) => {
+                    if !errors.is_empty() {
+                        self.event(Level::Warning, "source", format!("Started on the {} because the primary stream could not be reached ({})", name(source), errors.join("; ")));
+                    }
+                    return Some(LiveSource::new(upstream, source));
+                }
                 Err(error) => {
                     tracing::warn!(station = %self.relay.slug, source = source.as_str(), %error, "source unavailable");
                     errors.push(format!("{}: {error}", source.as_str()));
@@ -492,6 +700,7 @@ impl RelayTask {
             }
         }
         self.last_error = errors.join("; ");
+        self.event(Level::Warning, "source", format!("No stream could be reached when starting ({})", self.last_error));
         None
     }
 
@@ -528,6 +737,11 @@ impl RelayTask {
     /// listeners neither a second ident nor a second wait: the watcher brings
     /// it in later if it returns.
     async fn fail_over(&mut self, from: Source) -> Result<Option<LiveSource>, Flow> {
+        let failed_again = self.recovery_of(from).failed(Instant::now());
+        if failed_again {
+            let hold = self.recovery_of(from).hold;
+            self.event(Level::Warning, "source", format!("The {} failed again soon after the station returned to it: it is held off for {} this time, so listeners are not switched back and forth", name(from), human(hold)));
+        }
         if from == Source::Primary && self.station.backup.is_some() {
             // One attempt. Listeners have already waited the failover delay for the primary.
             let url = self.station.backup.clone().unwrap_or_default();
@@ -536,14 +750,19 @@ impl RelayTask {
                     let mut live = LiveSource::new(upstream, Source::Backup);
                     self.play_ident(Some(&mut live)).await;
                     tracing::info!(station = %self.relay.slug, "switched to the backup stream");
+                    self.event(Level::Warning, "switch", "Switched from the primary stream to the backup stream".into());
                     return Ok(Some(live));
                 }
                 Ok(Err(error)) => self.last_error = format!("backup: {error}"),
                 Err(_) => self.last_error = "backup: no answer".into(),
             }
             tracing::warn!(station = %self.relay.slug, reason = %self.last_error, "backup stream unavailable too");
+            self.event(Level::Warning, "source", format!("The backup stream could not be used either ({})", self.last_error));
         }
         self.play_ident(None).await;
+        if self.station.fallback.is_some() {
+            self.event(Level::Warning, "switch", format!("Switched from the {} to the fallback file", name(from)));
+        }
         Ok(None)
     }
 
@@ -567,15 +786,71 @@ impl RelayTask {
             return;
         }
         if self.primary_watch.is_none() {
-            self.primary_watch = Some(watch_source(self.hub.clone(), self.relay.slug.clone(), self.station.primary.clone(), Source::Primary, detect));
+            let terms = self.terms_for(Source::Primary);
+            self.primary_watch = Some(watch_source(self.hub.clone(), self.relay.slug.clone(), self.station.primary.clone(), Source::Primary, detect, terms));
         }
         if playing == Source::Backup {
             self.backup_watch = None;
         } else if self.backup_watch.is_none() {
             if let Some(url) = self.station.backup.clone() {
-                self.backup_watch = Some(watch_source(self.hub.clone(), self.relay.slug.clone(), url, Source::Backup, detect));
+                let terms = self.terms_for(Source::Backup);
+                self.backup_watch = Some(watch_source(self.hub.clone(), self.relay.slug.clone(), url, Source::Backup, detect, terms));
             }
         }
+    }
+
+    /// A background check that ended without handing its stream over (it
+    /// cannot, but if it did) is replaced, so the station is never left
+    /// without one while it plays something lower.
+    fn repair_watchers(&mut self) {
+        let playing = self.relay.source();
+        if !matches!(playing, Source::Backup | Source::Fallback) {
+            return;
+        }
+        let dead = |watch: &Option<mpsc::Receiver<LiveSource>>| watch.as_ref().is_some_and(|rx| rx.is_closed() && rx.is_empty());
+        if dead(&self.primary_watch) || dead(&self.backup_watch) {
+            if dead(&self.primary_watch) {
+                self.primary_watch = None;
+            }
+            if dead(&self.backup_watch) {
+                self.backup_watch = None;
+            }
+            self.event(Level::Warning, "source", "A background check of a stream had stopped and was started again".into());
+            self.watch(playing);
+        }
+    }
+
+    /// Acts on "switch to this stream" from the dashboard, once per request.
+    fn take_switch_request(&mut self) {
+        let Some(request) = self.hub.switch_request(&self.relay.slug) else { return };
+        if self.handled_switch == Some(request.id) {
+            return;
+        }
+        self.handled_switch = Some(request.id);
+        let playing = self.relay.source();
+        if playing == Source::None {
+            // Between attempts with nothing to play: the next attempt starts with the primary anyway.
+            return;
+        }
+        let target = request.source;
+        if target == Source::Backup && self.station.backup.is_none() {
+            self.event(Level::Info, "switch", "Switch to the backup stream asked for, but the station has none: nothing changed".into());
+            return;
+        }
+        if rank(target) >= rank(playing) {
+            let why = if target == playing { format!("it is already on the {}", name(playing)) } else { format!("it is on the {}, which comes first", name(playing)) };
+            self.event(Level::Info, "switch", format!("Switch to the {} asked for from the dashboard, but {why}: nothing changed", name(target)));
+            return;
+        }
+        // Its record is wiped and its check started afresh, without the wait.
+        self.recovery_of(target).forgive();
+        self.manual = Some(target);
+        match target {
+            Source::Primary => self.primary_watch = None,
+            _ => self.backup_watch = None,
+        }
+        self.watch(playing);
+        self.event(Level::Info, "switch", format!("Switch to the {} asked for from the dashboard: switching as soon as it has {} s of audio", name(target), MANUAL_CONFIRM.as_secs()));
     }
 
     fn publish_frames(&mut self, frames: &[Frame]) {
@@ -871,6 +1146,7 @@ impl RelayTask {
         let Some(request) = self.media_request(&media) else { return };
         let slot = self.ident.clone();
         let slug = self.relay.slug.clone();
+        let hub = self.hub.clone();
         tokio::spawn(async move {
             let fetched = async {
                 let response = request.timeout(Duration::from_secs(20)).send().await.map_err(|e| e.to_string())?;
@@ -888,7 +1164,10 @@ impl RelayTask {
             .await;
             match fetched {
                 Ok(frames) => *slot.lock().unwrap() = Some(Ident { version: media.version, frames }),
-                Err(error) => tracing::warn!(station = %slug, ident = %media.name, %error, "the ident could not be loaded and will not be played"),
+                Err(error) => {
+                    tracing::warn!(station = %slug, ident = %media.name, %error, "the ident could not be loaded and will not be played");
+                    events::record(&hub, Level::Warning, "file", Some(&slug), format!("The ident \"{}\" could not be loaded and will not be played: {error}", media.name));
+                }
             }
         });
     }
@@ -910,6 +1189,7 @@ impl RelayTask {
         if let Some(format) = self.relay.format() {
             if frames[0].format != format {
                 tracing::warn!(station = %self.relay.slug, stream = %format, ident = %frames[0].format, "ident skipped: its format differs from the stream's");
+                self.event(Level::Warning, "file", format!("Ident skipped: it is {}, but the stream is {format}", frames[0].format));
                 return;
             }
         }
@@ -1083,8 +1363,11 @@ impl RelayTask {
         // reconnect and are placed on a server that has it.
         if self.hub.audio.is_no_audio() {
             tracing::info!(station = %self.relay.slug, "server has no audio, releasing listeners");
+            self.event(Level::Warning, "station", "This server has no audio: listeners released, to be placed on a server that has it".into());
             return Some(Flow::Stop);
         }
+        self.take_switch_request();
+        self.repair_watchers();
         if self.relay.connections() == 0 {
             let since = *self.idle_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= self.hub.cfg.idle_grace && self.hub.remove_if_idle(&self.relay) {
@@ -1121,11 +1404,14 @@ impl RelayTask {
                     self.load_ident();
                     if rewired {
                         tracing::info!(station = %self.relay.slug, "source URLs changed, reconnecting");
+                        self.event(Level::Info, "station", "Station sources or detection settings changed: reconnecting".into());
+                        self.recovery = Default::default();
                         return Some(Flow::Reconfigured);
                     }
                 }
                 Ok(_) => {
                     tracing::info!(station = %self.relay.slug, "station suspended or removed, disconnecting listeners");
+                    self.event(Level::Info, "station", "Station suspended or removed: listeners disconnected".into());
                     return Some(Flow::Stop);
                 }
                 // Redis being briefly unavailable must not interrupt audio.
@@ -1207,4 +1493,77 @@ async fn check_artwork(hub: &Hub, relay: &Relay, url: &str) {
         titles.checked.retain(|_, (_, at)| now.saturating_sub(*at) < 3600);
         titles.checked.insert(url.to_string(), (ok, now));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stream_that_failed_once_is_left_for_30_seconds() {
+        let start = Instant::now();
+        let mut stream = Recovery::default();
+        assert_eq!(stream.not_before(start), start, "never failed: no wait");
+        assert!(!stream.failed(start));
+        assert_eq!(stream.not_before(start), start + HOLD_FIRST);
+        assert_eq!(stream.confirm(), RETURN_CONFIRM);
+    }
+
+    #[test]
+    fn failing_soon_after_each_return_doubles_the_wait_up_to_five_minutes() {
+        let mut now = Instant::now();
+        let mut stream = Recovery::default();
+        stream.failed(now);
+        let mut holds = Vec::new();
+        for _ in 0..6 {
+            now = stream.not_before(now);
+            stream.returned(now);
+            now += Duration::from_secs(20);
+            assert!(stream.failed(now), "failed 20 s after a return");
+            holds.push(stream.hold.as_secs());
+        }
+        assert_eq!(holds, [60, 120, 240, 300, 300, 300]);
+        assert_eq!(stream.confirm(), RETURN_CONFIRM_REPEAT);
+    }
+
+    #[test]
+    fn a_stream_that_stayed_up_starts_afresh() {
+        let mut now = Instant::now();
+        let mut stream = Recovery::default();
+        stream.failed(now);
+        now += HOLD_FIRST;
+        stream.returned(now);
+        now += Duration::from_secs(10);
+        stream.failed(now);
+        assert_eq!(stream.hold, Duration::from_secs(60));
+        now += Duration::from_secs(60);
+        stream.returned(now);
+        now += STABLE_AFTER;
+        assert!(!stream.failed(now), "stayed up for three minutes");
+        assert_eq!(stream.hold, HOLD_FIRST);
+        assert_eq!(stream.confirm(), RETURN_CONFIRM);
+    }
+
+    #[test]
+    fn a_switch_from_the_dashboard_wipes_the_record() {
+        let now = Instant::now();
+        let mut stream = Recovery::default();
+        stream.failed(now);
+        stream.forgive();
+        assert_eq!(stream.not_before(now), now);
+    }
+
+    #[test]
+    fn only_moves_up() {
+        assert!(rank(Source::Primary) < rank(Source::Backup));
+        assert!(rank(Source::Backup) < rank(Source::Fallback));
+        assert!(rank(Source::Fallback) < rank(Source::None));
+    }
+
+    #[test]
+    fn waits_read_naturally() {
+        assert_eq!(human(Duration::from_secs(30)), "30 seconds");
+        assert_eq!(human(Duration::from_secs(120)), "2 minutes");
+        assert_eq!(human(Duration::from_secs(300)), "5 minutes");
+    }
 }

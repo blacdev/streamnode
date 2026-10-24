@@ -675,6 +675,44 @@ With `"kind": "titles"` the answer is what was found at a title address:
 answers `{"ok": false, "error": "..."}` with the reason. It takes up to about ten
 seconds; `503 no_streaming_server` means no engine is running to try it with.
 
+## Switching a station to a stream now
+
+The streaming servers return a station to its primary (or backup) stream by
+themselves once it is reliably back ([Failover](FAILOVER.md#returning-to-a-live-stream)).
+To skip the wait:
+
+```bash
+curl -X POST $API/stations/powerbeats/switch -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"source": "primary"}'
+```
+
+```json
+{ "outcome": "requested", "source": "primary", "playing": "backup",
+  "message": "Switching to the primary stream as soon as it has two seconds of audio. ..." }
+```
+
+`202 requested`: every server playing the station switches once the stream has two
+seconds of audio, normally within a few seconds. It only ever moves a station up;
+otherwise the answer is `200` with `already_better` (the station is on that stream or a
+better one) or `not_playing` (nobody is listening, so nothing plays), and nothing changes.
+
+## Service log
+
+`GET /logs` (administrators) is what happened across the service, newest first: switches
+and why, streams failing and returning, stations starting and stopping, streaming
+servers coming and going, certificate and update runs, failed background tasks and
+changes made through the API.
+
+```bash
+curl "$API/logs?station=powerbeats&level=warning&limit=50" -H "X-API-Key: $KEY"
+curl "$API/logs?format=csv&from=2026-10-01T00:00:00Z" -H "X-API-Key: $KEY" -o log.csv
+```
+
+Filters: `level` (`warning` includes errors), `category` (`switch`, `source`, `station`,
+`file`, `server`, `certificate`, `update`, `admin`, `system`), `station`, `q` (text),
+`from`, `to`. Page back with `before` set to the last `id` received. Entries are kept
+for `log_retention_days` (`PUT /settings`, 7 to 365, default 30).
+
 ## Public endpoint: now playing
 
 No authentication, callable from any web page:

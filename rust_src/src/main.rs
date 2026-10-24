@@ -5,12 +5,14 @@ mod hub;
 mod icy;
 mod listener;
 mod detector;
+mod events;
 mod frames;
 mod nowplaying;
 mod playout;
 mod probe;
 mod station;
 mod stats;
+mod switching;
 mod sysinfo;
 mod upstream;
 
@@ -95,6 +97,9 @@ async fn main() {
 
     tokio::spawn(stats::run(hub.clone()));
     tokio::spawn(probe::run(hub.clone()));
+    tokio::spawn(switching::run(hub.clone()));
+    events::start(hub.redis.clone());
+    events::record(&hub, events::Level::Info, "server", None, format!("Streaming server started (version {})", env!("CARGO_PKG_VERSION")));
     tokio::spawn(flush_on_shutdown(hub.clone()));
 
     let mut app = Router::new()

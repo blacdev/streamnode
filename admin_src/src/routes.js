@@ -16,6 +16,7 @@ const remoteFiles = require('./remote_files');
 const geo = require('./geo');
 const image = require('./image');
 const probe = require('./probe');
+const events = require('./events');
 const converter = require('./converter');
 const slugs = require('./slug');
 const settings = require('./settings');
@@ -45,6 +46,9 @@ function audit(req, action, target, detail) {
     detail ? JSON.stringify(detail) : null,
     req.ip,
   ]).catch((err) => console.error('[audit]', err.message));
+  // Also in the service log, so that changes show beside what they caused.
+  const who = req.user ? req.user.username : 'someone';
+  events.record('info', 'admin', `${who}: ${action}${target ? ` ${target}` : ''}`, { station: action.startsWith('station.') ? target : null });
 }
 
 // Tenants only ever see their own stations; a miss and a foreign station
@@ -408,6 +412,41 @@ router.get('/stations/:slug/status', wrap(async (req, res) => {
   const row = await loadStation(req);
   const live = (await stations.liveFor([row.slug])).get(row.slug);
   res.json({ station: row.slug, is_active: row.is_active, max_listeners: row.max_listeners, ...live });
+}));
+
+// Switches the station to one of its streams now, instead of waiting for the
+// streaming servers' own checks: from the fallback file to a stream, or from
+// the backup to the primary. Never down: asking for the backup while the
+// primary plays changes nothing. The switch happens once the stream has two
+// seconds of audio, on every server playing the station, within a few seconds.
+router.post('/stations/:slug/switch', wrap(async (req, res) => {
+  const row = await loadStation(req);
+  const source = req.body && req.body.source;
+  if (source !== 'primary' && source !== 'backup') throw invalid([{ field: 'source', message: 'must be "primary" or "backup"' }]);
+  if (source === 'backup' && !row.backup_url) throw conflict('no_backup', 'This station has no backup stream.');
+  if (!row.is_active) throw conflict('station_inactive', 'This station is switched off.');
+  const live = (await stations.liveFor([row.slug])).get(row.slug) || {};
+  const playing = live.online ? live.source : null;
+  const RANK = { primary: 0, backup: 1, fallback: 2 };
+  let outcome;
+  if (!playing) outcome = 'not_playing';
+  else if (RANK[source] >= RANK[playing]) outcome = 'already_better';
+  else {
+    const now = Math.floor(Date.now() / 1000);
+    await redis.hSet('switch:requests', row.slug, JSON.stringify({ source, id: Date.now() * 1000 + crypto.randomInt(1000), at: now }));
+    // Old requests are not acted on; they are cleared here so the hash stays small.
+    const all = await redis.hGetAll('switch:requests');
+    const stale = Object.entries(all).filter(([, value]) => { try { return now - JSON.parse(value).at > 60; } catch { return true; } }).map(([slug]) => slug);
+    if (stale.length) await redis.hDel('switch:requests', stale);
+    outcome = 'requested';
+  }
+  audit(req, 'station.switch', row.slug, { source, outcome });
+  const messages = {
+    requested: `Switching to the ${source} stream as soon as it has two seconds of audio. The station's log says when it has.`,
+    already_better: playing === source ? `The station is already on the ${source} stream.` : `The station is on the ${playing} stream, which comes before the ${source} stream: nothing was changed.`,
+    not_playing: 'Nobody is listening to the station right now, so nothing is playing. The next listener starts it on the primary stream (or the backup, if the primary is down).',
+  };
+  res.status(outcome === 'requested' ? 202 : 200).json({ outcome, source, playing, message: messages[outcome] });
 }));
 
 router.get('/stations/:slug/stats', wrap(async (req, res) => {
@@ -1023,6 +1062,7 @@ async function presentSettings(req) {
   return {
     ident_max_seconds: all.ident_max_seconds,
     default_storage_quota_mb: all.default_storage_quota_mb,
+    log_retention_days: await events.retentionDays(),
     // The master's own machine, for capacity estimates, where no engine beside it reports it.
     master_port_mbps: all.master_port_mbps || 1000,
     master_vcpus: all.master_vcpus || null,
@@ -1190,6 +1230,41 @@ router.get('/capacity', auth.requireAdmin, wrap(async (req, res) => {
 // What adding a server of a given size would do to capacity, load and traffic.
 router.post('/capacity/estimate', auth.requireAdmin, wrap(async (req, res) => {
   res.json(await capacity.estimate(v.parseCandidate(req.body)));
+}));
+
+// The service log, newest first. `before` pages back; `format=csv` downloads it.
+router.get('/logs', auth.requireAdmin, wrap(async (req, res) => {
+  const q = req.query;
+  const errors = [];
+  const date = (name) => {
+    if (q[name] === undefined || q[name] === '') return undefined;
+    const at = new Date(String(q[name]));
+    if (Number.isNaN(at.getTime())) errors.push({ field: name, message: 'must be a date and time (ISO 8601)' });
+    return at;
+  };
+  if (q.level !== undefined && q.level !== '' && !['info', 'warning', 'error'].includes(q.level)) errors.push({ field: 'level', message: 'must be info, warning or error' });
+  if (q.category !== undefined && q.category !== '' && !events.CATEGORIES.includes(q.category)) errors.push({ field: 'category', message: `must be one of ${events.CATEGORIES.join(', ')}` });
+  const from = date('from');
+  const to = date('to');
+  const csv = q.format === 'csv';
+  const limit = v.intParam(q.limit, { name: 'limit', min: 1, max: csv ? 50000 : 500, fallback: csv ? 10000 : 200 });
+  const before = q.before === undefined || q.before === '' ? undefined : v.intParam(q.before, { name: 'before', min: 1, max: Number.MAX_SAFE_INTEGER, fallback: undefined });
+  if (errors.length) throw invalid(errors);
+  const rows = await events.list({
+    level: q.level || undefined,
+    category: q.category || undefined,
+    station: q.station ? String(q.station).slice(0, 100) : undefined,
+    q: q.q ? String(q.q).slice(0, 200) : undefined,
+    from, to, before, limit,
+  });
+  if (csv) {
+    const cell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines = [['time', 'level', 'category', 'station', 'server', 'message'].join(',')]
+      .concat(rows.map((r) => [r.at.toISOString(), r.level, r.category, r.station, r.node, r.message].map(cell).join(',')));
+    res.set('Content-Disposition', `attachment; filename="streamnode-log-${new Date().toISOString().slice(0, 10)}.csv"`);
+    return res.type('text/csv').send(`${lines.join('\n')}\n`);
+  }
+  res.json({ entries: rows, retention_days: await events.retentionDays(), more: rows.length === limit });
 }));
 
 router.get('/audit-log', auth.requireAdmin, wrap(async (req, res) => {
