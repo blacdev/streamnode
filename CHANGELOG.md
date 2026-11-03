@@ -13,6 +13,8 @@ All notable changes to this project are recorded here. The format follows
   file and its days). On a day with files chosen for it, they play instead of the
   everyday file, one after another in order, round and round; days are counted in the
   station's `timezone`. A new day's files take over within a minute of midnight there.
+  If fallback audio is playing then, the ident plays between the old day's audio and
+  the new (or, without one, an MP3 station fades out and in), as at a change of source.
   A file that cannot be played is passed over instead of ending the fallback audio.
   `fallback_today` on a station says what plays today. Dashboard: **When audio stops >
   Fallback audio on chosen days**. Migration `017_fallback_schedule.sql` (additive;

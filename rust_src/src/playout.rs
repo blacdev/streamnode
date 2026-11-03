@@ -1253,7 +1253,7 @@ impl RelayTask {
         let mut frames_this_pass = 0u64;
         // Files passed over this time, by id and version.
         let mut skipped: Vec<Media> = Vec::new();
-        let started = Instant::now();
+        let mut started = Instant::now();
         let mut sent = Duration::ZERO;
         let mut tick = interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1382,7 +1382,30 @@ impl RelayTask {
                             skipped.retain(|file| list.contains(file));
                             let Some(next) = next_fallback(list, &media, &skipped) else { return Outcome::Flow(Flow::Reconfigured) };
                             let names = list.iter().map(|file| format!("\"{}\"", file.name)).collect::<Vec<_>>().join(", ");
-                            self.event(Level::Info, "file", format!("Fallback audio changed (a new day, or the schedule was edited): now {names}"));
+                            let ident = self.ident_ready();
+                            self.event(Level::Info, "file", format!(
+                                "Fallback audio changed (a new day, or the schedule was edited): now {names}{}",
+                                if ident { ", after the ident" } else { "" }
+                            ));
+                            // The change is marked like a change of source: the old day's audio
+                            // ends (fading out, for an MP3 station without an ident), the ident
+                            // plays, and the new day's files begin.
+                            let fade = self.fades();
+                            let mut length = 0;
+                            let ending = queue.iter().take_while(|(frame, _)| { let more = length < FADE.as_micros() as u64; length += frame.duration_us; more }).count();
+                            let tail: Vec<Frame> = queue.drain(..ending).map(|(frame, _)| frame).collect();
+                            queue.clear();
+                            queued = Duration::ZERO;
+                            if fade {
+                                self.fade = Some((false, 0));
+                            }
+                            self.publish_frames(&tail);
+                            self.play_ident(None).await;
+                            if fade {
+                                self.fade = Some((true, 0));
+                            }
+                            // What was sent so far is behind us: pacing starts afresh with the new file.
+                            (started, sent) = (Instant::now(), Duration::ZERO);
                             (media, body, failures) = (next, None, 0);
                         }
                     }

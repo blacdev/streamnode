@@ -325,8 +325,11 @@ today, worked out the same way the server does.
 Days are counted in the station's **time zone** (an IANA name such as `Africa/Lagos`;
 new stations start with the browser's). The change of day happens at midnight there:
 within a minute, the streaming servers are given the new day's files. If fallback audio
-is playing at that moment, the new day's files start at once; the same happens when you
-save a changed schedule. A file that cannot be played (it no longer matches the
+is playing at that moment, the change is marked like a change of source: the old day's
+audio ends, the station's **ident** plays, then the new day's files begin. Without an
+ident, an MP3 station fades the old audio out and the new in; an AAC station cuts. The
+same happens when you save a changed schedule. Within a day, one file follows the next
+directly. A file that cannot be played (it no longer matches the
 stream's format, say) is passed over and the next one plays; the service log says so.
 
 Every file is checked against the station's stream like the everyday one, and counts
