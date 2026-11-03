@@ -76,6 +76,8 @@ function formatBytes(n) {
 
 const formatNumber = (n) => Number(n).toLocaleString();
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Never');
+// How a file is used by a station, in the Files list.
+const USED_AS = { ident: 'ident', fallback: 'fallback', scheduled_fallback: 'fallback on some days', artwork: 'image' };
 const isAdmin = () => state.user && state.user.role === 'admin';
 
 function tiles(container, items) {
@@ -288,6 +290,7 @@ async function openStationForm(station, template = null) {
     );
   }
   state.stationFiles = { usage: library.usage, owner: owner.slice(1) };
+  state.stationAudio = library.files.filter((file) => file.kind !== 'image');
   showStationStorage();
   $('stationUpload').textContent = '';
   const format = source && source.live.stream_format;
@@ -337,6 +340,7 @@ async function openStationForm(station, template = null) {
     form.elements.geo_mode.value = 'off';
     form.elements.geo_countries.value = '';
   }
+  fillSchedule(source);
   $('geoStatus').textContent = station && station.geo_status && station.geo_status !== 'off' && station.geo_status !== 'active'
     ? `Not in force: ${station.geo_status.replace(/^inactive: /, '')}.`
     : 'Where listeners may tune in, by the country of their address.';
@@ -545,9 +549,73 @@ function showStationStorage() {
       : `${formatSize(usage.used_bytes)} of ${formatSize(usage.quota_bytes)} of storage used, shared by all of this account's stations.`;
 }
 
+// ── Fallback audio on chosen days ──────────────────────────────────────────
+
+const WEEK = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
+const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
+
+function scheduleRow(entry = { file_id: '', days: [] }) {
+  const select = h('select', { 'aria-label': 'File' },
+    h('option', { value: '' }, 'Choose a file'),
+    ...state.stationAudio.map(fileOption));
+  select.value = entry.file_id ? String(entry.file_id) : '';
+  const days = WEEK.map(([day, label]) => h('label', { class: 'day' }, h('input', { type: 'checkbox', value: day, checked: entry.days.includes(day) }), label));
+  const row = h('div', { class: 'schedule-row' }, select, h('span', { class: 'days' }, days),
+    h('span', { class: 'row-actions' },
+      h('button', { type: 'button', title: 'Play earlier', 'aria-label': 'Play earlier', onclick: () => { if (row.previousElementSibling) row.after(row.previousElementSibling); showScheduleToday(); } }, '↑'),
+      h('button', { type: 'button', title: 'Play later', 'aria-label': 'Play later', onclick: () => { if (row.nextElementSibling) row.before(row.nextElementSibling); showScheduleToday(); } }, '↓'),
+      h('button', { type: 'button', title: 'Remove', 'aria-label': 'Remove', onclick: () => { row.remove(); showScheduleToday(); } }, '✕')));
+  row.addEventListener('change', showScheduleToday);
+  return row;
+}
+
+function readSchedule() {
+  return [...$('fallbackSchedule').children].map((row) => ({
+    file_id: Number(row.querySelector('select').value) || null,
+    days: [...row.querySelectorAll('input:checked')].map((box) => box.value),
+  }));
+}
+
+function zoneOrUtc(zone) {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); return zone; } catch { return null; }
+}
+
+// What plays as fallback audio today, worked out as the server does.
+function showScheduleToday() {
+  const form = $('stationForm');
+  const zone = form.elements.timezone.value.trim() || 'UTC';
+  const known = zoneOrUtc(zone);
+  const out = $('scheduleToday');
+  if (!known) return showResult(out, 'bad', `"${zone}" is not a time zone this browser knows. Use a name such as Africa/Lagos.`);
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: known, weekday: 'short' }).format(new Date()).slice(0, 3).toLowerCase();
+  const names = new Map(state.stationAudio.map((file) => [file.id, file.name]));
+  const today = readSchedule().filter((entry) => entry.file_id && entry.days.includes(day)).map((entry) => names.get(entry.file_id));
+  const everyday = Number(form.elements.fallback_file_id.value);
+  const dayName = WEEK.find(([d]) => d === day)[1];
+  const time = new Intl.DateTimeFormat(undefined, { timeZone: known, hour: '2-digit', minute: '2-digit' }).format(new Date());
+  const what = today.length ? today.map((name) => `"${name}"`).join(', then ')
+    : everyday ? `the everyday fallback audio, "${names.get(everyday)}"` : 'nothing (no fallback audio for today)';
+  showResult(out, '', `It is ${dayName} ${time} there. Fallback audio today: ${what}.`);
+}
+
+function fillSchedule(source) {
+  $('fallbackSchedule').replaceChildren(...((source && source.fallback_schedule) || []).map((entry) => scheduleRow(entry)));
+  $('stationForm').elements.timezone.value = (source && source.timezone) || browserZone;
+  if (!$('timeZones').children.length && Intl.supportedValuesOf) {
+    $('timeZones').replaceChildren(...Intl.supportedValuesOf('timeZone').map((zone) => h('option', { value: zone })));
+  }
+  showScheduleToday();
+}
+
+$('addScheduled').addEventListener('click', () => {
+  $('fallbackSchedule').append(scheduleRow());
+  showScheduleToday();
+});
+for (const name of ['timezone', 'fallback_file_id']) $('stationForm').elements[name].addEventListener('input', showScheduleToday);
+
 // Uploading from a station's form: the file goes into the account's storage,
 // is checked for this station, and is selected. Saving the station applies it.
-for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], ['fallback_upload', 'fallback_file_id', 'fallback'], ['artwork_upload', 'artwork_file_id', 'artwork']]) {
+for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], ['fallback_upload', 'fallback_file_id', 'fallback'], ['scheduled_upload', null, 'fallback'], ['artwork_upload', 'artwork_file_id', 'artwork']]) {
   $('stationForm').elements[input].addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -568,11 +636,18 @@ for (const [input, field, use] of [['ident_upload', 'ident_file_id', 'ident'], [
         if ([...form.elements[name].options].some((option) => option.value === String(stored.id))) continue;
         form.elements[name].append(fileOption(stored));
       }
-      form.elements[field].value = stored.id;
+      if (stored.kind !== 'image' && !state.stationAudio.some((known) => known.id === stored.id)) {
+        state.stationAudio.push(stored);
+        for (const select of $('fallbackSchedule').querySelectorAll('select')) select.append(fileOption(stored));
+      }
+      if (field) form.elements[field].value = stored.id;
+      else $('fallbackSchedule').append(scheduleRow({ file_id: stored.id, days: [] }));
+      showScheduleToday();
       if (stored.kind === 'image') showStationImage();
       state.stationFiles.usage = stored.usage;
       showStationStorage();
-      note.textContent = `${stored.name} ${stored.already_stored ? 'is already in your storage and has been' : 'uploaded and'} selected. Save the station to use it.${stored.status === 'converting' ? ' It is being converted to the stream\'s format and plays once that is done.' : ''}`;
+      const chosen = field ? 'selected' : 'added below: tick its days';
+      note.textContent = `${stored.name} ${stored.already_stored ? `is already in your storage and has been ${chosen}` : `uploaded and ${chosen}`}. Save the station to use it.${stored.status === 'converting' ? ' It is being converted to the stream\'s format and plays once that is done.' : ''}`;
     } catch (err) {
       note.textContent = '';
       $('stationError').textContent = err.message;
@@ -614,6 +689,15 @@ $('stationForm').addEventListener('submit', async (event) => {
   body.silence_threshold_db = form.elements.silence_threshold_db.value === '' ? null : Number(form.elements.silence_threshold_db.value);
   body.ident_file_id = Number(form.elements.ident_file_id.value) || null;
   body.fallback_file_id = Number(form.elements.fallback_file_id.value) || null;
+  const schedule = readSchedule();
+  const incomplete = schedule.findIndex((entry) => !entry.file_id || !entry.days.length);
+  if (incomplete >= 0) {
+    showStationField('fallback_file_id');
+    $('stationError').textContent = `Fallback audio on chosen days, line ${incomplete + 1}: choose a file and at least one day, or remove the line.`;
+    return;
+  }
+  body.fallback_schedule = schedule;
+  body.timezone = form.elements.timezone.value.trim() || 'UTC';
   body.default_title = form.elements.default_title.value.trim() || null;
   body.default_artist = form.elements.default_artist.value.trim() || null;
   body.artwork_file_id = Number(form.elements.artwork_file_id.value) || null;
@@ -626,7 +710,7 @@ $('stationForm').addEventListener('submit', async (event) => {
     if (!current || current.user_id !== owner) {
       body.user_id = owner;
       // The files chosen belong to the account the station is leaving.
-      if (current) { delete body.ident_file_id; delete body.fallback_file_id; delete body.artwork_file_id; }
+      if (current) { delete body.ident_file_id; delete body.fallback_file_id; delete body.artwork_file_id; delete body.fallback_schedule; }
     }
     const optional = (name) => (form.elements[name].value === '' ? null : Number(form.elements[name].value));
     body.billing_bitrate_kbps = optional('billing_bitrate_kbps');
@@ -891,7 +975,7 @@ async function loadFiles() {
     h('td', { class: file.status === 'failed' ? 'wrap' : '' }, fileState(file)),
     h('td', { class: 'num' }, file.kind === 'image' ? '' : formatLength(file.duration_seconds)),
     h('td', { class: 'num' }, formatSize(file.size_bytes)),
-    h('td', { class: 'wrap' }, file.used_by.length ? file.used_by.map((u) => `${u.station} (${u.as})`).join(', ') : h('span', { class: 'muted' }, 'Not in use')),
+    h('td', { class: 'wrap' }, file.used_by.length ? file.used_by.map((u) => `${u.station} (${USED_AS[u.as] || u.as})`).join(', ') : h('span', { class: 'muted' }, 'Not in use')),
     h('td', {}, file.stored_in === 'dropbox' ? 'Dropbox' : 'This server'),
     h('td', { class: 'row-actions' },
       h('button', { onclick: () => renameFile(file) }, 'Rename'),

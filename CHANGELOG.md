@@ -8,6 +8,16 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **More fallback audio, by day of the week.** Besides its everyday fallback file, a
+  station can have more files for chosen days (`fallback_schedule`: up to 50 lines of a
+  file and its days). On a day with files chosen for it, they play instead of the
+  everyday file, one after another in order, round and round; days are counted in the
+  station's `timezone`. A new day's files take over within a minute of midnight there.
+  A file that cannot be played is passed over instead of ending the fallback audio.
+  `fallback_today` on a station says what plays today. Dashboard: **When audio stops >
+  Fallback audio on chosen days**. Migration `017_fallback_schedule.sql` (additive;
+  stations keep their fallback file as the everyday one).
+
 - **Service log** (dashboard: Logs; `GET /logs`, CSV download). What happened across
   the service: every switch between a station's streams and fallback file and why,
   streams failing and returning, stations starting and stopping on each server,

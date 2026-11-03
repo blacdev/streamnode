@@ -446,9 +446,22 @@
               <label>Ident <span class="optional">optional</span> <select name="ident_file_id"></select>
                 <small>A short clip played at every change of source. Without one, MP3 stations fade out and in.</small>
                 <input name="ident_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
-              <label>Fallback audio <span class="optional">optional</span> <select name="fallback_file_id"></select>
-                <small>Loops while neither stream has audio.</small>
+              <label>Everyday fallback audio <span class="optional">optional</span> <select name="fallback_file_id"></select>
+                <small>Loops while neither stream has audio, on any day with no files chosen for it below.</small>
                 <input name="fallback_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg"></label>
+              <div class="schedule">
+                <span class="schedule-title">Fallback audio on chosen days <span class="optional">optional</span></span>
+                <small class="muted">On a day that has files here, they play instead of the everyday fallback audio: one after another, in this order, round and round.</small>
+                <div id="fallbackSchedule"></div>
+                <div class="schedule-add">
+                  <button type="button" id="addScheduled">Add a file for chosen days</button>
+                  <span class="muted small">or upload one:</span>
+                  <input name="scheduled_upload" type="file" accept="audio/*,.mp3,.aac,.wav,.flac,.m4a,.ogg" aria-label="Upload a file for chosen days">
+                </div>
+                <label>Time zone the days are counted in <input name="timezone" list="timeZones" placeholder="UTC" autocomplete="off">
+                  <small id="scheduleToday" role="status"></small></label>
+                <datalist id="timeZones"></datalist>
+              </div>
               <label class="check multiline"><input type="checkbox" name="convert"> <span>Convert uploads that are not in the stream's format. The converted file replaces what I upload.</span></label>
               <p class="muted small"><span id="stationFormat"></span> <span id="stationStorage"></span></p>
               <p id="stationUpload" class="muted small" role="status"></p>

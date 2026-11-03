@@ -1,3 +1,4 @@
+const fallbacks = require('./fallbacks');
 const net = require('net');
 const config = require('./config');
 const { invalid } = require('./errors');
@@ -150,6 +151,15 @@ function parseStation(body, { partial = false, isAdmin = false, allowSlug = true
     if (!Array.isArray(list) || list.length > 250 || list.some((c) => typeof c !== 'string' || !/^[A-Za-z]{2}$/.test(c))) {
       fail('geo_countries', 'must be a list of two-letter country codes (ISO 3166-1), such as ["NG", "GH"]');
     } else out.geo_countries = [...new Set(list.map((c) => c.toUpperCase()))].sort();
+  }
+  if (has(body, 'timezone')) {
+    if (blank(body.timezone)) out.timezone = 'UTC';
+    else if (!fallbacks.validZone(body.timezone)) fail('timezone', 'must be a time zone name such as "Africa/Lagos" or "Europe/London"');
+    else out.timezone = body.timezone;
+  }
+  if (has(body, 'fallback_schedule')) {
+    const schedule = fallbacks.parse(body.fallback_schedule, fail);
+    if (schedule !== undefined) out.fallback_schedule = schedule;
   }
   // Whether the files exist, belong to the account and fit the stream is checked by the caller.
   for (const field of ['ident_file_id', 'fallback_file_id', 'artwork_file_id']) {

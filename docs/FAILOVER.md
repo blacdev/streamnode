@@ -9,7 +9,8 @@ A station can have up to three things to play, tried in this order:
 
 1. its **primary stream**
 2. its **backup stream** (optional)
-3. a **fallback file** you uploaded (optional), played in a loop
+3. **fallback audio** you uploaded (optional): one everyday file played in a loop, and
+   optionally more files for chosen days of the week ([below](#fallback-audio-by-day-of-the-week))
 
 and an optional **ident**: a short clip, such as the station's jingle, played once
 at every change: when the station moves on from a stream that failed, and when it
@@ -305,6 +306,42 @@ curl -X PATCH $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: ap
 ```
 
 See the [API guide](API.md#audio-files).
+
+### Fallback audio by day of the week
+
+Besides its everyday fallback audio, a station can have more files for chosen days: a
+weekend mix for Saturday and Sunday, a Friday-night show, a Sunday service. On a day
+that has files chosen for it, those play instead of the everyday file, **one after
+another in the order listed, round and round**. On any other day the everyday file
+plays, as before. With no everyday file and nothing for today, there is no fallback
+audio today (the station behaves as if it had none).
+
+In the dashboard: **Stations > Edit > When audio stops > Fallback audio on chosen
+days**. **Add a file for chosen days** adds a line: pick the file and tick its days.
+Upload a new one with the file button next to it; it is added as a line of its own.
+The arrows change the order; ✕ removes a line. The line below the list says what plays
+today, worked out the same way the server does.
+
+Days are counted in the station's **time zone** (an IANA name such as `Africa/Lagos`;
+new stations start with the browser's). The change of day happens at midnight there:
+within a minute, the streaming servers are given the new day's files. If fallback audio
+is playing at that moment, the new day's files start at once; the same happens when you
+save a changed schedule. A file that cannot be played (it no longer matches the
+stream's format, say) is passed over and the next one plays; the service log says so.
+
+Every file is checked against the station's stream like the everyday one, and counts
+against the account's storage once, however many days or stations use it.
+
+With the API, `fallback_schedule` replaces the whole list; `[]` clears it:
+
+```bash
+curl -X PATCH $API/stations/powerbeats -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"timezone": "Africa/Lagos", "fallback_file_id": 4,
+       "fallback_schedule": [{"file_id": 7, "days": ["sat", "sun"]}, {"file_id": 8, "days": ["sun"]}]}'
+```
+
+The station then reports `fallback_today`: the file ids playing as fallback audio today,
+in order (`[7, 8]` on a Sunday, `[7]` on a Saturday, `[4]` on other days).
 
 ## Storage and quotas (administrators)
 

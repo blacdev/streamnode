@@ -34,8 +34,10 @@ pub struct Station {
     pub silence_threshold_db: Option<f32>,
     /// Played once when switching away from a failed source.
     pub ident: Option<Media>,
-    /// Looped when neither stream has audio.
-    pub fallback: Option<Media>,
+    /// Played when neither stream has audio: one file after another, round and
+    /// round. Today's files: the management service publishes a new list when
+    /// the station's schedule gives another day other files.
+    pub fallbacks: Vec<Media>,
 }
 
 /// An uploaded audio file, fetched from the master when it is needed.
@@ -65,7 +67,12 @@ impl Station {
             })
         };
         let ident = media("ident");
-        let fallback = media("fallback");
+        // A profile from before playlists names one file only.
+        let single = media("fallback");
+        let fallbacks = match take("fallback_list") {
+            Some(list) => parse_list(&list).unwrap_or_else(|| single.into_iter().collect()),
+            None => single.into_iter().collect(),
+        };
         Some(Self {
             slug: slug.to_string(),
             name: take("name").unwrap_or_else(|| slug.to_string()),
@@ -85,9 +92,26 @@ impl Station {
             noise_detection: take("noise").is_none_or(|v| v != "0"),
             silence_threshold_db: take("silence_db").and_then(|v| v.parse::<f32>().ok()).map(|db| db.clamp(-90.0, -10.0)),
             ident,
-            fallback,
+            fallbacks,
         })
     }
+}
+
+/// `[{"id": "7", "ver": "ab12", "name": "Night mix"}, ...]`; `None` if it is not that.
+fn parse_list(text: &str) -> Option<Vec<Media>> {
+    let items = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    items
+        .as_array()?
+        .iter()
+        .map(|item| {
+            let id = item["id"].as_str().filter(|id| !id.is_empty())?.to_string();
+            Some(Media {
+                version: item["ver"].as_str().unwrap_or_default().to_string(),
+                name: item["name"].as_str().map_or_else(|| id.clone(), str::to_string),
+                id,
+            })
+        })
+        .collect()
 }
 
 /// Slugs are lower-case letters, digits, `-` and `_`.
@@ -130,7 +154,8 @@ mod tests {
         assert_eq!(s.failover_delay, Duration::from_secs(6));
         assert!(s.silence_detection && s.noise_detection);
         assert_eq!(s.silence_threshold_db, None);
-        assert_eq!((s.ident, s.fallback), (None, None));
+        assert_eq!(s.ident, None);
+        assert!(s.fallbacks.is_empty());
 
         let s = Station::from_fields(
             "jazz",
@@ -139,7 +164,20 @@ mod tests {
         .unwrap();
         assert_eq!(s.failover_delay, Duration::from_secs(12));
         assert!(!s.silence_detection);
-        assert_eq!(s.fallback, Some(Media { id: "7".into(), version: "abc".into(), name: "Night mix".into() }));
+        assert_eq!(s.fallbacks, vec![Media { id: "7".into(), version: "abc".into(), name: "Night mix".into() }]);
+    }
+
+    #[test]
+    fn todays_fallback_playlist() {
+        let list = r#"[{"id":"7","ver":"a1","name":"Saturday mix"},{"id":"9","ver":"b2","name":"Weekend jingles"}]"#;
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("fallback_id", "7"), ("fallback_ver", "a1"), ("fallback_list", list)])).unwrap();
+        assert_eq!(s.fallbacks.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Saturday mix", "Weekend jingles"]);
+        // Nothing scheduled and no everyday file: nothing to play.
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("fallback_list", "[]")])).unwrap();
+        assert!(s.fallbacks.is_empty());
+        // A list that cannot be read leaves the single file.
+        let s = Station::from_fields("jazz", fields(&[("primary", "http://a/b"), ("fallback_id", "7"), ("fallback_list", "{oops")])).unwrap();
+        assert_eq!(s.fallbacks.len(), 1);
     }
 
     #[test]

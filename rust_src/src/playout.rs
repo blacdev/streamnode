@@ -407,6 +407,15 @@ async fn check_source(hub: &Arc<Hub>, slug: &str, url: &str, source: Source, lis
     }
 }
 
+/// The fallback file to play after `current`: the next one on `list` that has
+/// not been passed over, going round to the start. `current` itself when it is
+/// the only one left. A `current` that is no longer on the list (a new day's
+/// files) is followed by the list's first.
+fn next_fallback(list: &[Media], current: &Media, skipped: &[Media]) -> Option<Media> {
+    let start = list.iter().position(|file| file == current).map_or(0, |at| at + 1);
+    (0..list.len()).map(|i| &list[(start + i) % list.len()]).find(|file| !skipped.contains(file)).cloned()
+}
+
 /// "45 seconds", "2 minutes".
 fn human(duration: Duration) -> String {
     let secs = duration.as_secs_f64().round() as u64;
@@ -554,7 +563,7 @@ impl RelayTask {
                     backoff = Duration::from_secs(1);
                     self.play_live(live).await
                 }
-                None if self.station.fallback.is_some() => self.play_fallback().await,
+                None if !self.station.fallbacks.is_empty() => self.play_fallback().await,
                 None => Outcome::Unavailable,
             };
 
@@ -760,7 +769,7 @@ impl RelayTask {
             self.event(Level::Warning, "source", format!("The backup stream could not be used either ({})", self.last_error));
         }
         self.play_ident(None).await;
-        if self.station.fallback.is_some() {
+        if !self.station.fallbacks.is_empty() {
             self.event(Level::Warning, "switch", format!("Switched from the {} to the fallback file", name(from)));
         }
         Ok(None)
@@ -1212,11 +1221,19 @@ impl RelayTask {
         }
     }
 
-    // ── Fallback file ───────────────────────────────────────────────────────
+    // ── Fallback audio ──────────────────────────────────────────────────────
 
-    /// Loops the station's fallback file until a live source is healthy again.
+    /// Plays the station's fallback files, one after another and round and
+    /// round, until a live source is healthy again.
+    ///
+    /// The list is today's (see `Station::fallbacks`). When it changes, because
+    /// a new day has other files or the schedule was edited, the file playing
+    /// carries on if it is still on the list; otherwise the new list starts at
+    /// once. A file that cannot be played here (it cannot be fetched, has no
+    /// audio, or is in another format than the stream) is passed over; only
+    /// when none can be played is there nothing to play.
     async fn play_fallback(&mut self) -> Outcome {
-        let Some(media) = self.station.fallback.clone() else { return Outcome::Unavailable };
+        let Some(mut media) = self.station.fallbacks.first().cloned() else { return Outcome::Unavailable };
         if self.relay.unframed() {
             self.last_error = "the fallback file cannot follow a stream that is neither MP3 nor AAC".into();
             return Outcome::Unavailable;
@@ -1226,11 +1243,16 @@ impl RelayTask {
         let wanted = self.relay.format();
         let mut body: Option<Body> = None;
         let mut framer = Framer::new();
-        let mut queue: VecDeque<Frame> = VecDeque::new();
+        // Each frame comes with the name of its file when it is the first of that file,
+        // so that what listeners are shown changes when they start to hear it.
+        let mut queue: VecDeque<(Frame, Option<String>)> = VecDeque::new();
         let mut queued = Duration::ZERO;
         let mut announced = false;
+        let mut showing: Option<String> = None;
         let mut failures = 0u32;
         let mut frames_this_pass = 0u64;
+        // Files passed over this time, by id and version.
+        let mut skipped: Vec<Media> = Vec::new();
         let started = Instant::now();
         let mut sent = Duration::ZERO;
         let mut tick = interval(Duration::from_millis(100));
@@ -1247,6 +1269,7 @@ impl RelayTask {
                 match request.send().await {
                     Ok(response) if response.status().is_success() => {
                         body = Some(response.bytes_stream().map(|r| r.map_err(std::io::Error::other)).boxed());
+                        framer = Framer::new();
                         frames_this_pass = 0;
                         self.entry = Entry::new();
                     }
@@ -1258,10 +1281,13 @@ impl RelayTask {
                         };
                         tracing::warn!(station = %self.relay.slug, file = %media.name, error = %why, "fallback file could not be opened");
                         if failures >= 3 {
-                            self.last_error = format!("fallback file: {why}");
-                            return Outcome::Unavailable;
+                            match self.pass_over(&mut skipped, &media, format!("it could not be fetched ({why})")) {
+                                Some(next) => (media, failures) = (next, 0),
+                                None => return Outcome::Unavailable,
+                            }
+                        } else {
+                            sleep(Duration::from_secs(1)).await;
                         }
-                        sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 }
@@ -1272,28 +1298,42 @@ impl RelayTask {
                 chunk = async { body.as_mut().unwrap().next().await }, if queued < FILE_LEAD => match chunk {
                     Some(Ok(chunk)) => {
                         framer.push(&chunk, &mut incoming);
+                        let mut mismatch = None;
                         for frame in incoming.drain(..) {
-                            if wanted.is_some_and(|format| format != frame.format) {
-                                tracing::error!(station = %self.relay.slug, file = %media.name, stream = %wanted.unwrap(), file_format = %frame.format, "fallback file skipped: its format differs from the stream's");
-                                self.last_error = format!("fallback file is {}, but the stream is {}", frame.format, wanted.unwrap());
-                                return Outcome::Unavailable;
+                            if let Some(format) = wanted.filter(|format| *format != frame.format) {
+                                mismatch = Some(format!("it is {}, but the stream is {format}", frame.format));
+                                break;
                             }
                             queued += Duration::from_micros(frame.duration_us);
-                            queue.push_back(frame);
+                            let first = (frames_this_pass == 0).then(|| media.name.clone());
+                            queue.push_back((frame, first));
                             frames_this_pass += 1;
                             failures = 0;
                         }
+                        incoming.clear();
+                        if let Some(why) = mismatch {
+                            tracing::error!(station = %self.relay.slug, file = %media.name, reason = %why, "fallback file skipped: its format differs from the stream's");
+                            body = None;
+                            match self.pass_over(&mut skipped, &media, why) {
+                                Some(next) => (media, failures) = (next, 0),
+                                None => return Outcome::Unavailable,
+                            }
+                        }
                     }
                     Some(Err(_)) | None => {
-                        // End of the file (or the connection): start it again.
+                        // The end of the file (or the connection): on to the next one, or this one again.
+                        body = None;
                         if frames_this_pass == 0 {
                             failures += 1;
                             if failures >= 3 {
-                                self.last_error = "fallback file contains no playable MP3 or AAC audio".into();
-                                return Outcome::Unavailable;
+                                match self.pass_over(&mut skipped, &media, "it contains no playable MP3 or AAC audio".into()) {
+                                    Some(next) => (media, failures) = (next, 0),
+                                    None => return Outcome::Unavailable,
+                                }
                             }
+                        } else if let Some(next) = next_fallback(&self.station.fallbacks, &media, &skipped) {
+                            media = next;
                         }
-                        body = None;
                     }
                 },
 
@@ -1301,11 +1341,15 @@ impl RelayTask {
                     // Send what is due, staying slightly ahead of real time.
                     let due = started.elapsed() + Duration::from_millis(300);
                     let mut batch = Vec::new();
+                    let mut began = None;
                     while sent < due {
-                        let Some(frame) = queue.pop_front() else { break };
+                        let Some((frame, first)) = queue.pop_front() else { break };
                         let length = Duration::from_micros(frame.duration_us);
                         sent += length;
                         queued = queued.saturating_sub(length);
+                        if first.is_some() {
+                            began = first;
+                        }
                         batch.push(frame);
                     }
                     if !batch.is_empty() {
@@ -1316,8 +1360,11 @@ impl RelayTask {
                             let info = self.relay.current_info().map(|info| StreamInfo { content_type: info.content_type.clone(), headers: info.headers.clone() })
                                 .unwrap_or(StreamInfo { content_type: format.codec.content_type().to_string(), headers: Vec::new() });
                             self.relay.set_live(info, Source::Fallback);
-                            self.relay.update_titles(|titles| titles.file = Some(media.name.clone()));
-                            tracing::info!(station = %self.relay.slug, file = %media.name, "playing the fallback file");
+                        }
+                        if let Some(name) = began.filter(|name| showing.as_ref() != Some(name)) {
+                            tracing::info!(station = %self.relay.slug, file = %name, "playing a fallback file");
+                            self.relay.update_titles(|titles| titles.file = Some(name.clone()));
+                            showing = Some(name);
                         }
                         self.publish_frames(&batch);
                     }
@@ -1326,8 +1373,17 @@ impl RelayTask {
                         if let Some(flow) = self.housekeep().await {
                             return Outcome::Flow(flow);
                         }
-                        if self.station.fallback.as_ref() != Some(&media) {
+                        let list = &self.station.fallbacks;
+                        if list.is_empty() {
                             return Outcome::Flow(Flow::Reconfigured);
+                        }
+                        if !list.contains(&media) {
+                            // A new day, or an edited schedule: today's files take over now.
+                            skipped.retain(|file| list.contains(file));
+                            let Some(next) = next_fallback(list, &media, &skipped) else { return Outcome::Flow(Flow::Reconfigured) };
+                            let names = list.iter().map(|file| format!("\"{}\"", file.name)).collect::<Vec<_>>().join(", ");
+                            self.event(Level::Info, "file", format!("Fallback audio changed (a new day, or the schedule was edited): now {names}"));
+                            (media, body, failures) = (next, None, 0);
                         }
                     }
                 }
@@ -1343,8 +1399,8 @@ impl RelayTask {
                     if self.fades() {
                         // Fade the file out over its next second and a half, then bring the stream in.
                         let mut length = 0;
-                        let frames = queue.iter().take_while(|frame| { let more = length < FADE.as_micros() as u64; length += frame.duration_us; more }).count();
-                        let tail: Vec<Frame> = queue.drain(..frames).collect();
+                        let frames = queue.iter().take_while(|(frame, _)| { let more = length < FADE.as_micros() as u64; length += frame.duration_us; more }).count();
+                        let tail: Vec<Frame> = queue.drain(..frames).map(|(frame, _)| frame).collect();
                         self.fade = Some((false, 0));
                         self.publish_frames(&tail);
                         self.fade = Some((true, 0));
@@ -1353,6 +1409,14 @@ impl RelayTask {
                 }
             }
         }
+    }
+
+    /// A fallback file cannot be played: logs why and picks the next one, if any can be.
+    fn pass_over(&mut self, skipped: &mut Vec<Media>, file: &Media, why: String) -> Option<Media> {
+        self.event(Level::Warning, "file", format!("Fallback file \"{}\" passed over: {why}", file.name));
+        self.last_error = format!("fallback file \"{}\": {why}", file.name);
+        skipped.push(file.clone());
+        next_fallback(&self.station.fallbacks, file, skipped)
     }
 
     // ── Upkeep ──────────────────────────────────────────────────────────────
@@ -1558,6 +1622,36 @@ mod tests {
         assert!(rank(Source::Primary) < rank(Source::Backup));
         assert!(rank(Source::Backup) < rank(Source::Fallback));
         assert!(rank(Source::Fallback) < rank(Source::None));
+    }
+
+    fn file(id: &str) -> Media {
+        Media { id: id.into(), version: "v1".into(), name: format!("file {id}") }
+    }
+
+    #[test]
+    fn fallback_files_play_in_turn() {
+        let list = [file("1"), file("2"), file("3")];
+        assert_eq!(next_fallback(&list, &file("1"), &[]), Some(file("2")));
+        assert_eq!(next_fallback(&list, &file("3"), &[]), Some(file("1")), "round and round");
+        assert_eq!(next_fallback(&list[..1], &file("1"), &[]), Some(file("1")), "one file loops");
+    }
+
+    #[test]
+    fn a_new_days_files_start_from_the_top() {
+        let list = [file("7"), file("8")];
+        assert_eq!(next_fallback(&list, &file("1"), &[]), Some(file("7")));
+        assert_eq!(next_fallback(&[], &file("1"), &[]), None);
+    }
+
+    #[test]
+    fn files_that_cannot_be_played_are_passed_over() {
+        let list = [file("1"), file("2"), file("3")];
+        assert_eq!(next_fallback(&list, &file("1"), &[file("2")]), Some(file("3")));
+        assert_eq!(next_fallback(&list, &file("3"), &[file("1"), file("2")]), Some(file("3")));
+        assert_eq!(next_fallback(&list, &file("3"), &[file("1"), file("2"), file("3")]), None, "nothing left to play");
+        // A file whose content changed is another file.
+        let changed = Media { version: "v2".into(), ..file("2") };
+        assert_eq!(next_fallback(&list, &file("1"), &[changed]), Some(file("2")));
     }
 
     #[test]

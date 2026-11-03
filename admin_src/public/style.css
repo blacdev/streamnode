@@ -181,6 +181,17 @@ label.check.multiline input { margin-top: 3px; }
 .result.ok { border-left: 3px solid var(--good); }
 .result.bad { border-left: 3px solid var(--bad); }
 .small { font-size: 12px; }
+.schedule { margin: 12px 0; }
+.schedule-title { display: block; font-weight: 600; font-size: 13px; }
+.schedule > small { display: block; margin-top: 2px; }
+.schedule-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.schedule-row select { flex: 1 1 200px; min-width: 0; }
+.schedule-row .days { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.schedule-row label.day { display: inline-flex; align-items: center; gap: 3px; margin: 0; font-weight: 400; font-size: 12px; }
+.schedule-row label.day input { width: auto; margin: 0; }
+.schedule-row .row-actions button { padding: 2px 7px; }
+.schedule-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.schedule-add input[type="file"] { width: auto; flex: 1 1 180px; }
 /* A highlighted pointer to something worth knowing about. */
 .callout { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
 .callout strong { display: block; margin-bottom: 2px; }

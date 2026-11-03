@@ -17,6 +17,7 @@ const geo = require('./geo');
 const image = require('./image');
 const probe = require('./probe');
 const events = require('./events');
+const fallbacks = require('./fallbacks');
 const converter = require('./converter');
 const slugs = require('./slug');
 const settings = require('./settings');
@@ -60,6 +61,7 @@ async function loadStation(req) {
 }
 
 async function presentOne(req, row) {
+  await fallbacks.attach([row]);
   const live = await stations.liveFor([row.slug]);
   return stations.present(row, live.get(row.slug), req);
 }
@@ -254,6 +256,7 @@ router.get('/stations', wrap(async (req, res) => {
     db.query(`SELECT ${stations.COLUMNS} FROM stations ${filter} ORDER BY slug LIMIT ${limit} OFFSET ${offset}`, params),
     db.query(`SELECT COUNT(*)::int AS total FROM stations ${filter}`, params),
   ]);
+  await fallbacks.attach(list.rows);
   const live = await stations.liveFor(list.rows.map((row) => row.slug));
   res.json({
     total: count.rows[0].total,
@@ -274,9 +277,11 @@ async function createStation(req, fields) {
       );
     }
   }
-  const row = { user_id: req.user.id, ...fields };
+  const { fallback_schedule: schedule, ...columns } = fields;
+  const row = { user_id: req.user.id, ...columns };
   checkPlan(row);
   await media.checkAssignment(row, row.user_id, null);
+  if (schedule) await media.checkSchedule(schedule, row.user_id, null);
   // Without an address of its own choosing, the station is given one. Two stations made
   // at the same moment could be given the same one, so a clash is simply tried again.
   const generated = row.slug === undefined;
@@ -288,6 +293,7 @@ async function createStation(req, fields) {
         `INSERT INTO stations (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING ${stations.COLUMNS}`,
         keys.map((key) => row[key])
       );
+      if (schedule) await fallbacks.save(rows[0].id, schedule);
       await stations.publish(rows[0]);
       if (rows[0].geo_mode !== 'off') await geo.syncRules(db).catch((err) => console.error('[geo]', err.message));
       audit(req, 'station.create', rows[0].slug, { ...fields, slug: rows[0].slug });
@@ -303,16 +309,20 @@ async function updateStation(req, current, fields) {
   if (!Object.keys(fields).length) return current;
   // Files belong to an account, so they do not follow a station to another one.
   if (fields.user_id !== undefined && fields.user_id !== current.user_id) {
-    fields = { ident_file_id: null, fallback_file_id: null, artwork_file_id: null, ...fields };
+    fields = { ident_file_id: null, fallback_file_id: null, artwork_file_id: null, fallback_schedule: [], ...fields };
   }
-  checkPlan({ ...current, ...fields });
-  await media.checkAssignment(fields, fields.user_id === undefined ? current.user_id : fields.user_id, current.slug);
-  const set = assignments(fields);
+  const { fallback_schedule: schedule, ...columns } = fields;
+  const owner = fields.user_id === undefined ? current.user_id : fields.user_id;
+  checkPlan({ ...current, ...columns });
+  await media.checkAssignment(columns, owner, current.slug);
+  if (schedule) await media.checkSchedule(schedule, owner, current.slug);
+  const set = assignments({ ...columns, updated_at: new Date() });
   try {
     const { rows } = await db.query(
-      `UPDATE stations SET ${set.sql}, updated_at = now() WHERE id = $${set.values.length + 1} RETURNING ${stations.COLUMNS}`,
+      `UPDATE stations SET ${set.sql} WHERE id = $${set.values.length + 1} RETURNING ${stations.COLUMNS}`,
       [...set.values, current.id]
     );
+    if (schedule) await fallbacks.save(current.id, schedule);
     if (rows[0].slug !== current.slug) await stations.unpublish(current.slug);
     await stations.publish(rows[0]);
     if (fields.geo_mode !== undefined || fields.geo_countries !== undefined || rows[0].slug !== current.slug) {
@@ -597,18 +607,29 @@ async function fileOwner(req) {
 
 async function presentFiles(rows) {
   if (!rows.length) return [];
-  const used = await db.query(
-    `SELECT slug, ident_file_id, fallback_file_id, artwork_file_id FROM stations
-     WHERE ident_file_id = ANY($1) OR fallback_file_id = ANY($1) OR artwork_file_id = ANY($1) ORDER BY slug`,
-    [rows.map((row) => row.id)]
-  );
+  const ids = rows.map((row) => row.id);
+  const [used, scheduled] = await Promise.all([
+    db.query(
+      `SELECT slug, ident_file_id, fallback_file_id, artwork_file_id FROM stations
+       WHERE ident_file_id = ANY($1) OR fallback_file_id = ANY($1) OR artwork_file_id = ANY($1) ORDER BY slug`,
+      [ids]
+    ),
+    db.query(
+      `SELECT DISTINCT s.slug, f.file_id FROM station_fallbacks f JOIN stations s ON s.id = f.station_id
+       WHERE f.file_id = ANY($1) ORDER BY s.slug`,
+      [ids]
+    ),
+  ]);
   return rows.map((row) => media.present(
     row,
-    used.rows.flatMap((s) => [
-      ...(s.ident_file_id === row.id ? [{ station: s.slug, as: 'ident' }] : []),
-      ...(s.fallback_file_id === row.id ? [{ station: s.slug, as: 'fallback' }] : []),
-      ...(s.artwork_file_id === row.id ? [{ station: s.slug, as: 'artwork' }] : []),
-    ])
+    [
+      ...used.rows.flatMap((s) => [
+        ...(s.ident_file_id === row.id ? [{ station: s.slug, as: 'ident' }] : []),
+        ...(s.fallback_file_id === row.id ? [{ station: s.slug, as: 'fallback' }] : []),
+        ...(s.artwork_file_id === row.id ? [{ station: s.slug, as: 'artwork' }] : []),
+      ]),
+      ...scheduled.rows.filter((s) => s.file_id === row.id).map((s) => ({ station: s.slug, as: 'scheduled_fallback' })),
+    ]
   ));
 }
 
