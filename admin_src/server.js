@@ -96,6 +96,8 @@ async function main() {
 
   every(config.statsFlushMs, 'stats-flush', stats.flush);
   every(config.stationSyncMs, 'station-sync', stations.syncAll);
+  // Fallback audio scheduled by day: a new day's files are given to the engines within a minute.
+  every(60 * 1000, 'fallback-schedule', stations.refreshFallbacks);
   await cluster.publishOverrides();
   every(config.stationSyncMs, 'audio-overrides', cluster.publishOverrides);
   every(3600 * 1000, 'retention', stats.prune);

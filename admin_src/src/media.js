@@ -401,7 +401,8 @@ async function finish(id) {
   // Does the file it was made from now make way for it? Only if no other station uses that file.
   const original = row.replaces_id ? await find(row.replaces_id) : null;
   const elsewhere = original ? await db.query(
-    'SELECT 1 FROM stations WHERE (ident_file_id = $1 OR fallback_file_id = $1) AND id IS DISTINCT FROM $2 LIMIT 1', [original.id, row.for_station_id]
+    `SELECT 1 FROM stations WHERE (ident_file_id = $1 OR fallback_file_id = $1) AND id IS DISTINCT FROM $2
+     UNION ALL SELECT 1 FROM station_fallbacks WHERE file_id = $1 AND station_id IS DISTINCT FROM $2 LIMIT 1`, [original.id, row.for_station_id]
   ) : null;
   const dropOriginal = Boolean(original && elsewhere.rowCount === 0);
 
@@ -416,6 +417,7 @@ async function finish(id) {
     for (const column of ['ident_file_id', 'fallback_file_id']) {
       await db.query(`UPDATE stations SET ${column} = $1, updated_at = now() WHERE id = $2 AND ${column} = $3`, [id, row.for_station_id, original.id]);
     }
+    await db.query('UPDATE station_fallbacks SET file_id = $1 WHERE station_id = $2 AND file_id = $3', [id, row.for_station_id, original.id]);
   }
   await db.query(
     `UPDATE media_files SET status = 'ready', status_detail = NULL, size_bytes = $1, codec = $2, sample_rate = $3, channels = $4, bitrate_kbps = $5,
@@ -520,7 +522,11 @@ async function send(res, row, { audioOnly = false, download = false, open = null
 // ── Removal ─────────────────────────────────────────────────────────────────
 
 async function stationsUsing(id) {
-  const { rows } = await db.query('SELECT slug FROM stations WHERE ident_file_id = $1 OR fallback_file_id = $1 OR artwork_file_id = $1 ORDER BY slug', [id]);
+  const { rows } = await db.query(
+    `SELECT slug FROM stations WHERE ident_file_id = $1 OR fallback_file_id = $1 OR artwork_file_id = $1
+        OR id IN (SELECT station_id FROM station_fallbacks WHERE file_id = $1) ORDER BY slug`,
+    [id]
+  );
   return rows.map((row) => row.slug);
 }
 
@@ -573,7 +579,8 @@ async function sync() {
 async function trim() {
   const { rows } = await db.query(
     `SELECT f.id, f.storage,
-            EXISTS (SELECT 1 FROM stations s WHERE s.ident_file_id = f.id OR s.fallback_file_id = f.id OR s.artwork_file_id = f.id) AS in_use
+            (EXISTS (SELECT 1 FROM stations s WHERE s.ident_file_id = f.id OR s.fallback_file_id = f.id OR s.artwork_file_id = f.id)
+             OR EXISTS (SELECT 1 FROM station_fallbacks sf WHERE sf.file_id = f.id)) AS in_use
      FROM media_files f`
   );
   const known = new Map(rows.map((row) => [String(row.id), row]));
@@ -678,7 +685,28 @@ async function checkAssignment(fields, ownerId, slug) {
   if (errors.length) throw invalid(errors);
 }
 
+/**
+ * Checks the files of a station's fallback schedule as `checkAssignment` checks
+ * its everyday fallback: in the station's account, and playable on its stream.
+ */
+async function checkSchedule(schedule, ownerId, slug) {
+  const errors = [];
+  const format = slug ? await streamFormat(slug) : null;
+  const identMax = await settings.get('ident_max_seconds');
+  for (const [i, entry] of schedule.entries()) {
+    const field = `fallback_schedule[${i}].file_id`;
+    const file = await find(entry.file_id);
+    if (!file || file.user_id !== ownerId) {
+      errors.push({ field, message: "is not a file in this station's account" });
+      continue;
+    }
+    const problem = problemFor(file, 'fallback', format, identMax);
+    if (problem) errors.push({ field, message: problem, ...(file.status === 'ready' && differs(file, format) && canConvert(format) ? { can_convert: true, file_id: file.id } : {}) });
+  }
+  if (errors.length) throw invalid(errors);
+}
+
 module.exports = {
-  COLUMNS, init, create, convertExisting, capBytes, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment,
+  COLUMNS, init, create, convertExisting, capBytes, find, send, remove, discard, sync, usage, quotaBytes, usedBytes, streamFormat, problemFor, checkAssignment, checkSchedule,
   stationsUsing, bringHome, present, size, available, restoreCopy, refetch,
 };

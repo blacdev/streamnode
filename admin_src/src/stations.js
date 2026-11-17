@@ -2,9 +2,10 @@ const config = require('./config');
 const db = require('./db');
 const { redis } = require('./cache');
 const streamTypes = require('./streamtypes');
+const fallbacks = require('./fallbacks');
 
 const COLUMNS =
-  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, backup_titles_from_primary, ident_url, ident_sha256, fallback_url, fallback_sha256, geo_mode, geo_countries, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
+  'id, user_id, name, slug, primary_url, backup_url, metadata_url, artwork_url, max_listeners, external_id, is_active, failover_delay_secs, silence_detection, noise_detection, silence_threshold_db, ident_file_id, fallback_file_id, default_title, default_artist, artwork_file_id, backup_titles_from_primary, ident_url, ident_sha256, fallback_url, fallback_sha256, timezone, geo_mode, geo_countries, billing_bitrate_kbps, discount_percent, price_override, subscription_ends_on, overage_mode, listener_ceiling, plan_type, bandwidth_gb, blocked, created_at, updated_at';
 
 const profileKey = (slug) => `station:${slug}`;
 
@@ -14,23 +15,35 @@ const artworkPath = (slug, version) => `/api/v1/public/stations/${slug}/artwork$
 
 // The ident, fallback and image files of the given stations, by id.
 async function mediaFor(rows) {
-  const ids = [...new Set(rows.flatMap((row) => [row.ident_file_id, row.fallback_file_id, row.artwork_file_id]).filter(Boolean))];
+  await fallbacks.attach(rows);
+  const ids = [...new Set(rows.flatMap((row) => [
+    row.ident_file_id, row.fallback_file_id, row.artwork_file_id, ...row.fallback_schedule.map((entry) => entry.file_id),
+  ]).filter(Boolean))];
   if (!ids.length) return new Map();
   // A file that is still being converted, or could not be, is not offered to the engines.
   const found = await db.query("SELECT id, name, sha256 FROM media_files WHERE id = ANY($1) AND status = 'ready'", [ids]);
   return new Map(found.rows.map((file) => [file.id, file]));
 }
 
+// What the engines need of a file. `ver` changes with its content, so that they fetch it again.
+const describeFile = (file) => ({ id: String(file.id), ver: file.sha256.slice(0, 16), name: file.name });
+
+// Today's fallback audio, as the engines get it: the files in the order they play.
+function fallbackList(row, media, now = new Date()) {
+  return fallbacks.today(row, now).map((id) => media.get(id)).filter(Boolean).map(describeFile);
+}
+
 function profile(row, media) {
   const out = {};
-  for (const [prefix, id] of [['ident', row.ident_file_id], ['fallback', row.fallback_file_id]]) {
-    const file = id && media.get(id);
-    if (!file) continue;
-    out[`${prefix}_id`] = String(file.id);
-    // The engine fetches a file again when this changes.
-    out[`${prefix}_ver`] = file.sha256.slice(0, 16);
-    out[`${prefix}_name`] = file.name;
+  const ident = row.ident_file_id && media.get(row.ident_file_id);
+  if (ident) {
+    const { id, ver, name } = describeFile(ident);
+    Object.assign(out, { ident_id: id, ident_ver: ver, ident_name: name });
   }
+  const list = fallbackList(row, media);
+  // Engines from before playlists play the first file only.
+  if (list.length) Object.assign(out, { fallback_id: list[0].id, fallback_ver: list[0].ver, fallback_name: list[0].name });
+  out.fallback_list = JSON.stringify(list);
   const picture = row.artwork_file_id && media.get(row.artwork_file_id);
   return {
     ...out,
@@ -69,9 +82,25 @@ function enforcedListeners(row) {
 }
 
 // The engine routes from Redis only, so every change is mirrored there.
+const publishedFallbacks = new Map();
 async function publish(row, media) {
   const key = profileKey(row.slug);
-  await redis.multi().del(key).hSet(key, profile(row, media || (await mediaFor([row])))).exec();
+  // A row without its schedule would publish the everyday file only.
+  await fallbacks.attach([row]);
+  const values = profile(row, media || (await mediaFor([row])));
+  await redis.multi().del(key).hSet(key, values).exec();
+  publishedFallbacks.set(row.slug, values.fallback_list);
+}
+
+// A new day may bring other fallback files: the stations with a schedule are
+// published again when theirs changes. Run every minute.
+async function refreshFallbacks() {
+  const { rows } = await db.query(`SELECT ${COLUMNS} FROM stations WHERE id IN (SELECT station_id FROM station_fallbacks)`);
+  if (!rows.length) return;
+  const media = await mediaFor(rows);
+  for (const row of rows) {
+    if (publishedFallbacks.get(row.slug) !== JSON.stringify(fallbackList(row, media))) await publish(row, media);
+  }
 }
 
 // After a file is renamed or removed, the stations that used it are published again.
@@ -228,6 +257,12 @@ function present(row, live, req) {
     ident_sha256: row.ident_sha256 || null,
     fallback_url: row.fallback_url || null,
     fallback_sha256: row.fallback_sha256 || null,
+    // More fallback audio for chosen days of the week, played instead of the everyday one on those days.
+    fallback_schedule: row.fallback_schedule || [],
+    // The time zone the schedule's days are counted in.
+    timezone: row.timezone || 'UTC',
+    // What plays as fallback audio today, in order (file ids).
+    fallback_today: fallbacks.today(row),
     // Countries the station may be heard in; geo_status says whether the rule is in force on this server.
     geo_mode: row.geo_mode || 'off',
     geo_countries: row.geo_countries || [],
@@ -261,4 +296,4 @@ async function findBySlug(slug) {
   return rows[0] || null;
 }
 
-module.exports = { COLUMNS, publish, republishUser, streamFormat, unpublish, syncAll, liveFor, mergeLive, silentServers, activeNodes, present, shown, baseUrl, findBySlug };
+module.exports = { COLUMNS, publish, refreshFallbacks, fallbackList, mediaFor, republishUser, streamFormat, unpublish, syncAll, liveFor, mergeLive, silentServers, activeNodes, present, shown, baseUrl, findBySlug };
